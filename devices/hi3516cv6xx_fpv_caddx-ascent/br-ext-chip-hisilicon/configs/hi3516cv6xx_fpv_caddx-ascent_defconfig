@@ -1,0 +1,153 @@
+# Caddx Ascent (Hi3516CV610) FPV air unit.
+#
+# Derived from firmware's hi3516cv6xx_ultimate_defconfig. Deltas against it:
+#   - VARIANT "ultimate" -> "fpv"
+#   - + AR8030 (the radio link) and waybeam (the encoder/streamer)
+#   - - majestic, majestic-fonts, majestic-webui  (waybeam replaces them)
+#   - - divinus                                   (the other encoder; one owner)
+#   - - protobuf-c                                (existed only for majestic)
+#   - - aws-webrtc, mosquitto, zerotier-one, uacme, iptables, wireguard-*
+#     (cloud/VPN/home-automation extras from the ultimate flavor; an air
+#      unit uses none of them and they all cost flash)
+# Each removal is spelled out as an explicit "is not set" below rather than a
+# deleted line, so a diff against upstream stays readable.
+#
+# NOTE: "fpv" here is only the OpenIPC variant *label* — it is deliberately not
+# the upstream FPV package set (wifibroadcast-ng + rtl8812au/rtl88x2eu). On this
+# board the downlink is the Artosyn AR8030 baseband, not a WiFi dongle, and the
+# cv6xx kernel has CONFIG_WIRELESS off anyway. VARIANT only feeds the image name
+# (openipc.hi3516cv6xx-nor-fpv.tgz), the excludes filename
+# (hi3516cv6xx_fpv.list) and os-release BUILD_OPTION/BUILD_PLATFORM; majestic's
+# flavor is BR2_OPENIPC_MAJESTIC, which stays at its "lite" default.
+
+# OpenIPC
+BR2_OPENIPC_SOC_VENDOR="hisilicon"
+BR2_OPENIPC_SOC_MODEL="hi3516cv6xx"
+BR2_OPENIPC_SOC_FAMILY="hi3516cv6xx"
+# One cv6xx image serves dies that report distinct ids (hi3516cv610,
+# hi3516cv608) via fw_printenv/ipcinfo. Upgrade identity comes from
+# BUILD_PLATFORM=hi3516cv6xx_fpv; these aliases are a defensive route
+# for any image/camera that still surfaces the per-die id.
+BR2_OPENIPC_SOC_ALIASES="hi3516cv610 hi3516cv608"
+BR2_OPENIPC_VARIANT="fpv"
+BR2_OPENIPC_FLASH_SIZE="16"
+# OPENIPC_MAJESTIC defaults to "lite" — only the "lite" flavor of the
+# cv6xx majestic binary has been published to OpenIPC S3 so far.
+
+# Architecture
+BR2_arm=y
+BR2_cortex_a7=y
+BR2_ARM_EABI=y
+BR2_ARM_FPU_NEON_VFPV4=y
+BR2_ARM_INSTRUCTIONS_THUMB2=y
+
+# Toolchain
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD=y
+BR2_TOOLCHAIN_EXTERNAL_URL="https://github.com/openipc/firmware/releases/download/$(OPENIPC_TOOLCHAIN).tgz"
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="arm-openipc-linux-musleabi"
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_5_10=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_MUSL=y
+BR2_GCC_VERSION_13_X=y
+BR2_TOOLCHAIN_EXTERNAL_CXX=y
+
+# Kernel
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/$(OPENIPC_KERNEL).tar.gz"
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/$(BR2_OPENIPC_SOC_MODEL).generic.config"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh"
+BR2_LINUX_KERNEL_ZIMAGE=y
+BR2_LINUX_KERNEL_XZ=y
+BR2_LINUX_KERNEL_UIMAGE_LOADADDR="0x40018000"
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+# BR2_LINUX_KERNEL_DTB_IS_SELF_BUILT is not set
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="hi3516cv610-demb"
+
+# Filesystem
+BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL)/package/busybox/busybox.config"
+BR2_PACKAGE_EXFATPROGS=y
+BR2_PACKAGE_UBOOT_TOOLS=y
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
+# Dropped from the cv6xx ultimate set — an air unit has no use for a packet
+# filter, an MQTT client or a VPN, and every one of them costs flash.
+# BR2_PACKAGE_IPTABLES is not set
+# BR2_PACKAGE_MOSQUITTO is not set
+# BR2_PACKAGE_WIREGUARD_LINUX_COMPAT is not set
+# BR2_PACKAGE_WIREGUARD_TOOLS is not set
+# Wireless stack omitted — openipc/linux hi3516cv6xx kernel has
+# CONFIG_WIRELESS off, so cfg80211/mac80211-dependent USB WiFi drivers
+# (mt7601u, rtl8188fu) and wpa_supplicant/wireless-tools have nothing
+# to bind to. Re-enable once the kernel config gains the wireless stack.
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_SQUASHFS=y
+BR2_TARGET_ROOTFS_SQUASHFS4_XZ=y
+
+# Packages
+# Artosyn AR8030 baseband — the downlink. On this board it hangs off SDIO
+# (the stock stack bridges bb_socket/daemon_sdiov12 to artosyn_sdio.ko over
+# SDIO), so only the SDIO half of the driver is compiled. USB_LOADER/TOOLS are
+# the vendor's test programs; leave them off unless bringing the link up by
+# hand. See package/ar8030/README.md.
+BR2_PACKAGE_AR8030=y
+BR2_PACKAGE_AR8030_BUS_SDIO_ONLY=y
+BR2_PACKAGE_AR8030_FIRMWARE=y
+BR2_PACKAGE_AR8030_INIT=y
+BR2_PACKAGE_AR8030_PAIR_TOOL=y
+# BR2_PACKAGE_AR8030_USB_LOADER is not set
+# BR2_PACKAGE_AR8030_TOOLS is not set
+# Dropped: browser-facing WebRTC streaming is majestic-side plumbing and
+# waybeam does its own RTP.
+# BR2_PACKAGE_AWS_WEBRTC is not set
+# Dropped: divinus is the *other* majestic-alternative encoder and claims the
+# same VI/VPSS/VENC channels waybeam does. One encoder owns the pipeline.
+# BR2_PACKAGE_DIVINUS is not set
+BR2_PACKAGE_DROPBEAR_OPENIPC=y
+BR2_PACKAGE_EXFAT_OPENIPC=y
+BR2_PACKAGE_HISILICON_OPENSDK=y
+BR2_PACKAGE_HISILICON_OSDRV_HI3516CV6XX=y
+BR2_PACKAGE_IPCTOOL=y
+BR2_PACKAGE_JSONFILTER=y
+BR2_PACKAGE_LAME_OPENIPC=y
+BR2_PACKAGE_LIBCURL_OPENIPC_CURL=y
+# BR2_PACKAGE_LIBCURL_OPENIPC_PROXY_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_OPENIPC_COOKIES_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_OPENIPC_EXTRA_PROTOCOLS_FEATURES is not set
+BR2_PACKAGE_LIBEVENT_OPENIPC=y
+BR2_PACKAGE_LIBOGG_OPENIPC=y
+BR2_PACKAGE_LIBWEBSOCKETS_OPENIPC=y
+# majestic replaced by waybeam (below). Both claim exclusive ownership of
+# VI/VPSS/VENC, so this is an either/or, never both. majestic-fonts and
+# majestic-webui only exist to serve majestic; waybeam carries its own HTTP API
+# and dashboard.
+# BR2_PACKAGE_MAJESTIC is not set
+# BR2_PACKAGE_MAJESTIC_FONTS is not set
+# BR2_PACKAGE_MAJESTIC_WEBUI is not set
+# Explicit because upstream's cv6xx config never listed it — it arrived via
+# `select BR2_PACKAGE_MBEDTLS_OPENIPC` in uacme-openipc, the only selector in
+# that package set. Dropping uacme therefore also dropped the TLS backend, and
+# libwebsockets-openipc silently fell back to OpenSSL (LWS_WITH_MBEDTLS=OFF)
+# and died at configure with "Could NOT find OpenSSL". libcurl-openipc and
+# libevent-openipc key off this symbol too.
+BR2_PACKAGE_MBEDTLS_OPENIPC=y
+BR2_PACKAGE_MOTORS=y
+BR2_PACKAGE_OPUS_OPENIPC=y
+BR2_PACKAGE_OPUS_OPENIPC_FIXED_POINT=y
+BR2_PACKAGE_OPUS_OPENIPC_HISI_SHIM=y
+# protobuf-c existed here solely because the cv6xx-flavored majestic binary
+# dlopen'd libprotobuf-c.so.1 (no other ultimate config selects it). majestic
+# is gone, so this goes with it.
+# BR2_PACKAGE_PROTOBUF_C is not set
+BR2_PACKAGE_QUIRC_OPENIPC=y
+# Dropped: ACME/Let's Encrypt client, nothing an air unit does.
+# BR2_PACKAGE_UACME_OPENIPC is not set
+BR2_PACKAGE_VTUND_OPENIPC=y
+# waybeam — the encoder/streamer, replacing majestic. Built with
+# SOC_BUILD=hi3516cv610. Config is /etc/waybeam.json (fixed path), started by
+# its own /etc/init.d/S95waybeam. See package/waybeam/Config.in.
+BR2_PACKAGE_WAYBEAM=y
+BR2_PACKAGE_WAYBEAM_JSON_CLI=y
+BR2_PACKAGE_YAML_CLI=y
+# Dropped: SD-WAN/VPN overlay, nothing an air unit does.
+# BR2_PACKAGE_ZEROTIER_ONE is not set

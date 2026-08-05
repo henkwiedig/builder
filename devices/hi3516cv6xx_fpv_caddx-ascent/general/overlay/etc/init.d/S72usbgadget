@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# Bring up the USB RNDIS network gadget, the way the stock Ascent firmware
+# does — plug a host into the USB port and it gets a network interface to the
+# air unit.
+#
+# Ordering: after S40network (so the gadget's usb0 is configured last and
+# S40network's `ifdown -f usb0` in stop() cannot race it) and after S70vendor,
+# before S95waybeam so waybeam's HTTP dashboard is reachable over USB as soon
+# as it starts.
+#
+# Set `fw_setenv usbnet off` to disable without reflashing.
+
+case "$1" in
+	start)
+		/usr/bin/usb-gadget up || echo "usb-gadget up failed"
+		;;
+
+	stop)
+		/usr/bin/usb-gadget down
+		;;
+
+	restart|reload)
+		/usr/bin/usb-gadget restart
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

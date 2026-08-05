@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# Artosyn AR8030 baseband: load the host driver, then start the RPC daemon
+# that every client (ar8030-pair, majestic, anything linking
+# libar8030_client) talks to.
+#
+
+MODULE="artosyn_drv"
+DAEMON="/usr/bin/ar8030d"
+PIDFILE="/var/run/ar8030d.pid"
+
+# The daemon creates its "daemon_log" directory and its unix socket relative
+# to $PWD, and the rootfs is read-only, so give it a writable cwd.
+RUNDIR="/tmp/ar8030"
+
+# Baseband image + config pushed into the chip by the driver at probe time,
+# as paths under /lib/firmware. Left out of the insmod line when absent, in
+# which case the AR8030 is expected to boot from its own flash.
+FW_NAME="ar8030/bb_demo.img"
+CFG_NAME="ar8030/bb_config.json"
+
+# Interface the daemon should use: 0=usb 1=sdio 2=uart 3=drv. The package
+# builds the daemon with the driver backend only.
+INTF=3
+
+start() {
+	echo "Starting ar8030..."
+
+	args=""
+	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"
+	[ -f "/lib/firmware/$CFG_NAME" ] && args="$args cfg_name=$CFG_NAME"
+
+	if ! modprobe $MODULE $args; then
+		echo "ar8030: failed to load $MODULE"
+		exit 1
+	fi
+
+	mkdir -p "$RUNDIR"
+	cd "$RUNDIR" || exit 1
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- -i $INTF
+}
+
+stop() {
+	echo "Stopping ar8030..."
+	start-stop-daemon -K -q -p "$PIDFILE"
+	rm -f "$PIDFILE"
+	rmmod $MODULE 2>/dev/null
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
