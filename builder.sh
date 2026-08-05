@@ -126,7 +126,7 @@ sleep 3
 echo_c 33 "\nUpdating Builder"
 git pull
 
-rm -rf openipc
+# rm -rf openipc
 # OPENIPC_FW_REV pins firmware to a specific ref (branch, tag, or SHA) for
 # cross-repo bisect of size/regression issues — set by build-one.yml's
 # firmware_ref input. When unset, clones HEAD of master as before.

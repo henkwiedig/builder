@@ -1,0 +1,250 @@
+#!/bin/sh
+#
+# Compose the USB network gadget on the Hi3516CV610's DWC3 controller, so a
+# host plugged into the USB port sees the air unit as a network adapter. This
+# is the OpenIPC equivalent of what the stock Ascent firmware does from
+# config_ether.sh.
+#
+# RNDIS and not NCM/ECM/EEM: the OpenIPC hi3516cv6xx kernel builds
+# CONFIG_USB_CONFIGFS_RNDIS=y and leaves CONFIG_USB_CONFIGFS_{NCM,ECM,EEM}
+# unset, so RNDIS is the only network function available without a kernel
+# rebuild. It also happens to be the one Windows binds driverless, given the
+# Microsoft OS descriptors composed below. macOS and modern Linux both speak
+# RNDIS too, so nothing is lost in practice.
+#
+# Role switching is far simpler here than in the 4.9 gk7205v200 OTG profile
+# (see devices/gk7205v200_otg_generic/usr/bin/usb-mode, which has to unbind
+# xhci and poke GCTL.PRTCAPDIR by hand). The cv610 device tree declares
+# dr_mode = "otg" *together with* usb-role-switch and an extcon, so dwc3
+# registers a role switch and performs the host-stop / gadget-start transition
+# itself. Writing "device" to the role attribute is the whole dance.
+
+set -e
+
+GADGET_NAME=openipc
+GADGET=/sys/kernel/config/usb_gadget/${GADGET_NAME}
+FUNC=rndis.usb0
+
+# U-Boot env knobs, all optional:
+#   usbnet        rndis | off      (default rndis)
+#   usbnet_ip     CIDR address for the camera end   (default 192.168.42.1/24)
+#   usbnet_dhcp   1 | 0            (default 1 — hand the host an address)
+#   usbnet_devmac / usbnet_hostmac  locally-administered MACs
+env_get() { fw_printenv -n "$1" 2>/dev/null || true; }
+
+MODE=$(env_get usbnet);        MODE=${MODE:-rndis}
+ADDR=$(env_get usbnet_ip);     ADDR=${ADDR:-192.168.42.1/24}
+DHCP=$(env_get usbnet_dhcp);   DHCP=${DHCP:-1}
+DEV_MAC=$(env_get usbnet_devmac);   DEV_MAC=${DEV_MAC:-02:1a:11:00:00:01}
+HOST_MAC=$(env_get usbnet_hostmac); HOST_MAC=${HOST_MAC:-02:1a:11:00:00:02}
+
+DHCPD_CONF=/tmp/udhcpd.usb0.conf
+DHCPD_LEASES=/tmp/udhcpd.usb0.leases
+
+die() { echo "usb-gadget: $*" >&2; exit 1; }
+
+need_configfs() {
+	mountpoint -q /sys/kernel/config 2>/dev/null ||
+		mount -t configfs none /sys/kernel/config ||
+		die "cannot mount configfs"
+}
+
+udc_name() {
+	for u in /sys/class/udc/*; do
+		[ -e "$u" ] && { basename "$u"; return 0; }
+	done
+	return 1
+}
+
+role_file() {
+	for r in /sys/class/usb_role/*/role; do
+		[ -e "$r" ] && { echo "$r"; return 0; }
+	done
+	return 1
+}
+
+# Fallback for a kernel without the role-switch class: the dwc3 debugfs knob.
+dwc3_mode_file() {
+	for f in /sys/kernel/debug/*.dwc3/mode /sys/kernel/debug/usb/*.dwc3/mode; do
+		[ -e "$f" ] && { echo "$f"; return 0; }
+	done
+	return 1
+}
+
+set_role_device() {
+	if R=$(role_file); then
+		echo device > "$R"
+		return 0
+	fi
+	mountpoint -q /sys/kernel/debug 2>/dev/null ||
+		mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+	if M=$(dwc3_mode_file); then
+		echo device > "$M"
+		return 0
+	fi
+	# Nothing to switch: a controller wired peripheral-only already reports a
+	# UDC, so this is only fatal if there is no UDC either.
+	udc_name >/dev/null || die "no usb_role/dwc3 mode knob and no UDC"
+}
+
+compose() {
+	need_configfs
+	[ -d "$GADGET" ] && return 0
+
+	modprobe libcomposite 2>/dev/null || true
+	mkdir -p "$GADGET"
+
+	# Linux Foundation "Multifunction Composite Gadget" ids. Fine for a
+	# device that is never going to ship a vendor driver.
+	echo 0x1d6b > "$GADGET/idVendor"
+	echo 0x0104 > "$GADGET/idProduct"
+	echo 0x0100 > "$GADGET/bcdDevice"
+	echo 0x0200 > "$GADGET/bcdUSB"
+
+	# Interface Association Descriptor device class. Windows needs the device
+	# advertised as a composite/IAD device before it will look at the per
+	# function OS descriptors below.
+	echo 0xef > "$GADGET/bDeviceClass"
+	echo 0x02 > "$GADGET/bDeviceSubClass"
+	echo 0x01 > "$GADGET/bDeviceProtocol"
+
+	mkdir -p "$GADGET/strings/0x409"
+	echo "OpenIPC"                       > "$GADGET/strings/0x409/manufacturer"
+	echo "Caddx Ascent"                  > "$GADGET/strings/0x409/product"
+	echo "$(cat /proc/sys/kernel/hostname 2>/dev/null || echo openipc)" \
+	                                     > "$GADGET/strings/0x409/serialnumber"
+
+	mkdir -p "$GADGET/functions/$FUNC"
+	echo "$DEV_MAC"  > "$GADGET/functions/$FUNC/dev_addr"
+	echo "$HOST_MAC" > "$GADGET/functions/$FUNC/host_addr"
+
+	# Microsoft OS descriptors. Without these Windows does not bind its
+	# built-in RNDIS driver and the device sits in Device Manager as an
+	# unknown node. b_vendor_code 0xcd and qw_sign MSFT100 are the fixed
+	# values the OS descriptor protocol expects; 5162001 is Microsoft's
+	# RNDIS sub-compatible id.
+	if [ -d "$GADGET/os_desc" ]; then
+		echo 1       > "$GADGET/os_desc/use"
+		echo 0xcd    > "$GADGET/os_desc/b_vendor_code"
+		echo MSFT100 > "$GADGET/os_desc/qw_sign"
+		echo RNDIS   > "$GADGET/functions/$FUNC/os_desc/interface.rndis/compatible_id"
+		echo 5162001 > "$GADGET/functions/$FUNC/os_desc/interface.rndis/sub_compatible_id"
+	fi
+
+	mkdir -p "$GADGET/configs/c.1/strings/0x409"
+	echo "RNDIS" > "$GADGET/configs/c.1/strings/0x409/configuration"
+	echo 250     > "$GADGET/configs/c.1/MaxPower"
+
+	ln -s "$GADGET/functions/$FUNC" "$GADGET/configs/c.1/" 2>/dev/null || true
+	# The OS descriptors are per-configuration, so os_desc has to point at the
+	# config that carries the function.
+	[ -d "$GADGET/os_desc" ] &&
+		ln -s "$GADGET/configs/c.1" "$GADGET/os_desc/" 2>/dev/null || true
+}
+
+# Never fails: callers run under `set -e` and assign this with IF=$(iface),
+# which would abort the script on a non-zero status before they get a chance
+# to report anything useful. They check for an empty result instead.
+iface() {
+	cat "$GADGET/functions/$FUNC/ifname" 2>/dev/null || true
+}
+
+start_dhcpd() {
+	[ "$DHCP" = "1" ] || return 0
+	command -v udhcpd >/dev/null 2>&1 || return 0
+
+	ip=${ADDR%%/*}
+	base=${ip%.*}
+	: > "$DHCPD_LEASES"
+	cat > "$DHCPD_CONF" <<EOF
+interface	$1
+start		${base}.10
+end		${base}.20
+lease_file	$DHCPD_LEASES
+pidfile		/tmp/udhcpd.usb0.pid
+option	subnet	255.255.255.0
+option	router	$ip
+option	lease	86400
+EOF
+	udhcpd -S "$DHCPD_CONF" 2>/dev/null || echo "usb-gadget: udhcpd failed to start"
+}
+
+stop_dhcpd() {
+	[ -f /tmp/udhcpd.usb0.pid ] || return 0
+	kill "$(cat /tmp/udhcpd.usb0.pid)" 2>/dev/null || true
+	rm -f /tmp/udhcpd.usb0.pid
+}
+
+up() {
+	case "$MODE" in
+		off) echo "usb-gadget: disabled (usbnet=off)"; return 0 ;;
+		rndis) ;;
+		*) die "unknown usbnet mode '$MODE' (expected rndis or off)" ;;
+	esac
+
+	compose
+
+	[ -s "$GADGET/UDC" ] && { echo "usb-gadget: already bound"; return 0; }
+
+	set_role_device
+
+	UDC=$(udc_name) || die "no UDC registered (dr_mode should be \"otg\" or \"peripheral\")"
+	echo "$UDC" > "$GADGET/UDC"
+
+	IF=$(iface)
+	[ -n "$IF" ] || die "gadget bound but no netdev appeared"
+
+	ip addr flush dev "$IF" 2>/dev/null || true
+	ip addr add "$ADDR" dev "$IF"
+	ip link set dev "$IF" up
+
+	start_dhcpd "$IF"
+	echo "usb-gadget: $IF up on $ADDR (rndis, UDC $UDC)"
+}
+
+down() {
+	stop_dhcpd
+	[ -d "$GADGET" ] || return 0
+
+	IF=$(iface)
+	[ -n "$IF" ] && ip link set dev "$IF" down 2>/dev/null || true
+
+	# Unbind first so the host sees a clean disconnect rather than a device
+	# that stops answering. configfs rmdir is strict about ordering: links
+	# before their targets, leaves before parents. ENOTEMPTY means something
+	# below was missed.
+	[ -e "$GADGET/UDC" ] && echo "" > "$GADGET/UDC" 2>/dev/null || true
+
+	rm -f "$GADGET/os_desc/c.1"
+	rm -f "$GADGET/configs/c.1/$FUNC"
+	rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
+	rmdir "$GADGET/configs/c.1"               2>/dev/null || true
+	rmdir "$GADGET/functions/$FUNC"           2>/dev/null || true
+	rmdir "$GADGET/strings/0x409"             2>/dev/null || true
+	rmdir "$GADGET"                           2>/dev/null || true
+	echo "usb-gadget: down"
+}
+
+status() {
+	echo "mode      : $MODE"
+	echo "role      : $(R=$(role_file) && cat "$R" 2>/dev/null || echo '(no role switch)')"
+	echo "udc       : $(udc_name || echo '(none)')"
+	if [ -d "$GADGET" ]; then
+		echo "gadget    : composed, UDC='$(cat "$GADGET/UDC" 2>/dev/null)'"
+		echo "netdev    : $(iface || echo '(none)')"
+	else
+		echo "gadget    : not composed"
+	fi
+	echo "address   : $ADDR (dhcp=$DHCP)"
+}
+
+case "$1" in
+	up|start)   up ;;
+	down|stop)  down ;;
+	restart)    down; up ;;
+	status)     status ;;
+	*)
+		echo "Usage: $0 {up|down|restart|status}"
+		exit 1
+		;;
+esac

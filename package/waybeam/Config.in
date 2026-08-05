@@ -1,0 +1,43 @@
+config BR2_PACKAGE_WAYBEAM
+	bool "waybeam"
+	depends on BR2_arm
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	help
+	  Waybeam — standalone H.265/H.264 encoder and RTP streamer for
+	  FPV vehicles. Owns the ISP, sensor and VENC channel, captures
+	  audio, streams RTP / compact UDP / unix / SHM to a ground
+	  station, optionally records, and exposes the whole pipeline
+	  through an HTTP API plus a built-in web dashboard.
+
+	  This is a drop-in replacement for majestic, not a companion to
+	  it — both want exclusive ownership of VI/VPSS/VENC. Do not
+	  enable majestic (or divinus) alongside it.
+
+	  Built here with SOC_BUILD=hi3516cv610, the Hi3516CV610 (Caddx
+	  Ascent) backend. The vendor MPP libraries it needs are dlopen'd
+	  at runtime and come from hisilicon-osdrv-hi3516cv6xx /
+	  hisilicon-opensdk, so there is no link-time dependency on them.
+
+	  Installs /usr/bin/waybeam, /etc/init.d/S95waybeam and the
+	  default /etc/waybeam.json. Runtime config lives in that JSON
+	  file at a fixed path — waybeam has no -c flag.
+
+	  https://github.com/OpenIPC/waybeam_venc
+
+comment "waybeam needs a toolchain w/ threads"
+	depends on BR2_arm
+	depends on !BR2_TOOLCHAIN_HAS_THREADS
+
+if BR2_PACKAGE_WAYBEAM
+
+config BR2_PACKAGE_WAYBEAM_JSON_CLI
+	bool "json_cli"
+	default y
+	help
+	  Installs /usr/bin/json_cli, the small JSON get/set utility
+	  waybeam's own S95waybeam init script uses to rewrite
+	  /etc/waybeam.json at boot (output mode, payload size, detector
+	  model staging). The init script degrades gracefully without it,
+	  but then none of those boot-time fixups happen.
+
+endif
