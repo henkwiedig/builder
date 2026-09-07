@@ -1,0 +1,136 @@
+diff -ru a/kernel/sys_config/hi3516cv6xx/pin_mux.c b/sys_config/hi3516cv6xx/pin_mux.c
+--- a/kernel/sys_config/hi3516cv6xx/pin_mux.c	2026-09-01 19:50:34.000000000 +0200
++++ b/sys_config/hi3516cv6xx/pin_mux.c	2026-09-06 12:09:02.633425088 +0200
+@@ -4,6 +4,7 @@
+ 
+ #include "pin_mux.h"
+ #include <asm/barrier.h>
++#include <linux/delay.h>
+ 
+ #include "sys_cfg.h"
+ 
+@@ -293,8 +294,21 @@
+     switch (vi_intf_type) {
+         case VI_MIPI_RX_MODE:
+             i2c_pin_mux(PIN_MUX_I2C_0);
+-            i2c_pin_mux(PIN_MUX_I2C_1);
+-            i2c_pin_mux(PIN_MUX_I2C_2);
++            /*
++             * fpv405_qfn: the real board profile leaves these two pins
++             * alone (the vendor firmware confirms this via disassembly of
++             * its own pin_mux()) -- iocfg2 0x90/0x94 (I2C1) is a
++             * multi-function pin shared with SENSOR0_HS/BT1120 VI_CLK on
++             * this SoC, and on this board's real PCB routing it is used
++             * for something other than I2C1/I2C2, so driving it into
++             * I2C1/I2C2 mode here was corrupting a MIPI-RX-adjacent signal
++             * just enough to break VENC's completion latch while leaving
++             * capture/ISP activity intact.
++             */
++            if (board_type != BOARD_FPV405) {
++                i2c_pin_mux(PIN_MUX_I2C_1);
++                i2c_pin_mux(PIN_MUX_I2C_2);
++            }
+             mipi_rx_pin_mux(MIPI_RX_0);
+             break;
+         case VI_CMOS_BT1120_MODE:
+@@ -352,6 +366,43 @@
+ #endif
+ }
+ 
++/*
++ * fpv405_qfn board only: reset the AR8030 companion chip (GPIO7_3) and
++ * init the two status LEDs (GPIO7_7 = LED_R, GPIO1_0 = LED_G). Decoded
++ * from the vendor's real sys_config.ko via manual disassembly; the delay
++ * loop's exact per-iteration duration could not be recovered bit-exact
++ * (it calls the kernel's internal const_udelay() with a compile-time
++ * constant we can't back-convert without the vendor's build-time
++ * loops_per_jiffy calibration), so a conservative udelay() is substituted
++ * -- the vendor reset pulse is comfortably longer than the AR8030's
++ * minimum requirement either way.
++ */
++static void fpv_edu405_gpio_init(void)
++{
++    void *gpio_base = sys_config_get_reg_gpio();
++    unsigned int reg;
++    int i;
++
++    /* GPIO7_3: ar8030_rst, output, assert reset (low) then release (high) */
++    reg = sys_readl(gpio_base, 0x7400);
++    sys_writel(gpio_base, 0x7400, reg | 0x08);
++    sys_writel(gpio_base, 0x7020, 0x00);
++    for (i = 0; i < 31; i++) {
++        udelay(100);
++    }
++    sys_writel(gpio_base, 0x7020, 0x08);
++
++    /* GPIO7_7: LED_R, output, init low */
++    reg = sys_readl(gpio_base, 0x7400);
++    sys_writel(gpio_base, 0x7400, reg | 0x80);
++    sys_writel(gpio_base, 0x7200, 0x00);
++
++    /* GPIO1_0: LED_G, output, init high */
++    reg = sys_readl(gpio_base, 0x1400);
++    sys_writel(gpio_base, 0x1400, reg | 0x01);
++    sys_writel(gpio_base, 0x1004, 0x01);
++}
++
+ void pin_mux(void)
+ {
+     int vi_intf_type = sys_config_get_vi_intf_type();
+@@ -360,7 +411,12 @@
+     bool ir_auto_en = sys_config_get_ir_auto();
+ 
+     sensor_pin_mux(PIN_MUX_SENSOR_0, board_type);
+-    sensor_pin_mux(PIN_MUX_SENSOR_1, board_type);
++    /* fpv405_qfn is single-sensor; its sensor1 pins are reused for
++     * something else on the real board, same reasoning as the I2C1/I2C2
++     * skip in vi_pin_mux() below. */
++    if (board_type != BOARD_FPV405) {
++        sensor_pin_mux(PIN_MUX_SENSOR_1, board_type);
++    }
+     if (ir_auto_en == 1) {
+         ir_auto_pin_mux();
+     }
+@@ -371,6 +427,17 @@
+ 
+     vi_pin_mux(vi_intf_type, board_type);
+ 
++    if (board_type == BOARD_FPV405) {
++        /* Matches the vendor's real pin_mux(): fpv405_qfn takes a
++         * separate exit path here entirely, skipping i2s0/uart2/
++         * amp_unmute_pin_mux (not wired on this board) and instead
++         * resetting the AR8030 companion chip + status LEDs. */
++        fpv_edu405_gpio_init();
++        sys_writel(reg_misc_base, 0x170, 0x0);  /* VGS & GZIP */
++        sys_writel(reg_misc_base, 0x174, 0x0);  /* ddrt MUX */
++        return;
++    }
++
+     /* audio */
+ #if I2S0_EN
+     i2s0_pin_mux(BOARD_SCK);
+diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/sys_config/hi3516cv6xx/sys_cfg.c
+--- a/kernel/sys_config/hi3516cv6xx/sys_cfg.c	2026-09-01 19:50:34.000000000 +0200
++++ b/sys_config/hi3516cv6xx/sys_cfg.c	2026-09-06 12:07:47.988794606 +0200
+@@ -193,6 +193,9 @@
+     } else if (strncmp(BOARD_NAME_KOLB, g_board_name, strlen(BOARD_NAME_KOLB)) == 0) {
+         g_board  = BOARD_KOLB;
+         sys_config_print("g_board %u\n", BOARD_KOLB);
++    } else if (strncmp(BOARD_NAME_FPV405_QFN, g_board_name, strlen(BOARD_NAME_FPV405_QFN)) == 0) {
++        g_board  = BOARD_FPV405;
++        sys_config_print("g_board %u\n", BOARD_FPV405);
+     } else {
+         g_board  = BOARD_SCK;
+         sys_config_print("g_board default %u\n", BOARD_SCK);
+diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.h b/sys_config/hi3516cv6xx/sys_cfg.h
+--- a/kernel/sys_config/hi3516cv6xx/sys_cfg.h	2026-09-01 19:50:34.000000000 +0200
++++ b/sys_config/hi3516cv6xx/sys_cfg.h	2026-09-06 12:07:38.181843069 +0200
+@@ -27,6 +27,8 @@
+ #define BOARD_NAME_DMEB_BGA "dmeb_bga"
+ #define BOARD_KOLB        0x3
+ #define BOARD_NAME_KOLB   "kolb"
++#define BOARD_FPV405        0x4
++#define BOARD_NAME_FPV405_QFN "fpv405_qfn"
+ 
+ bool sys_config_is_hi3516cv610_10b(void);
+ bool sys_config_is_hi3516cv608(void);

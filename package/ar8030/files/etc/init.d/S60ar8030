@@ -21,10 +21,12 @@ CFG_NAME="ar8030/bb_config.json"
 
 # Interface the daemon should use: 0=usb 1=sdio 2=uart 3=drv. The package
 # builds the daemon with the driver backend only.
-INTF=3
+INTF=1
 
 start() {
 	echo "Starting ar8030..."
+
+	echo -n "/lib/firmware" > /sys/module/firmware_class/parameters/path
 
 	args=""
 	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"

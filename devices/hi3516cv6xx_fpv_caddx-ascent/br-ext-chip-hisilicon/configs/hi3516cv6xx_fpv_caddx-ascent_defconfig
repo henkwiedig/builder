@@ -57,7 +57,22 @@ BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/$(OPENIPC_KERNEL).tar.gz"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/$(BR2_OPENIPC_SOC_MODEL).generic.config"
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh"
+# Runs both scripts, space-separated: the shared SoC script (fitImage /
+# firmware.bin) and our own, which builds the blank usrdata0/usrdata1 UBI
+# image — see general/scripts/make-usrdata-image.sh for why that has to
+# happen at build time rather than on first boot.
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh $(BR2_EXTERNAL)/scripts/make-usrdata-image.sh"
+# general/scripts/embed-usrdata-blank.sh (which embeds a blank UBIFS image
+# into the rootfs for /init to self-heal a corrupted or never-provisioned
+# usrdataN overlay volume via ubiupdatevol — this board power-cuts by
+# design, so that has to be routine, not exceptional) is NOT wired in here
+# via BR2_ROOTFS_POST_BUILD_SCRIPT: general/openipc.fragment already sets
+# that to scripts/rootfs_script.sh, and since our device defconfig is
+# concatenated *before* that fragment (see the top-level Makefile's
+# `defconfig` target), the fragment's assignment always wins outright —
+# not merged, just silently overrides ours. Wired instead via
+# general/scripts/late-post-build-hooks.list, the extension point
+# rootfs_script.sh itself already calls out to for exactly this case.
 BR2_LINUX_KERNEL_ZIMAGE=y
 BR2_LINUX_KERNEL_XZ=y
 BR2_LINUX_KERNEL_UIMAGE_LOADADDR="0x40018000"
@@ -83,6 +98,19 @@ BR2_PACKAGE_UBOOT_TOOLS=y
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_SQUASHFS=y
 BR2_TARGET_ROOTFS_SQUASHFS4_XZ=y
+# UBI/UBIFS rootfs image (output/images/rootfs.ubi) for NAND/TFTP flashing
+# during bring-up. Same SUBSIZE/LEBSIZE as every other Hi35xx UBI-enabled
+# config (hi3516ev300_ultimate etc.) — the cv6xx kernel config already
+# carries CONFIG_MTD_UBI/CONFIG_UBIFS_FS and the SPI-NAND FMC100 driver.
+# Board-specific ubinize config, NOT the shared scripts/ubifs/ubinize.cfg:
+# that one hardcodes vol_size=32MiB for the rootfs volume, but this board's
+# rootfs0/rootfs1 NAND partitions are only 16MiB — see the .cfg's own header
+# comment for the "reserved_pebs 265 > good PEBs 128" attach failure it fixes.
+BR2_TARGET_ROOTFS_UBI=y
+BR2_TARGET_ROOTFS_UBI_SUBSIZE=2048
+BR2_TARGET_ROOTFS_UBI_USE_CUSTOM_CONFIG=y
+BR2_TARGET_ROOTFS_UBI_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL)/scripts/ubifs/ubinize-hi3516cv6xx.cfg"
+BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000
 
 # Packages
 # Artosyn AR8030 baseband — the downlink. On this board it hangs off SDIO
