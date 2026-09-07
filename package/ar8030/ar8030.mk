@@ -50,7 +50,7 @@ endef
 #
 # Userspace (CMake).
 #
-# USING_8030DRV alone is the driver-backed transport: the daemon reaches the
+# USING_8030SDIO alone is the driver-backed transport: the daemon reaches the
 # chip through /dev/ar_mdev<N> instead of driving USB itself with libusb. The
 # other USING_* backends are alternatives to the kernel driver, not additions
 # to it, so they stay off (0001-* teaches the CMakeLists that DRV on its own
@@ -63,9 +63,9 @@ endef
 #
 AR8030_CONF_OPTS = \
 	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
-	-DUSING_8030DRV=ON \
+	-DUSING_8030DRV=OFF \
 	-DUSING_8030USB=OFF \
-	-DUSING_8030SDIO=OFF \
+	-DUSING_8030SDIO=ON \
 	-DUSING_8030UART=OFF \
 	-DUSING_XDS_HDR=ON \
 	-DENABLE_UDS=ON \

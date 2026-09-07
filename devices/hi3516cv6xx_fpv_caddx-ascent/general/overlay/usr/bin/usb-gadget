@@ -27,14 +27,14 @@ FUNC=rndis.usb0
 
 # U-Boot env knobs, all optional:
 #   usbnet        rndis | off      (default rndis)
-#   usbnet_ip     CIDR address for the camera end   (default 192.168.42.1/24)
-#   usbnet_dhcp   1 | 0            (default 1 — hand the host an address)
+#   usbnet_ip     CIDR address for the camera end   (default 192.168.3.104/24)
+#   usbnet_dhcp   1 | 0            (default 0 — manual ip config)
 #   usbnet_devmac / usbnet_hostmac  locally-administered MACs
 env_get() { fw_printenv -n "$1" 2>/dev/null || true; }
 
 MODE=$(env_get usbnet);        MODE=${MODE:-rndis}
-ADDR=$(env_get usbnet_ip);     ADDR=${ADDR:-192.168.42.1/24}
-DHCP=$(env_get usbnet_dhcp);   DHCP=${DHCP:-1}
+ADDR=$(env_get usbnet_ip);     ADDR=${ADDR:-192.168.3.104/24}
+DHCP=$(env_get usbnet_dhcp);   DHCP=${DHCP:-0}
 DEV_MAC=$(env_get usbnet_devmac);   DEV_MAC=${DEV_MAC:-02:1a:11:00:00:01}
 HOST_MAC=$(env_get usbnet_hostmac); HOST_MAC=${HOST_MAC:-02:1a:11:00:00:02}
 
@@ -184,7 +184,11 @@ up() {
 
 	compose
 
-	[ -s "$GADGET/UDC" ] && { echo "usb-gadget: already bound"; return 0; }
+	# Not `[ -s "$GADGET/UDC" ]`: like sysfs, configfs attribute files
+	# report a fixed page size via stat() regardless of their actual
+	# string content, so a byte-size check is always "non-empty" here —
+	# true whether the gadget is bound or not. Read the actual value.
+	[ -n "$(cat "$GADGET/UDC" 2>/dev/null)" ] && { echo "usb-gadget: already bound"; return 0; }
 
 	set_role_device
 

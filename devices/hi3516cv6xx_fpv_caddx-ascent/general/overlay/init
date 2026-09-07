@@ -1,0 +1,141 @@
+#!/bin/sh
+#
+# Caddx Ascent — same as the shared general/overlay/init except /overlay is
+# backed by the boot-matched usrdataN UBI volume instead of rootfs_data.
+#
+# This board is a full A/B system: kernel0/kernel1, rootfs0/rootfs1 and
+# usrdata0/usrdata1 are matched banks (boot/env/sel/factory are the only
+# single-instance partitions). rootfs_data (the shared scheme's overlay
+# volume, living alongside rootfs on the same 16MiB rootfs0/rootfs1
+# partition) only has ~1.6MiB left after the rootfs volume itself — thin
+# for dropbear host keys, majestic/waybeam runtime state, logs, etc.
+# usrdata0/usrdata1 are dedicated 32MiB partitions with none of that
+# pressure, so we attach the bank-matched one as a second UBI device
+# (ubi1) and put the overlay there instead.
+#
+# Bank detection: the cmdline carries fpvbsel=N, but nothing in the
+# OpenIPC kernel or userspace actually reads it (checked: not in the
+# kernel source, not anywhere under general/) — likely a leftover vendor
+# bootarg, not a signal we can trust. Instead we read which mtd device
+# ubi0 (the already-attached rootfs UBI device — that's how / got
+# mounted) actually came from via /sys/class/ubi/ubi0/mtd_num, match that
+# against /proc/mtd by name to get "rootfs0" or "rootfs1", and swap in
+# "usrdata0"/"usrdata1" — always the partition that matches the rootfs
+# bank actually booted, regardless of how it was selected.
+#
+# usrdata0/usrdata1 must be pre-formatted and flashed once before first
+# use — see general/scripts/make-usrdata-image.sh. The rootfs ships
+# busybox's ubiattach/ubimkvol/ubiupdatevol applets but not mkfs.ubifs, so
+# /init can attach an already-UBI-formatted partition and rewrite an
+# existing UBIFS volume's *content*, but it cannot format a blank volume
+# from nothing at runtime; that has to happen on the host, at build/
+# provisioning time.
+#
+# Self-heal on mount failure: this board is an FPV air unit — normal
+# shutdown is a power cut, not a clean reboot, every time. UBIFS's own
+# journal replay handles most unclean shutdowns, but a write torn across
+# NAND pages can still leave a "data" volume UBIFS can't recover
+# ("ubifs_recover_leb: corruption", bad CRC) — seen in practice on this
+# board's second boot after a power cut. Since that has to be treated as
+# routine here, not exceptional, a failed mount doesn't just fall through:
+# it rewrites the volume from the blank image embedded in the rootfs at
+# build time (general/scripts/embed-usrdata-blank.sh) via ubiupdatevol,
+# then retries the mount. This is a wipe, not a repair — whatever was in
+# the overlay is lost — but a reset overlay beats a permanently wedged
+# one.
+
+on_exit() {
+    mountpoint -q /proc && umount /proc
+    exec /sbin/init "$*"
+}
+
+trap on_exit EXIT
+
+mount -t proc proc /proc || exit 1
+mount -t sysfs sysfs /sys || exit 1
+grep -q overlay /proc/filesystems || exit 1
+
+is_flash_root=true
+is_nfs_root=false
+grep -q 'root=.*nfs\|mmcblk\|ram' /proc/cmdline && is_flash_root=false
+grep -q 'root=.*nfs' /proc/cmdline && is_nfs_root=true
+
+# Attach the bank-matched usrdataN as ubi1 and mount its pre-formatted
+# "data" volume at /overlay. Returns 1 on any failure, so the caller falls
+# back to the shared scheme's rootfs_data overlay — a board that hasn't
+# had usrdata provisioned yet still boots (read-only-ish: on this board
+# rootfs_data itself is usually too small to hold a valid UBIFS filesystem
+# at all — see the ubinize-hi3516cv6xx.cfg header comment — so that
+# fallback is best-effort, not a guaranteed working overlay).
+mount_usrdata_overlay() {
+	[ -f /sys/class/ubi/ubi0/mtd_num ] || return 1
+	rootfs_mtd=$(cat /sys/class/ubi/ubi0/mtd_num) || return 1
+	rootfs_name=$(grep "^mtd${rootfs_mtd}:" /proc/mtd | sed 's/.*"\(.*\)"/\1/')
+	case "$rootfs_name" in
+		rootfs0) usrdata_name=usrdata0 ;;
+		rootfs1) usrdata_name=usrdata1 ;;
+		*) return 1 ;;
+	esac
+	usrdata_mtd=$(grep "\"${usrdata_name}\"" /proc/mtd | cut -d: -f1 | sed 's/^mtd//')
+	[ -n "$usrdata_mtd" ] || return 1
+
+	[ -e /sys/class/ubi/ubi1 ] || ubiattach -m "$usrdata_mtd" -d 1 /dev/ubi_ctrl || return 1
+	mount -t ubifs ubi1:data /overlay 2>/dev/null && return 0
+
+	# Mount failed: either "data" doesn't exist yet (virgin, never
+	# provisioned) or it exists but UBIFS couldn't recover it. Either way,
+	# (re)create it from the known-good blank image and retry once.
+	blank=/usr/share/openipc/usrdata-blank.ubifs
+	[ -f "$blank" ] || return 1
+	[ -e /sys/class/ubi/ubi1/ubi1_0 ] || ubimkvol -N data -m /dev/ubi1 || return 1
+	ubiupdatevol /dev/ubi1_0 "$blank" || return 1
+	mount -t ubifs ubi1:data /overlay
+}
+
+if $is_flash_root; then
+	if grep -q ubifs /proc/cmdline; then
+		mount_usrdata_overlay || mount -t ubifs ubi0:rootfs_data /overlay
+	else
+		mtdblkdev=$(awk -F ':' '/rootfs_data/ {print $1}' /proc/mtd | sed 's/mtd/mtdblock/')
+		mtdchrdev=$(grep 'rootfs_data' /proc/mtd | cut -d: -f1)
+		if ! mount -t jffs2 /dev/$mtdblkdev /overlay || dmesg | grep -q "jffs2.*: Magic bitmask.*not found"; then
+			mountpoint -q /overlay && umount /overlay
+			echo "Formatting flash..."
+			grep -q 'nand' /proc/cmdline || jffs2="-j"
+			flash_eraseall $jffs2 /dev/$mtdchrdev
+			if ! mount -t jffs2 /dev/$mtdblkdev /overlay && ! mount -t tmpfs tmpfs /overlay; then
+				echo "Cannot mount overlay."
+				exit 1
+			fi
+		fi
+	fi
+elif $is_nfs_root && grep -q ' ro ' /proc/cmdline; then
+	TMPFS_SIZE='@TMPFS_SIZE@'
+	TMPFS_SIZE="${TMPFS_SIZE:-16M}"
+	if ! mount -t tmpfs -o mode=0755,size=${TMPFS_SIZE} tmpfs /overlay; then
+		echo "Cannot mount tmpfs overlay."
+		exit 1
+	fi
+fi
+
+if $is_flash_root || $is_nfs_root; then
+	if grep -q overlayfs /proc/filesystems; then
+		if ! mount -t overlayfs overlayfs -o lowerdir=/,upperdir=/overlay,ro /mnt; then
+			umount /overlay
+			exit 1
+		fi
+	else
+		overlay_rootdir=/overlay/root
+		overlay_workdir=/overlay/work
+		mkdir -p $overlay_rootdir $overlay_workdir
+		if ! mount -t overlay overlay -o lowerdir=/,upperdir=$overlay_rootdir,workdir=$overlay_workdir /mnt; then
+			umount /overlay
+			exit 1
+		fi
+	fi
+
+	pivot_root /mnt /mnt/rom
+	mount -o noatime,move /rom/proc /proc
+	mount -o noatime,move /rom/dev /dev
+	mount -o noatime,move /rom/overlay /overlay
+fi
