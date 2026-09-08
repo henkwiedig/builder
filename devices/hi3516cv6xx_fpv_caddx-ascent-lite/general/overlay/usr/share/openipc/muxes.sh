@@ -7,12 +7,18 @@ echo "Setting up Caddx Ascent Lite muxes"
 #SD0_detect, not use as gpio
 devmem 0x10260028 32 0x1130
 
-#SPI0 pinmux
-devmem 0x11130050 32 0x1106
-devmem 0x11130054 32 0x1106
-devmem 0x1113004c 32 0x1106
-devmem 0x11130048 32 0x1106
-devmem 0x11130044 32 0x1202
+# The vendor script's "SPI0 pinmux" block used to be here, copied verbatim
+# from fpv_run_cx482.sh. This board has no SPI0 peripheral behind those
+# pins (the only SPI-adjacent controller in use is SPI-NAND/FMC100, a
+# separate interface) -- 0x11130044/48/4c/50/54 are, on this SoC's pin
+# table, the AR8030's own SDIO1 CLK/D0/D1/DETECT/PWEN lines (see
+# drivers/vendor/mmc/platform/sdhci_hi3516cv610.c's SDIO1_*_OFS
+# constants, all relative to the "ioconfig1"@0x11130000 regmap that
+# &sdio1's iocfg_regmap phandle points at). The kernel's SDIO1 driver
+# already pinmuxes them correctly at boot, before this script (S30)
+# ever runs; writing here was silently reconfiguring them away from the
+# SDIO1 function immediately after boot, disconnecting the AR8030 bus
+# before it could ever be probed.
 
 #UART1
 devmem 0x11130030 32 0x1205

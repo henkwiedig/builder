@@ -78,7 +78,11 @@ BR2_LINUX_KERNEL_XZ=y
 BR2_LINUX_KERNEL_UIMAGE_LOADADDR="0x40018000"
 BR2_LINUX_KERNEL_DTS_SUPPORT=y
 # BR2_LINUX_KERNEL_DTB_IS_SELF_BUILT is not set
-BR2_LINUX_KERNEL_INTREE_DTS_NAME="hi3516cv610-demb"
+# hi3516cv610-caddx-ascent-lite.dts just #includes the in-tree
+# hi3516cv610-demb.dts and adds broken-cd to &sdio1 -- the AR8030
+# baseband is soldered SDIO with no card-detect switch. See
+# br-ext-chip-hisilicon/board/hi3516cv6xx/hi3516cv610-caddx-ascent-lite.dts
+BR2_LINUX_KERNEL_CUSTOM_DTS_PATH="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/hi3516cv610-caddx-ascent-lite.dts"
 
 # Filesystem
 BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL)/package/busybox/busybox.config"
