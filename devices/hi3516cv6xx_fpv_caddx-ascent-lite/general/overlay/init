@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Caddx Ascent — same as the shared general/overlay/init except /overlay is
+# Caddx Ascent Lite — same as the shared general/overlay/init except /overlay is
 # backed by the boot-matched usrdataN UBI volume instead of rootfs_data.
 #
 # This board is a full A/B system: kernel0/kernel1, rootfs0/rootfs1 and

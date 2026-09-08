@@ -141,9 +141,9 @@ define WAYBEAM_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/load-cv610-online
 	$(INSTALL) -D -m 0755 $(@D)/out/$(WAYBEAM_SOC_BUILD)/S95waybeam \
 		$(TARGET_DIR)/etc/init.d/S95waybeam
-	$(INSTALL) -D -m 0644 $(@D)/out/$(WAYBEAM_SOC_BUILD)/waybeam.json \
+	$(INSTALL) -D -m 0644 $(WAYBEAM_PKGDIR)files/waybeam.json \
 		$(TARGET_DIR)/etc/waybeam.json
-	$(INSTALL) -D -m 0644 $(@D)/out/$(WAYBEAM_SOC_BUILD)/waybeam-cv610.conf \
+	$(INSTALL) -D -m 0644 $(WAYBEAM_PKGDIR)config/waybeam-cv610.conf \
 		$(TARGET_DIR)/etc/waybeam-cv610.conf
 	$(INSTALL) -D -m 0755 $(@D)/out/$(WAYBEAM_SOC_BUILD)/sensors/libsns_os02k10.so \
 		$(TARGET_DIR)/usr/lib/sensors/libsns_os02k10.so

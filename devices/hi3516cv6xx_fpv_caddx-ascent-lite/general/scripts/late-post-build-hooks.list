@@ -1,6 +1,6 @@
 # config-symbol:hook-script-relative-path
 BR2_PACKAGE_OPENIPC_NFS_ROOT:package/openipc-nfs-root/post-build-hook.sh
-# BR2_PACKAGE_AR8030 is unique to hi3516cv6xx_fpv_caddx-ascent across the
+# BR2_PACKAGE_AR8030 is unique to hi3516cv6xx_fpv_caddx-ascent-lite across the
 # whole device fleet (verified: no other defconfig sets it) — used here
 # only as a trigger condition that's true for this device's build, not
 # because the hook has anything to do with the AR8030 radio driver itself.

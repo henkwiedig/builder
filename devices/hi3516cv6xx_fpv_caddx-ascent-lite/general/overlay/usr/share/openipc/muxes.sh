@@ -2,7 +2,7 @@
 
 # Mimic fpv_run_cx482.sh init sequence
 
-echo "Setting up Caddx Ascent Lite+ muxes"
+echo "Setting up Caddx Ascent Lite muxes"
 
 #SD0_detect, not use as gpio
 devmem 0x10260028 32 0x1130
