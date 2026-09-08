@@ -1,4 +1,4 @@
-# Caddx Ascent (Hi3516CV610) FPV air unit.
+# Caddx Ascent Lite (Hi3516CV610) FPV air unit.
 #
 # Derived from firmware's hi3516cv6xx_ultimate_defconfig. Deltas against it:
 #   - VARIANT "ultimate" -> "fpv"
@@ -179,3 +179,5 @@ BR2_PACKAGE_WAYBEAM_JSON_CLI=y
 BR2_PACKAGE_YAML_CLI=y
 # Dropped: SD-WAN/VPN overlay, nothing an air unit does.
 # BR2_PACKAGE_ZEROTIER_ONE is not set
+
+# BR2_PACKAGE_MSPOSD=y

@@ -1,0 +1,10 @@
+#!/bin/sh
+
+temp0=$(devmem 0x1102a008)
+mask=0x3ff
+temp1=$((temp0 & mask))
+temp=$((temp1 - 127))
+temp2=$((temp * 165))
+temp3=$(expr $temp2 / 784)
+val=$((temp3 - 40))
+echo $temp1

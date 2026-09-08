@@ -4,6 +4,8 @@
 /etc/network/interfaces.d/eth1
 /etc/network/interfaces.d/eth0
 
+/etc/init.d/S70vendor
+
 #
 /lib/modules/4.9.84/kernel/fs/lockd/*.ko
 /lib/modules/4.9.84/kernel/fs/nfs/*.ko

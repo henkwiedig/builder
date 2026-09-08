@@ -110,7 +110,7 @@ compose() {
 
 	mkdir -p "$GADGET/strings/0x409"
 	echo "OpenIPC"                       > "$GADGET/strings/0x409/manufacturer"
-	echo "Caddx Ascent"                  > "$GADGET/strings/0x409/product"
+	echo "Caddx Ascent Lite"             > "$GADGET/strings/0x409/product"
 	echo "$(cat /proc/sys/kernel/hostname 2>/dev/null || echo openipc)" \
 	                                     > "$GADGET/strings/0x409/serialnumber"
 
