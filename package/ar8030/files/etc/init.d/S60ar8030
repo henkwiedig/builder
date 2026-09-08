@@ -20,8 +20,14 @@ FW_NAME="ar8030/bb_demo.img"
 CFG_NAME="ar8030/bb_config.json"
 
 # Interface the daemon should use: 0=usb 1=sdio 2=uart 3=drv. The package
-# builds the daemon with the driver backend only.
-INTF=1
+# builds the daemon with the driver backend only (USING_8030DRV=ON, see
+# ar8030.mk) -- that's daemon/main.c's INTF_TYPE_DRV, which opens
+# /dev/ar_mdev<N> (created by the kernel driver below). INTF_TYPE_SDIO
+# (1) is a *different*, mutually exclusive architecture where the daemon
+# opens /dev/artosyn_sdio directly and does all SDIO bus handling itself
+# in userspace -- not what this daemon build supports; passing 1 here
+# starts the daemon fine but it never finds a device.
+INTF=3
 
 start() {
 	echo "Starting ar8030..."
@@ -36,6 +42,30 @@ start() {
 		echo "ar8030: failed to load $MODULE"
 		exit 1
 	fi
+
+	# modprobe only blocks through the chip's ROM-mode firmware push and its
+	# self-reboot/re-enumeration as a fresh SDIO function -- it does not wait
+	# for the chip to finish settling into RPC mode afterward. Starting the
+	# daemon immediately races that settle time: the very first RX interrupt
+	# on the new link can arrive before the daemon's workqueues are ready to
+	# drain it, and the driver's read_offset/read_valid_size bookkeeping
+	# never recovers from that ("bytes for read lost" in dmesg), leaving
+	# every later bb_dev_getlist() call from clients like ar8030-pair seeing
+	# no device at all. The vendor's own boot script has the equivalent gap
+	# here too (sleep 3 between insmod'ing its own SDIO module and starting
+	# its daemon).
+	#
+	# 3s is not enough margin during an actual boot, though: confirmed
+	# live, back to back, that the identical script reliably wins this
+	# race when run by hand on an already-idle system (3/3), but reliably
+	# loses it at real boot time (2/2), where S60 lands in the middle of
+	# the other init.d scripts' own CPU/scheduling load and delays the
+	# daemon's workqueues past the chip's first RX interrupt. This is a
+	# third-party redistribution of the vendor SDK (see package README),
+	# not the chip vendor's own driver, so a fragile fixed-latency
+	# assumption like this in its IRQ handling isn't surprising. Give it
+	# real margin rather than the bare minimum that happened to work once.
+	sleep 8
 
 	mkdir -p "$RUNDIR"
 	cd "$RUNDIR" || exit 1

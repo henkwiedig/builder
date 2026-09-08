@@ -50,11 +50,20 @@ endef
 #
 # Userspace (CMake).
 #
-# USING_8030SDIO alone is the driver-backed transport: the daemon reaches the
-# chip through /dev/ar_mdev<N> instead of driving USB itself with libusb. The
-# other USING_* backends are alternatives to the kernel driver, not additions
-# to it, so they stay off (0001-* teaches the CMakeLists that DRV on its own
-# is a valid choice; upstream rejects it).
+# USING_8030DRV alone is the driver-backed transport: the daemon reaches the
+# chip through /dev/ar_mdev<N> (created by our out-of-tree kernel driver,
+# built above), instead of talking raw SDIO/USB/UART itself. USING_8030SDIO
+# is a *different*, mutually exclusive architecture -- daemon/main.c's
+# INTF_TYPE_SDIO path opens /dev/artosyn_sdio directly and expects a thin
+# passthrough kernel module (the vendor's own artosyn_sdio.ko, not anything
+# this package builds) to do all SDIO bus handling in userspace instead.
+# Mixing the two -- our driver-backed kernel module with a daemon compiled
+# for raw-SDIO -- builds and installs fine but the daemon can never find a
+# device (bb_dev_getlist() always returns 0; confirmed live, `strings` on
+# the resulting daemon binary shows only "/dev/artosyn_sdio", no "ar_mdev"
+# at all). USING_8030USB/UART are likewise alternatives to the driver, not
+# additions to it, so all three stay off (0001-* teaches the CMakeLists
+# that DRV on its own is a valid choice; upstream rejects it).
 #
 # OpenIPC's rootfs_script.sh deletes /usr/lib/libstdc++* on musl builds, so the
 # handful of C++ tools have to carry it statically. Buildroot's toolchainfile
@@ -63,9 +72,9 @@ endef
 #
 AR8030_CONF_OPTS = \
 	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
-	-DUSING_8030DRV=OFF \
+	-DUSING_8030DRV=ON \
 	-DUSING_8030USB=OFF \
-	-DUSING_8030SDIO=ON \
+	-DUSING_8030SDIO=OFF \
 	-DUSING_8030UART=OFF \
 	-DUSING_XDS_HDR=ON \
 	-DENABLE_UDS=ON \

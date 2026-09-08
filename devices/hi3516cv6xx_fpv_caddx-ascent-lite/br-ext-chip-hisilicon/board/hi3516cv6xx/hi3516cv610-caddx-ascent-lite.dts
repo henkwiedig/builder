@@ -1,0 +1,34 @@
+/*
+ * Caddx Ascent Lite (Hi3516CV610) devicetree override.
+ *
+ * The Artosyn AR8030 baseband is wired to SDIO0 (0x10030000), NOT SDIO1
+ * (0x10040000). hi3516cv610.dtsi defines mmc0/eMMC and sdio0/SDIO as two
+ * alternate uses of that same physical IP block at 0x10030000, mutually
+ * exclusive; the generic hi3516cv610-demb.dts reference board (Hisilicon's
+ * own dev board, which every hi3516cv6xx board including this one
+ * inherits from unmodified) picks mmc0+sdio1, since its dev board wires
+ * eMMC there instead. That's the wrong choice for this product: this
+ * board boots from NAND, has no eMMC populated, and the AR8030 sits on
+ * sdio0's pins, not sdio1's. Confirmed conclusively by telnetting into
+ * the OEM stock firmware on this exact unit while it was actively
+ * streaming video over the 8030: only mmc0 exists there, its modalias
+ * and dmesg both show it's the "10030000.SDIO" instance (not 10040000),
+ * and its devicetree node carries broken-cd (this chip is soldered down,
+ * no card-detect switch, same reasoning as before -- just the wrong
+ * node in every earlier attempt this session).
+ */
+
+#include "hi3516cv610-demb.dts"
+
+&mmc0 {
+	status = "disabled";
+};
+
+&sdio0 {
+	status = "okay";
+	broken-cd;
+};
+
+&sdio1 {
+	status = "disabled";
+};
