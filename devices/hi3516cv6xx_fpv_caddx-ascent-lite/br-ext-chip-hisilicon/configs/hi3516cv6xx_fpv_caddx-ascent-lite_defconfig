@@ -128,7 +128,7 @@ BR2_PACKAGE_AR8030_FIRMWARE=y
 BR2_PACKAGE_AR8030_INIT=y
 BR2_PACKAGE_AR8030_PAIR_TOOL=y
 # BR2_PACKAGE_AR8030_USB_LOADER is not set
-# BR2_PACKAGE_AR8030_TOOLS is not set
+BR2_PACKAGE_AR8030_TOOLS=y
 # Dropped: browser-facing WebRTC streaming is majestic-side plumbing and
 # waybeam does its own RTP.
 # BR2_PACKAGE_AWS_WEBRTC is not set
