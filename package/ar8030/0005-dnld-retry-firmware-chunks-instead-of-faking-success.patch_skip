@@ -1,0 +1,144 @@
+oal_init_fw() checks each firmware chunk's oal_send_dnld_req() return
+value, but on failure it only logs and falls straight through to the
+unconditional "upgrade spl success!" / "upgrade bb_cfg success!"
+message regardless -- no goto, no abort, no retry. sdio_rom_send() (the
+SDIO backend for that callback) has no retry of its own either: it
+bails out of its chunking loop on the first artosyn_sdio_write()
+failure and returns whatever partial length it reached.
+
+Net effect: a single transient SDIO write failure partway through
+uploading the SPL/cfg image leaves the chip holding a genuinely
+incomplete image for that section, while the driver logs "failed" and
+"success" back to back and proceeds to treat the chip as ready. This
+was reliably reproducible: "upgrade transfer failed!(addr: 0x200000)"
+on effectively every boot, in this exact form.
+
+Retry each chunk a few times before giving up, and actually abort
+(propagating failure so oal_add_card() sees it and unregisters the
+device rather than leaving it in a half-initialized state) if every
+retry is exhausted, instead of pretending the transfer succeeded.
+
+Note: live testing traced the separate "link dies after ~150 packets"
+symptom to a genuine register-decoding bug in the SDIO IRQ handler
+(0004-*.patch), not to firmware corruption from this bug -- but this
+is still a real correctness bug in its own right (silently continuing
+past a confirmed-incomplete transfer) worth fixing independently of
+that.
+
+diff --git a/driver/linux/oal_dnld.c b/driver/linux/oal_dnld.c
+--- a/driver/linux/oal_dnld.c	2026-09-09 01:10:33.095901820 +0200
++++ b/driver/linux/oal_dnld.c	2026-09-09 01:10:46.835240397 +0200
+@@ -21,6 +21,7 @@
+ #include <linux/module.h>
+ #include <linux/firmware.h>
+ #include <linux/vmalloc.h>
++#include <linux/delay.h>
+ 
+ #include "utils/utils.h"
+ #include "oal_main.h"
+@@ -38,6 +39,45 @@
+ /** Timeout of fw dnld req */
+ #define OAL_DNLD_REQ_TIMEOUT         1000
+ 
++/*
++ * oal_send_dnld_req() (SDIO: sdio_rom_send() via ar_sdio_send_dnld_req())
++ * bails out of its own chunk loop on the first artosyn_sdio_write()
++ * failure and returns whatever partial length it reached -- no retry of
++ * its own. Every call site below used to just log that mismatch and
++ * fall through to the unconditional "success" message regardless,
++ * leaving the chip holding a genuinely incomplete image for whichever
++ * section failed (confirmed live: "upgrade transfer failed!(addr:
++ * 0x200000)" on effectively every boot, immediately followed by
++ * "upgrade spl success!" no matter what, then the SDIO RPC link running
++ * for a couple hundred packets before wedging permanently -- consistent
++ * with the chip crashing once its execution reaches whatever didn't
++ * actually arrive at that address). Retry the whole chunk a few times
++ * before giving up for real.
++ */
++#define OAL_DNLD_REQ_RETRIES         5
++#define OAL_DNLD_REQ_RETRY_DELAY_MS  100
++
++static int oal_send_dnld_req_retry(oal_handle *handle, u32 addr, const u8 *data,
++                                    u32 len, u16 timeout)
++{
++    int ret = -1;
++    int attempt;
++
++    for (attempt = 0; attempt < OAL_DNLD_REQ_RETRIES; attempt++) {
++        ret = handle->callbacks.oal_send_dnld_req(handle, addr, (u8 *)data, len, timeout);
++        if (ret >= 0) {
++            return ret;
++        }
++        AR_DBG(DM_DNLD, DL_ERR, "dnld_req to 0x%x failed (ret %d), attempt %d/%d\n",
++               addr, ret, attempt + 1, OAL_DNLD_REQ_RETRIES);
++        if (attempt + 1 < OAL_DNLD_REQ_RETRIES) {
++            msleep(OAL_DNLD_REQ_RETRY_DELAY_MS);
++        }
++    }
++
++    return ret;
++}
++
+ /****************************
+  * Function defines
+  ****************************/
+@@ -96,7 +136,7 @@
+     spl_header = (STRU_SPL_HEADER*)data;
+ 
+     /** spl header */
+-    if (handle->callbacks.oal_send_dnld_req(handle, SPL_HEADER_LOAD_ADDR, (u8*)data, spl_header->header_len, timeout) < 0)
++    if (oal_send_dnld_req_retry(handle, SPL_HEADER_LOAD_ADDR, data, spl_header->header_len, timeout) < 0)
+     {
+         AR_DBG(DM_DNLD, DL_ERR, "data transfer_data failed!\n");
+         ret = -3;
+@@ -107,38 +147,42 @@
+ 
+     if (spl_header->troot_len)
+     {
+-        if ((ret = handle->callbacks.oal_send_dnld_req(handle, spl_header->troot_load_addr,
+-            (u8*)(data + offset), spl_header->troot_len, timeout)) < 0)
++        if ((ret = oal_send_dnld_req_retry(handle, spl_header->troot_load_addr,
++            data + offset, spl_header->troot_len, timeout)) < 0)
+         {
+             AR_DBG(DM_DNLD, DL_ERR, "upgrade transfer failed!(addr: 0x%x)\n", spl_header->troot_load_addr);
++            goto end;
+         }
+ 
+         offset += ROUNDUP(spl_header->troot_len, SPL_IMAGE_SIZE_ALIGN);
+ 
+-        if ((ret = handle->callbacks.oal_send_dnld_req(handle, spl_header->signature_load_addr,
+-            (u8*)(data + offset), spl_header->signature_len, timeout)) < 0)
++        if ((ret = oal_send_dnld_req_retry(handle, spl_header->signature_load_addr,
++            data + offset, spl_header->signature_len, timeout)) < 0)
+         {
+             AR_DBG(DM_DNLD, DL_ERR, "upgrade transfer failed!(addr: 0x%x)\n", spl_header->signature_load_addr);
++            goto end;
+         }
+ 
+         offset += ROUNDUP(spl_header->signature_len, SPL_IMAGE_SIZE_ALIGN);
+     }
+ 
+     //send spl
+-    if ((ret = handle->callbacks.oal_send_dnld_req(handle, spl_header->spl_load_addr,
+-        (u8*)(data + offset), spl_header->spl_len, timeout)) < 0)
++    if ((ret = oal_send_dnld_req_retry(handle, spl_header->spl_load_addr,
++        data + offset, spl_header->spl_len, timeout)) < 0)
+     {
+         AR_DBG(DM_DNLD, DL_ERR, "upgrade transfer failed!(addr: 0x%x)\n", spl_header->spl_load_addr);
++        goto end;
+     }
+ 
+     AR_DBG(DM_DNLD, DL_MSG, "upgrade spl success!\n");
+ 
+     if (handle->cfg) {
+         data = handle->cfg->data;
+-        if ((ret = handle->callbacks.oal_send_dnld_req(handle, spl_header->signature_load_addr,
+-            (u8*)data, handle->cfg->size, timeout)) < 0)
++        if ((ret = oal_send_dnld_req_retry(handle, spl_header->signature_load_addr,
++            data, handle->cfg->size, timeout)) < 0)
+         {
+             AR_DBG(DM_DNLD, DL_ERR, "upgrade bb_cfg failed!(addr: 0x%x)\n", spl_header->signature_load_addr);
++            goto end;
+         }
+         AR_DBG(DM_DNLD, DL_MSG, "upgrade bb_cfg success!\n");
+     }
