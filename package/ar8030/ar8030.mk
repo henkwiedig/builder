@@ -169,6 +169,8 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(AR8030_INSTALL_TOOLS)
 	$(AR8030_INSTALL_FIRMWARE)
 	$(AR8030_INSTALL_INIT)
+	$(INSTALL) -D -m 0644 $(AR8030_PKGDIR)/files/etc/network/interfaces.d/ar_net0 \
+		$(TARGET_DIR)/etc/network/interfaces.d/ar_net0
 endef
 
 $(eval $(kernel-module))
