@@ -16,8 +16,8 @@ RUNDIR="/tmp/ar8030"
 # Baseband image + config pushed into the chip by the driver at probe time,
 # as paths under /lib/firmware. Left out of the insmod line when absent, in
 # which case the AR8030 is expected to boot from its own flash.
-FW_NAME="ar8030/bb_demo.img"
-CFG_NAME="ar8030/bb_config.json"
+FW_NAME="ar8030/ar8030.img"
+CFG_NAME="ar8030/ar8030.json"
 
 # Interface the daemon should use: 0=usb 1=sdio 2=uart 3=drv. The package
 # builds the daemon with the driver backend only (USING_8030DRV=ON, see
@@ -53,19 +53,12 @@ start() {
 	# every later bb_dev_getlist() call from clients like ar8030-pair seeing
 	# no device at all. The vendor's own boot script has the equivalent gap
 	# here too (sleep 3 between insmod'ing its own SDIO module and starting
-	# its daemon).
-	#
-	# 3s is not enough margin during an actual boot, though: confirmed
-	# live, back to back, that the identical script reliably wins this
-	# race when run by hand on an already-idle system (3/3), but reliably
-	# loses it at real boot time (2/2), where S60 lands in the middle of
-	# the other init.d scripts' own CPU/scheduling load and delays the
-	# daemon's workqueues past the chip's first RX interrupt. This is a
-	# third-party redistribution of the vendor SDK (see package README),
-	# not the chip vendor's own driver, so a fragile fixed-latency
-	# assumption like this in its IRQ handling isn't surprising. Give it
-	# real margin rather than the bare minimum that happened to work once.
-	sleep 8
+	# its daemon); confirmed live at real boot time that 3s is enough margin
+	# now that the SDIO IRQ handler's size-decode bug is fixed (see 0004-*.patch
+	# -- that bug, not this settle time, was the actual cause of the earlier
+	# "bytes for read lost"/no-device failures this sleep couldn't fully paper
+	# over on its own).
+	sleep 3
 
 	mkdir -p "$RUNDIR"
 	cd "$RUNDIR" || exit 1
@@ -77,6 +70,30 @@ stop() {
 	start-stop-daemon -K -q -p "$PIDFILE"
 	rm -f "$PIDFILE"
 	rmmod $MODULE 2>/dev/null
+}
+
+# Re-pulses the AR8030's own hardware reset line (GPIO7_3, "ar8030_rst" on
+# the caddx_ascent_lite board) to force the chip to reboot and re-upload
+# fw_name/cfg_name via a fresh probe, without power-cycling the whole board.
+# This is the same reset caddx_ascent_lite_gpio_init() does once at kernel
+# boot (see hisilicon-opensdk's 0001-caddx-ascent-lite.patch) -- decoded
+# from the vendor's sys_config.ko: GPIO bank 7 is a PL061 controller at
+# physical 0x11097000 (see gpio_chip7 in hi3516cv610.dtsi), and the PL061
+# masked-write scheme means a data write at bank_base + (pinmask << 2)
+# only ever touches that one pin (GPIO7_3 -> mask 0x08 -> offset 0x020),
+# so this can't disturb the LED pins living in the same bank. Direction is
+# already latched as output by that same boot-time init and never reverts,
+# so it doesn't need to be re-asserted here.
+reset() {
+	echo "Resetting ar8030..."
+	stop
+
+	devmem 0x11097020 32 0x00	# assert reset (GPIO7_3 low)
+	sleep 1				# vendor pulse is ~3.1ms; wide margin
+	devmem 0x11097020 32 0x08	# release reset (GPIO7_3 high)
+	sleep 1				# let the chip's ROM bootloader come up before probing
+
+	start
 }
 
 case "$1" in
@@ -94,8 +111,12 @@ case "$1" in
 		start
 		;;
 
+	reset)
+		reset
+		;;
+
 	*)
-		echo "Usage: $0 {start|stop|restart}"
+		echo "Usage: $0 {start|stop|restart|reset}"
 		exit 1
 		;;
 esac
