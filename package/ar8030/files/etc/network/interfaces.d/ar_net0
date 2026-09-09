@@ -1,0 +1,14 @@
+# Manual interface: brings up the AR8030 kernel netdev bridge over the RF
+# link (see driver/linux/net/net_dev.c). ar8030-netdev-demo assigns the IP
+# itself (-P, ar_net_netif_create()'s own ifconfig call), so this is
+# "manual" rather than "static" -- ifupdown would otherwise fight it over
+# the address. Needs ar8030d already running and the AR8030 already
+# paired; if `ifup ar_net0` hangs, it's retrying bb_host_connect/
+# bb_dev_getlist in a loop waiting for either -- run ar8030-pair first.
+#
+# slot 0 / port 2 has to match the peer's ar8030-tun invocation exactly;
+# see package/ar8030/files/etc/network/interfaces.d/tun0 in
+# OpenIPC/sbc-groundstations.
+iface ar_net0 inet manual
+	pre-up /usr/bin/ar8030-netdev-demo -c -n ar_net0 -s 0 -p 2 -T 0 -P 192.168.100.1
+	post-down /usr/bin/ar8030-netdev-demo -d -n ar_net0 -s 0 -p 2
