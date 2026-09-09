@@ -63,12 +63,52 @@ start() {
 	mkdir -p "$RUNDIR"
 	cd "$RUNDIR" || exit 1
 	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- -i $INTF
+
+	autoreconnect
+}
+
+# Bring the RF link back up after a normal reboot without needing
+# ar8030-pair run by hand again. PRJ_CMD_EVENT_PAIR (see
+# 0007-bb_pair-auto-reconnect-on-boot.patch) is the only mechanism that
+# moves the chip from BB_LINK_STATE_IDLE to CONNECT -- a persisted
+# candidate MAC in $CFG_NAME only tells the chip who it's *allowed* to
+# link with, it does not make the chip attempt the link on its own at
+# boot, so without this every reboot would otherwise need a manual
+# re-pair (confirmed on real hardware).
+#
+# Gated on the "$CFG_NAME.paired" marker, written only by a successful
+# `ar8030-pair` run: a unit that has never been paired keeps its
+# factory-default candidate list, which on the AP side is empty and
+# means "accept anyone" (see the shipped ar8030.json's own "slot match
+# all" help text) -- looping this unconditionally would have a
+# never-paired unit silently re-broadcast PRJ_CMD_EVENT_PAIR at whatever
+# AR8030 happens to be in range. Runs detached so a peer that isn't
+# powered on yet doesn't delay boot (majestic/streaming in particular);
+# --skip-if-connected keeps it from re-triggering pairing against a link
+# that's already up once it succeeds.
+# restart/reload/reset all funnel through start() again -- guard against
+# piling up duplicate loops (stop() below kills whatever this pidfile
+# points at, but only if it still exists).
+AUTORECONNECT_PIDFILE="$RUNDIR/autoreconnect.pid"
+
+autoreconnect() {
+	[ -x /usr/bin/ar8030-pair ] || return 0
+	[ -f "/lib/firmware/$CFG_NAME.paired" ] || return 0
+	(
+		while ! ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$CFG_NAME" \
+				>>"$RUNDIR/autoreconnect.log" 2>&1; do
+			sleep 10
+		done
+	) &
+	echo $! > "$AUTORECONNECT_PIDFILE"
 }
 
 stop() {
 	echo "Stopping ar8030..."
 	start-stop-daemon -K -q -p "$PIDFILE"
 	rm -f "$PIDFILE"
+	[ -f "$AUTORECONNECT_PIDFILE" ] && kill "$(cat "$AUTORECONNECT_PIDFILE")" 2>/dev/null
+	rm -f "$AUTORECONNECT_PIDFILE"
 	rmmod $MODULE 2>/dev/null
 }
 
