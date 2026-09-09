@@ -13,6 +13,10 @@ AR8030_SITE_METHOD = git
 AR8030_LICENSE = GPL-2.0 (kernel driver), PROPRIETARY (host SDK)
 AR8030_INSTALL_STAGING = YES
 
+# bb_pair (0006-*.patch) links libcjson via pkg-config to persist a paired
+# peer into the on-disk baseband config; nothing else in this package needs it.
+AR8030_DEPENDENCIES = $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson)
+
 #
 # Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
 #
