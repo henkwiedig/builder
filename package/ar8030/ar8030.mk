@@ -142,12 +142,8 @@ endif
 ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
 define AR8030_INSTALL_FIRMWARE
 	$(INSTALL) -d -m 0755 $(TARGET_DIR)/lib/firmware/ar8030
-	$(INSTALL) -m 0644 $(@D)/dev_helper/autoload/img/bb_demo.img \
-		$(@D)/dev_helper/autoload/img/bb_config.json \
-		$(@D)/dev_helper/autoload/img/usr_ap.json \
-		$(@D)/dev_helper/autoload/img/usr_dev.json \
-		$(@D)/dev_helper/autoload/img/usr_master.json \
-		$(@D)/dev_helper/autoload/img/usr_slave.json \
+	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.img \
+		$(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.json \
 		$(TARGET_DIR)/lib/firmware/ar8030
 endef
 endif
