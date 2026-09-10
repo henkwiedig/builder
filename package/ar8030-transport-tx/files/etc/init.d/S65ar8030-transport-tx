@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# ar8030-transport-tx: bridges waybeam's frame-shm:// ring to the AR8030's
+# non-IP baseband data channel (bb_socket). Retries both the frame-shm
+# ring and the ar8030d connection on its own (see ar8030-transport's
+# README "Runtime deployment"), so this only needs to run after S60ar8030
+# has been *installed* -- not necessarily after ar8030d or waybeam have
+# actually come up.
+#
+
+test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
+
+DAEMON="/usr/bin/ar8030-transport-tx"
+PIDFILE="/var/run/ar8030-transport-tx.pid"
+
+if [ "x$AR8030_TRANSPORT_TX_ENABLED" = "xfalse" ]; then
+	echo "Starting ar8030-transport-tx... skipped (disabled)"
+	exit 0
+fi
+
+start() {
+	echo "Starting ar8030-transport-tx..."
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $AR8030_TRANSPORT_TX_ARGS
+}
+
+stop() {
+	echo "Stopping ar8030-transport-tx..."
+	start-stop-daemon -K -q -p "$PIDFILE"
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

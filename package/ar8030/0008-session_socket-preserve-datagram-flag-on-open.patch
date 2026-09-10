@@ -1,0 +1,48 @@
+session_socket: preserve BB_SOCK_FLAG_DATAGRAM in the open-socket request
+
+Ported from sbc-groundstations/package/ar8030's own
+0008-session_socket-preserve-datagram-flag-on-open.patch (same upstream
+commit, 3bb948de118b94d2ede751d55f1b28b7e0b9ab62, so it applies verbatim)
+so both ends of the AR8030 link agree on datagram framing instead of
+just one.
+
+bb_socket_open() decides its own *local* framing (sock->datagram_mode,
+used by bb_socket_write()/bb_socket_read() -- see
+session_socket_datagram_ext.c for the actual pack/unpack) from the flg
+the caller passes in, before this line ever runs. But the open-socket
+RPC request sent to this host's own chip unconditionally strips
+BB_SOCK_FLAG_DATAGRAM first -- so regardless of what a caller asks for,
+this host's chip is always told to open a plain (non-datagram) socket.
+
+Before this patch, only the ground-side package carried the fix, so the
+two ends of the link disagreed on framing for any datagram-mode socket
+(this host's chip: non-datagram; the ground's chip: datagram). That
+mismatch is diagnosed in the ground-side patch as exactly what broke
+net_dev/tuntap's IP bridging over the RF link end to end (symmetric zero
+rx_bytes on both ends despite a healthy physical link) -- consistent
+with this project's own observation that waybeam's IP-based sending
+over the ar_net0 link stalls immediately, with buffer-related messages
+on the AR8030 debug pad. Applying it here too restores symmetry.
+
+It also unblocks ar8030-transport (the frame-shm bridge between waybeam
+and PixelPilot_rk, riding bb_socket directly rather than the IP link):
+non-datagram sockets have no length-prefix framing at all, so anything
+that needs more than one underlying radio-level transfer to carry has
+nothing to preserve packet boundaries across the split -- the
+ground-side patch measured a hard ~690-byte ceiling on non-datagram
+sockets (`ping -s 690` through every time, 691 fails every time).
+ar8030-transport's chunk size (4096 B default) is well above that, so
+it needs true datagram mode on both ends, not a smaller MTU worked
+around by leaving this unpatched.
+
+diff --git a/app/ar8030/session_socket.c b/app/ar8030/session_socket.c
+--- a/app/ar8030/session_socket.c
++++ b/app/ar8030/session_socket.c
+@@ -227,7 +227,7 @@
+         opt = &tmpopt;
+     }
+
+-    flg &= (BB_SOCK_FLAG_TX | BB_SOCK_FLAG_RX);
++    flg &= (BB_SOCK_FLAG_TX | BB_SOCK_FLAG_RX | BB_SOCK_FLAG_DATAGRAM);
+     memcpy(buff + 0, &flg, 4);
+     memcpy(buff + 4, opt, sizeof(bb_sock_opt_t));

@@ -91,6 +91,25 @@ start() {
 # points at, but only if it still exists).
 AUTORECONNECT_PIDFILE="$RUNDIR/autoreconnect.pid"
 
+# Widen the video data channel's TX bandwidth past the narrow gear it
+# reconnects at by default. On real hardware this stayed pinned at 5MHz
+# (BB_BW_5M) indefinitely regardless of how good the link actually was --
+# MCS adapted up to its ceiling fine on its own, bandwidth never did.
+# BB_CFG_SLOT_RX_MCS's bw_auto policy (the mechanism that would let the
+# chip do this by itself as MCS improves) turned out to be unimplemented
+# in this daemon build ("req 5 not found" -- see ar8030-transport's own
+# README, "Bandwidth: the real bottleneck", for the full investigation);
+# ar8030.json's own subchan.main_bw already permits up to 20MHz, this
+# just asks for it directly via BB_SET_BANDWIDTH (ar8030-linkctl, from
+# the ar8030-transport-tx package -- optional here, hence the -x guard,
+# same as ar8030-pair above). Not persistent at the chip level, so this
+# has to re-run every time the link reaches CONNECT, same as pairing
+# itself does.
+apply_link_tuning() {
+	[ -x /usr/bin/ar8030-linkctl ] || return 0
+	ar8030-linkctl bandwidth 20 -d tx -w 30 >>"$RUNDIR/autoreconnect.log" 2>&1
+}
+
 autoreconnect() {
 	[ -x /usr/bin/ar8030-pair ] || return 0
 	[ -f "/lib/firmware/$CFG_NAME.paired" ] || return 0
@@ -99,6 +118,7 @@ autoreconnect() {
 				>>"$RUNDIR/autoreconnect.log" 2>&1; do
 			sleep 10
 		done
+		apply_link_tuning
 	) &
 	echo $! > "$AUTORECONNECT_PIDFILE"
 }

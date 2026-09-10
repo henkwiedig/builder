@@ -184,4 +184,6 @@ BR2_PACKAGE_YAML_CLI=y
 # Dropped: SD-WAN/VPN overlay, nothing an air unit does.
 # BR2_PACKAGE_ZEROTIER_ONE is not set
 
+BR2_PACKAGE_AR8030_TRANSPORT_TX=y
+
 # BR2_PACKAGE_MSPOSD=y

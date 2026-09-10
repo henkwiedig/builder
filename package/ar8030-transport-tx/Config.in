@@ -1,0 +1,29 @@
+config BR2_PACKAGE_AR8030_TRANSPORT_TX
+	bool "ar8030-transport-tx"
+	depends on BR2_PACKAGE_AR8030
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	help
+	  Air-side bridge between waybeam's frame-shm:// ring and the
+	  AR8030's non-IP baseband data channel (bb_socket) -- see
+	  https://github.com/henkwiedig/ar8030-transport.
+
+	  Splits each encoded H.265 access unit from waybeam into chunks
+	  and writes them to a bb_socket, and throttles waybeam's live
+	  bitrate (GET /api/v1/set?video0.bitrate=) from the AR8030's own
+	  local TX MCS/throughput reading, so the encoder does not outrun
+	  the radio.
+
+	  Requires the ar8030 package's own
+	  0008-session_socket-preserve-datagram-flag-on-open.patch (see
+	  ar8030-transport's README "Required AR8030 SDK fix" -- without
+	  it, chunks above ~690 bytes fail). Also expects waybeam to be
+	  present and its frame-shm ring enabled, but that is not wired as
+	  a hard Buildroot dependency here since waybeam can come from a
+	  different image; enable it yourself if this device doesn't
+	  already have it.
+
+	  Installs /usr/bin/ar8030-transport-tx and
+	  /etc/init.d/S65ar8030-transport-tx.
+
+comment "ar8030-transport-tx needs ar8030 and a toolchain w/ threads"
+	depends on !BR2_PACKAGE_AR8030 || !BR2_TOOLCHAIN_HAS_THREADS

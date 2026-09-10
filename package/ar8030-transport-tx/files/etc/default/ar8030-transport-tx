@@ -1,0 +1,10 @@
+# ar8030-transport-tx runtime configuration, sourced by
+# /etc/init.d/S65ar8030-transport-tx.
+
+# AR8030_TRANSPORT_TX_ENABLED=false
+
+# Extra flags passed straight to ar8030-transport-tx -- see its -h output
+# (ar8030-transport's README "Build" / tx/main.c usage()) for the full
+# list. Example overriding the bb_socket port and bitrate margin:
+#   AR8030_TRANSPORT_TX_ARGS="-o 2 -m 0.70 -n 512 -x 20000"
+AR8030_TRANSPORT_TX_ARGS=""
