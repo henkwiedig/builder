@@ -60,6 +60,13 @@ copy_to_archive() {
     cp -a ${FIRMWARE_DIR}/output/images/sizes.*.json \
         ${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP} 2>/dev/null || true
 
+    # UBI/FIT boards (no SOC suffix on these filenames, unlike rootfs.squashfs.*
+    # / uImage.* above) — best-effort, most boards don't produce these.
+    cp -a ${FIRMWARE_DIR}/output/images/fitImage \
+        ${FIRMWARE_DIR}/output/images/rootfs.ubi \
+        ${FIRMWARE_DIR}/output/images/usrdata.ubi \
+        ${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP} 2>/dev/null || true
+
     if [ -f "${FIRMWARE_DIR}/output/images/autoupdate-kernel.img" ]; then
         cp -a ${FIRMWARE_DIR}/output/images/autoupdate* ${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP}
     fi

@@ -43,6 +43,15 @@ What `builder.sh <device>` does, in order:
   `fw_setenv`, and `dd`s a flashable NOR image. Needs `squashfs-tools`.
 - `package.sh [pkg]` — force a full rebuild of one Buildroot package inside an existing
   `openipc/` tree (`dirclean` + `rebuild`; defaults to `busybox`).
+- `pack-caddx-ascent.py` — device-specific to `hi3516cv6xx_fpv_caddx-ascent-lite`. Repacks a
+  finished build's `fitImage`/`rootfs.ubi`/`usrdata.ubi` (now copied to the archive dir by
+  `copy_to_archive`) into the vendor's undocumented "ASW" 5-slot container format (magic
+  `0x575341`, no signature check — reverse-engineered and round-trip-verified against a real
+  stock image; see the script's own docstring for the format), so the stock Windows
+  `CADDX_PCTool` flasher can write it. `boot_image.bin`/`nand_env.bin` (proprietary vendor
+  SPL/U-Boot + env) are never committed here — the script slices them out of a stock
+  `Ascent_H_Sky_*.img` you point `--vendor-img` at, same spirit as `repack.sh` sourcing vendor
+  binaries at use-time rather than shipping them. Not yet verified on real hardware.
 
 ## Device anatomy
 
