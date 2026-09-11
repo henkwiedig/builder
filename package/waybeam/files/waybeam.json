@@ -9,7 +9,7 @@
   "video0": {
     "rcMode": "cbr",
     "fps": 100,
-    "size": "1280x720",
+    "size": "1920x1080",
     "bitrate": 2600,
     "gopSize": 1.0,
     "sliceCount": 1,

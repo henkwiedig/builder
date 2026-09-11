@@ -1,0 +1,121 @@
+sdio: give artosyn_sdio_write() a real (patient) wait instead of a
+5*10-jiffy timeout that always falls back to ~100ms polling
+
+Depends on 0010/0011 (numbered after them; touches the same function
+0011 documents in its own background section).
+
+Background: bringing up the SDIO daemon (ar8030d -i 1, USING_8030SDIO=ON
+-- see 0011's own patch) measured real, sustained throughput far below
+even this project's own DRV-mode baseline, let alone the vendor's
+~18-25Mbps. The daemon's own debug-pad log (/var/log/ar8030/daemon_log/,
+dev_dat_so_write_proc's "send ok"/"send cpl" entries) showed consecutive
+writes completing in a clean ~100-110ms cadence (110/220/330/440ms
+gaps) regardless of chunk size -- the signature of a fixed per-write
+round-trip cost, not a genuine bandwidth limit.
+
+Root cause: artosyn_sdio_write()'s wait for write_condition (write_offset
+< write_valid_size, set by the real TX-ready mailbox interrupt) only
+ever waited 5 * 10 jiffies (well under a second total at typical HZ)
+before giving up and falling back to WORKAROUND_FOR_INTERRUPT_LOST_ISSUE's
+own polling path (oal_queue_work() -> ar_sdio_reg_check(), on its own
+workqueue thread). Decompiling the vendor's own artosyn_sdio.ko (Ghidra,
+via ghidra-mcp) for comparison -- its artosyn_write() ioctl path calls an
+equivalent write function that waits via a plain prepare_to_wait_event()/
+schedule()/finish_wait() loop with no per-iteration timeout at all: it
+just blocks, patiently, until the real interrupt wakes it (confirmed:
+same write_offset/write_valid_size state, same condition check, only the
+wait strategy differs). The real TX-ready interrupt does fire in this
+driver -- artosyn_sdio_irqhandler()'s tx-ready branch already calls
+wake_up_interruptible_all(&dev->tx_q) correctly -- our own wait just
+never gave it enough time to arrive before bailing out to the much
+slower polling fallback, on nearly every single write.
+
+Fix: replace the 5-iteration short-timeout loop with one
+wait_event_interruptible_timeout() call using a much longer timeout
+(SDIO_WRITE_WAIT_MS, 2000ms) -- patient like the vendor's design, but
+still bounded (unlike upstream's literal forever) as a safety net
+against a genuinely wedged link. Keeps a single courtesy
+oal_queue_work(reg_workqueue) kick before the wait, in case the
+interrupt that would satisfy the condition was already missed before
+this call started (same reasoning as the old retry loop's repeated
+kicks, just no longer needed every ~10ms since the wait itself now
+relies on the real wakeup).
+
+artosyn_read() was compared the same way (the vendor's own read is the
+identical prepare_to_wait_event()/schedule() pattern) but deliberately
+left alone here: unlike write, it already checks read_valid_size/
+read_offset directly against a return of -EAGAIN before ever entering
+its wait loop, and by the time this driver's own chardev read() is
+called at all, the daemon's own sdio_ev_loop() has already gated it
+behind a successful poll() -- the debug-pad log showed no equivalent
+~100ms-per-read stall on this path, so there was no measured problem to
+fix. Not yet re-tested on real hardware as of this patch.
+
+--- a/driver/linux/bus/sdio.c
++++ b/driver/linux/bus/sdio.c
+@@ -830,10 +830,28 @@
+     return ret;
+ }
+ 
++/* Ghidra-decompiled comparison against the vendor's own artosyn_sdio.ko
++ * (artosyn_write() -> a FUN_000106de() equivalent to this function) found
++ * that its wait for write_condition is a plain, effectively-unbounded
++ * prepare_to_wait_event()/schedule()/finish_wait() loop -- no short
++ * per-iteration timeout at all, just a patient block until the real
++ * mailbox interrupt (artosyn_sdio_irqhandler()'s tx-ready branch) wakes
++ * it. This function's own wait used to bail out after a mere 5 * 10
++ * jiffies (well under a second total at typical HZ) and fall back to
++ * polling ar_sdio_reg_check() via the workqueue -- confirmed live via the
++ * daemon's own debug-pad log (dev_dat_so_write_proc's "send ok"/"send
++ * cpl" timestamps clustering in ~100ms multiples) that this fallback
++ * path, not the real interrupt, was satisfying nearly every single
++ * write, capping achievable throughput at roughly (chunk size / 100ms)
++ * regardless of payload size or link quality. SDIO_WRITE_WAIT_MS below
++ * is a single, much longer wait matching the vendor's patience (still
++ * bounded, unlike upstream's literal forever, as a safety net against a
++ * genuinely wedged link). */
++#define SDIO_WRITE_WAIT_MS 2000
++
+ static ssize_t artosyn_sdio_write(struct artosyn_sdio_device *dev, uint8_t* buf, size_t count, bool non_block)
+ {
+     int err = -1;
+-    int retry_count = 5;
+     size_t count_bak = 0;
+     unsigned int valid_size_bak = 0;
+     ssize_t ret = 0;
+@@ -869,22 +887,22 @@
+     if (!dev->rom_mode) {
+         AR_DBG(DM_SDIO, DL_INF, "%s: write wait\n", __func__);
+ 
+-        do {
+-            err = wait_event_interruptible_timeout(dev->tx_q, artosyn_sdio_write_condition(dev), 10);
+-            if (err > 0) {
+-                break;
+-            }
+-
+ #ifdef WORKAROUND_FOR_INTERRUPT_LOST_ISSUE
+-            // check reg
+-            if (dev->handle) {
+-                oal_queue_work(dev->handle, dev->reg_workqueue);
+-            }
++        /* One courtesy poll before the real wait, in case the mailbox
++         * interrupt that would satisfy write_condition() below already
++         * came and went (missed) before we got here -- same reasoning
++         * as upstream's own retry loop, just no longer repeated every
++         * ~10ms now that the wait itself is patient enough to rely on
++         * the real wakeup instead. */
++        if (dev->handle) {
++            oal_queue_work(dev->handle, dev->reg_workqueue);
++        }
+ #endif
+-            retry_count--;
+-        } while((err <= 0) && (retry_count > 0));
+ 
+-        if (retry_count == 0)
++        err = wait_event_interruptible_timeout(dev->tx_q, artosyn_sdio_write_condition(dev),
++                                                msecs_to_jiffies(SDIO_WRITE_WAIT_MS));
++
++        if (err <= 0)
+         {
+             AR_DBG(DM_SDIO, DL_ERR, "%s: write wait timeout\n", __func__);
+             sdio_stats_print();//zy test

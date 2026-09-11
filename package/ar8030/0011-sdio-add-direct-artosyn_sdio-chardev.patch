@@ -67,12 +67,64 @@ something has the chardev actually open. The read_offset/read_valid_size
 bookkeeping right above each site stays unconditional either way, since
 the chardev's own poll() (artosyn_sdio_read_condition()) depends on it.
 
-Status: builds and loads cleanly, chardev opens/registers correctly, the
-RX-side race from UPDATE 1 is fixed, and UPDATE 1's own DRV-mode
-regression is fixed by UPDATE 2 -- but SDIO daemon mode itself is still
-not confirmed to reach real throughput end-to-end (a separate "first
-write always times out, device never registers with the daemon" failure
-in -i 1 mode was hit next, not yet root-caused). See ar8030-transport's
+UPDATE 3: with 0012-sdio-write-wait-for-real-interrupt-not-100ms-poll.patch
+also applied (fixing artosyn_sdio_write()'s own wait), -i 1 bring-up got
+further -- BB_GET_STATUS worked immediately -- but the daemon's data
+socket then stalled permanently right after bb_socket_open(), stuck at
+"socket try init" / sock_wait_usb_cmd (see daemon/sock_node_rpc.c /
+sock_node.c) forever, with dmesg showing *no* write-wait-timeout at all
+even minutes in (0012's own 2000ms timeout would have logged one by
+then if a real write had even been attempted). Root cause:
+sdio_chardev_poll() only ever called poll_wait() on dev->tx_q, but the
+chip's so_open acknowledgment arrives as an RX-ready mailbox event, and
+that branch's own wake_up_interruptible_all(&dev->rx_q) call was
+commented out upstream (oal_mdev.c's DRV-mode consumer never waits on
+rx_q, only via its own workqueue) -- so poll() was never woken by RX-only
+activity. At this exact point in the handshake there is no TX traffic
+yet either (the so_open command itself already went out), so nothing
+was coincidentally re-waking poll() the way ordinary bidirectional
+traffic might. Fixed: uncommented the rx_q wakeup in both
+artosyn_sdio_irqhandler()'s and artosyn_sdio_reg_check()'s rx-ready
+branches (harmless for DRV mode -- nothing there waits on rx_q either),
+and sdio_chardev_poll() now calls poll_wait() on both tx_q and rx_q.
+
+UPDATE 4: even with UPDATE 3 and 0012 both applied, a *reassurance* test
+against the vendor's own real artosyn_sdio.ko + daemon_sdiov12 (Ghidra-
+compared binaries, same technique as 0012) on an identically fresh boot
+(nothing else having touched the chip first, to rule out cross-module-
+reload contamination as a confound -- confirmed real: the vendor daemon
+itself was unresponsive on a boot where our own module had already run
+first, and perfect on a genuinely fresh one) showed the vendor's stack
+holding a clean, stable ~14-18Mbps for minutes with zero stalls, while
+our own -i 1 stack, tested the exact same way, still recurringly hit
+"bb_socket_write made no progress" every few seconds, capping real
+throughput around ~3Mbps. dmesg showed no write-wait-timeout during
+these stalls either (ruling out 0012's own wait as the cause) -- this is
+a different bug from UPDATE 3's, since the daemon's own log confirmed
+data was flowing, just stalling repeatedly rather than never starting.
+
+Comparing artosyn_sdio_irqhandler()/artosyn_sdio_reg_check() against the
+vendor's real decompiled equivalent found a real, general design
+difference (not a bug in the size-decode math, which 0004 already fixed
+and which matches the vendor exactly): the vendor wakes a *single shared*
+waitqueue for every mailbox event -- either channel, rx-ready, and
+tx-ready alike -- rather than separate per-condition queues. A writer
+blocked on tx_q specifically only gets a chance to re-check its own
+condition when a genuine TX-ready event fires; the vendor's design gives
+every blocked waiter a chance to re-check on *any* mailbox activity,
+however unrelated, which is strictly more chances per second to notice a
+state change than our previous split-queue design offered. Matched here
+by having every wake site (mailbox_q's per-channel loop, rx-ready,
+tx-ready, in both artosyn_sdio_irqhandler() and artosyn_sdio_reg_check())
+wake both tx_q and rx_q, rather than introducing one literal shared
+queue (a bigger structural change for the same practical effect). Not
+yet re-tested on real hardware as of this patch.
+
+Status: builds cleanly. UPDATE 1-3's fixes hold (chardev opens/registers,
+no busy/EAGAIN race, DRV mode unaffected, socket-open handshake
+succeeds). UPDATE 4's shared-wake change is the current attempt at the
+still-open "recurring stall under sustained load, vendor stack doesn't
+have this" problem -- not yet confirmed to fix it. See ar8030-transport's
 own README for the full investigation writeup.
 
 --- a/driver/linux/bus/sdio.c
@@ -99,7 +151,7 @@ own README for the full investigation writeup.
  
  static void
  ar_sdio_update_card_type(oal_handle *handle, void *card);
-@@ -166,6 +174,169 @@
+@@ -166,6 +174,176 @@
  static volatile uint8_t removed = 1;
  static volatile uint32_t opened = 0;
  
@@ -241,13 +293,20 @@ own README for the full investigation writeup.
 +    if (!g_sdio_chardev)
 +        return POLLERR;
 +
-+    /* No dedicated poll waitqueue in this file -- dev->tx_q is the
-+     * closest existing one and is already woken on every register-check
-+     * pass (see the WORKAROUND_FOR_INTERRUPT_LOST_ISSUE paths in
-+     * artosyn_sdio_write()/artosyn_read()), which is close enough to
-+     * "check again soon" for poll() to notice new data promptly without
-+     * needing a new wait source. */
++    /* Wait on both: dev->tx_q is woken by real TX-ready mailbox events
++     * (and register-check passes, see WORKAROUND_FOR_INTERRUPT_LOST_ISSUE
++     * in artosyn_sdio_write()); dev->rx_q by real RX-ready mailbox events
++     * (artosyn_sdio_irqhandler()'s rx-ready branch, now unconditionally
++     * woken there for this reason -- see that branch's own comment).
++     * Waiting on tx_q alone (as this used to) meant poll() was never
++     * woken by RX-only activity: confirmed on real hardware that a
++     * socket-open reply from the chip -- an RX-ready event with no TX
++     * traffic anywhere near it, since nothing else was streaming yet --
++     * was never noticed by the SDIO daemon's read-side sdio_ev_loop(),
++     * permanently stalling the daemon's own socket state machine at
++     * "waiting remote cmd" right after the very first bb_socket_open(). */
 +    poll_wait(filp, &g_sdio_chardev->tx_q, wait);
++    poll_wait(filp, &g_sdio_chardev->rx_q, wait);
 +
 +    if (artosyn_sdio_read_condition(g_sdio_chardev))
 +        mask |= POLLIN | POLLRDNORM;
@@ -269,7 +328,30 @@ own README for the full investigation writeup.
  /****************************
   * Function definition
   ****************************/
-@@ -1157,7 +1328,11 @@
+@@ -1141,7 +1319,22 @@
+                     AR_DBG(DM_SDIO, DL_INF, "artosyn_sdio_reg_check channel %d mail %x\n", i, mail);
+                     dev->msg_valid[i] = 1;
+                     dev->message[i] = mail;
++                    /* Ghidra-decompiled comparison against the vendor's own
++                     * artosyn_sdio.ko found it wakes a *single* shared
++                     * waitqueue for every mailbox event (either channel,
++                     * rx-ready, tx-ready alike) rather than separate
++                     * per-condition queues -- giving any blocked waiter many
++                     * more chances per second to re-check its own condition
++                     * than our split tx_q/rx_q design does (a writer blocked
++                     * on tx_q was previously only woken by a real TX-ready
++                     * event, never by RX or mailbox activity happening at
++                     * the same time). Matched here and at every wake site
++                     * below by waking both queues on every event type,
++                     * rather than introducing a literal single shared queue
++                     * (a bigger structural change for the same effect). */
+                     wake_up_interruptible_all(&dev->mailbox_q);
++                    wake_up_interruptible_all(&dev->rx_q);
++                    wake_up_interruptible_all(&dev->tx_q);
+                 }
+             }
+ 
+@@ -1157,10 +1350,30 @@
                      dev->read_valid_size = size;
                      read_int_handled = 1;
                      AR_DBG(DM_SDIO, DL_INF, "artosyn_sdio_reg_check %d bytes ready for read\n", dev->read_valid_size);
@@ -281,8 +363,50 @@ own README for the full investigation writeup.
 +                    if (dev->handle && !atomic_read(&sdio_chardev_open_count)) {
                          oal_queue_work(dev->handle, dev->rx_workqueue);
                      }
-                     // wake_up_interruptible_all(&dev->rx_q);
-@@ -1256,7 +1431,30 @@
+-                    // wake_up_interruptible_all(&dev->rx_q);
++                    /* Was commented out upstream (oal_mdev.c's DRV-mode
++                     * consumer never waits on rx_q, only the workqueue
++                     * above) -- but the chardev's own poll()
++                     * (sdio_chardev_poll()) needs a real wakeup on
++                     * genuine RX-ready events to ever notice incoming
++                     * data at all. Confirmed on real hardware: without
++                     * this, a socket-open reply from the chip (an
++                     * RX-ready event with no TX activity anywhere near
++                     * it, since nothing else is streaming yet) is never
++                     * noticed by the SDIO daemon's read-side
++                     * sdio_ev_loop() -- poll() only re-checks when woken,
++                     * and previously only TX-ready events ever woke
++                     * anything poll() was waiting on. Harmless for DRV
++                     * mode: nothing there waits on rx_q either way. Also
++                     * wakes tx_q (see the mailbox_q site above for why). */
++                    wake_up_interruptible_all(&dev->rx_q);
++                    wake_up_interruptible_all(&dev->tx_q);
+                 }
+ #endif
+             }
+@@ -1176,7 +1389,9 @@
+                     dev->write_offset = 0;
+                     dev->write_valid_size = size;
+                     write_int_handled = 1;
++                    /* Also wakes rx_q (see the mailbox_q site above for why). */
+                     wake_up_interruptible_all(&dev->tx_q);
++                    wake_up_interruptible_all(&dev->rx_q);
+                 }
+             }
+         }
+@@ -1239,7 +1454,11 @@
+                     AR_DBG(DM_SDIO, DL_INF, "artosyn_sdio_irqhandler channel %d mail %x\n", i, mail);
+                     dev->msg_valid[i] = 1;
+                     dev->message[i] = mail;
++                    /* See the identical wake-both-queues rationale on the
++                     * artosyn_sdio_reg_check() copy above. */
+                     wake_up_interruptible_all(&dev->mailbox_q);
++                    wake_up_interruptible_all(&dev->rx_q);
++                    wake_up_interruptible_all(&dev->tx_q);
+                 }
+             }
+ 
+@@ -1256,10 +1475,49 @@
                      dev->read_valid_size = size;
                      read_int_handled = 1;
                      AR_DBG(DM_SDIO, DL_INF, "artosyn_sdio_irqhandler %d bytes ready for read\n", dev->read_valid_size);
@@ -313,8 +437,38 @@ own README for the full investigation writeup.
 +                    if (dev->handle && !atomic_read(&sdio_chardev_open_count)) {
                          oal_queue_work(dev->handle, dev->rx_workqueue);
                      }
-                     // wake_up_interruptible_all(&dev->rx_q);
-@@ -1450,6 +1648,24 @@
+-                    // wake_up_interruptible_all(&dev->rx_q);
++                    /* Was commented out upstream (oal_mdev.c's DRV-mode
++                     * consumer never waits on rx_q, only the workqueue
++                     * above) -- but the chardev's own poll()
++                     * (sdio_chardev_poll()) needs a real wakeup on
++                     * genuine RX-ready events to ever notice incoming
++                     * data at all. Confirmed on real hardware: without
++                     * this, a socket-open reply from the chip (an
++                     * RX-ready event with no TX activity anywhere near
++                     * it, since nothing else is streaming yet) is never
++                     * noticed by the SDIO daemon's read-side
++                     * sdio_ev_loop() -- poll() only re-checks when woken,
++                     * and previously only TX-ready events ever woke
++                     * anything poll() was waiting on. Harmless for DRV
++                     * mode: nothing there waits on rx_q either way. Also
++                     * wakes tx_q (see the mailbox_q site above for why). */
++                    wake_up_interruptible_all(&dev->rx_q);
++                    wake_up_interruptible_all(&dev->tx_q);
+                 }
+ #endif
+             }
+@@ -1276,7 +1534,9 @@
+                     dev->write_offset = 0;
+                     dev->write_valid_size = size;
+                     write_int_handled = 1;
++                    /* Also wakes rx_q (see the mailbox_q site above for why). */
+                     wake_up_interruptible_all(&dev->tx_q);
++                    wake_up_interruptible_all(&dev->rx_q);
+                 }
+             }
+         }
+@@ -1450,6 +1710,24 @@
  
      AR_DBG(DM_SDIO, DL_MSG, "artosyn sdio device added\n");
  
@@ -339,7 +493,7 @@ own README for the full investigation writeup.
      total_tx_pkts = 0;
      total_tx_bytes = 0;
      total_rx_pkts = 0;
-@@ -1509,6 +1725,16 @@
+@@ -1509,6 +1787,16 @@
          msleep(1000);
      }
  
