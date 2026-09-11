@@ -26,7 +26,10 @@
 WAYBEAM_VERSION = da68d285abbf1927939d7a87231e906d520170ef
 WAYBEAM_SITE = https://github.com/henkwiedig/waybeam_venc.git
 WAYBEAM_SITE_METHOD = git
-WAYBEAM_LICENSE = MIT
+# libbin.so (fetched at build time on Hisilicon boards, see near the end
+# of this file) is a third-party proprietary Hisilicon binary, not ours
+# and not MIT -- named here rather than quietly widening MIT to cover it.
+WAYBEAM_LICENSE = MIT, PROPRIETARY (libbin.so)
 WAYBEAM_LICENSE_FILES = LICENSE
 
 # The working tree carries ~1.7 GB of downloaded cross-toolchains and a build
@@ -65,7 +68,38 @@ WAYBEAM_SOC_BUILD = cv610
 # runs. Confirmed on the bench: without this, every cv610_*.c TU fails at
 # `#include "ot_common.h"` — waybeam falls back to its own default, which
 # 404s to a directory that was never created in this tree.
-WAYBEAM_DEPENDENCIES = hisilicon-opensdk hisilicon-osdrv-hi3516cv6xx
+WAYBEAM_DEPENDENCIES = hisilicon-opensdk hisilicon-osdrv-hi3516cv6xx \
+	$(call qstrip,$(BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_DEPENDENCY))
+
+WAYBEAM_SENSOR_FETCH_SCRIPT = $(call qstrip,$(BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT))
+ifneq ($(WAYBEAM_SENSOR_FETCH_SCRIPT),)
+# Runs the device-configured fetch script (BR2_PACKAGE_WAYBEAM_SENSOR_
+# FETCH_SCRIPT, set in the device's own defconfig -- see this package's
+# Config.in) before the package builds, so it can populate $(@D)/
+# vendor-sensors/ with this board's sensor tuning presets -- see that
+# Config.in entry for the full contract and devices/hi3516cv6xx_fpv_caddx-
+# ascent-lite/general/scripts/fetch-vendor-sensors.py for a worked
+# example (CADDX's vendor image, shared with package/ar8030's own
+# baseband-firmware fetch via the same pattern). Deliberately not this
+# package's own concern: a different board/sensor sources tuning presets
+# from a different vendor in a different format, and $(BINARIES_DIR) is
+# the one stable way such a script finds the long-lived builder checkout
+# from inside a build recipe -- see package/ar8030/ar8030.mk's own
+# comment on why $(TOPDIR) is NOT stable enough for this.
+#
+# BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_DEPENDENCY above (also device-set,
+# also optional) is what actually gets this fetch script's own
+# dependencies built before this hook runs, with a genuine Buildroot-
+# scheduler guarantee. The fetch script can still legitimately produce
+# nothing (no network, an upstream format change), in which case
+# WAYBEAM_INSTALL_TARGET_CMDS below just installs without any sensor
+# tuning rather than failing the build -- the sensor plugin degrades to
+# whatever default tuning it carries built in.
+define WAYBEAM_FETCH_VENDOR_SENSORS
+	$(BR2_EXTERNAL)/$(WAYBEAM_SENSOR_FETCH_SCRIPT) $(BINARIES_DIR) $(@D)/vendor-sensors
+endef
+WAYBEAM_PRE_BUILD_HOOKS += WAYBEAM_FETCH_VENDOR_SENSORS
+endif
 
 # CFLAGS/LDFLAGS have to arrive through the *environment*, not as command-line
 # variables. Upstream's Makefile does `CFLAGS += $(COMMON_CFLAGS) ...`, and a
@@ -115,13 +149,14 @@ define WAYBEAM_BUILD_CMDS
 	$(WAYBEAM_BUILD_JSON_CLI)
 endef
 
-# All of these come from out/cv610/ (populated by `stage`, not scattered
+# Most of these come from out/cv610/ (populated by `stage`, not scattered
 # source-tree paths): S95waybeam here is init.d/S95waybeam.cv610 (NOT the
 # generic init.d/S95waybeam — that one has no PLATFORM_CONFIG or
-# CV610_SENSOR_PROFILE handling), and waybeam.json is
-# config/waybeam.default.cv610.json, not this package's own files/waybeam.json
-# (now unused — kept only as a reference for what a from-scratch default
-# looked like before the cv610 backend had its own).
+# CV610_SENSOR_PROFILE handling). waybeam.json is the exception: it's this
+# package's own files/waybeam.json below, not upstream's staged
+# config/waybeam.default.cv610.json — this repo's copy is what's actually
+# live at /etc/waybeam.json, so board-specific defaults (fps, isp.sensorBin,
+# etc.) belong there, not in a comment claiming it's unused.
 #
 # qr_decode: star6e_luma_tap.c execl()s /usr/bin/qr_decode for the (optional,
 # degrades gracefully if absent) QR-pairing scan — install it so the feature
@@ -147,7 +182,46 @@ define WAYBEAM_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/etc/waybeam-cv610.conf
 	$(INSTALL) -D -m 0755 $(@D)/out/$(WAYBEAM_SOC_BUILD)/sensors/libsns_os02k10.so \
 		$(TARGET_DIR)/usr/lib/sensors/libsns_os02k10.so
+	if [ -d $(@D)/vendor-sensors ] && [ -n "$$(ls -A $(@D)/vendor-sensors 2>/dev/null)" ]; then \
+		$(INSTALL) -d -m 0755 $(TARGET_DIR)/etc/sensors $(BINARIES_DIR)/sensors; \
+		$(INSTALL) -m 0644 -t $(TARGET_DIR)/etc/sensors $(@D)/vendor-sensors/*.bin; \
+		$(INSTALL) -m 0644 -t $(BINARIES_DIR)/sensors $(@D)/vendor-sensors/*.bin; \
+	else \
+		echo "waybeam: no vendor sensor tuning fetched this build -- /etc/sensors will be empty" >&2; \
+	fi
 	$(WAYBEAM_INSTALL_JSON_CLI)
 endef
+
+ifeq ($(OPENIPC_SOC_VENDOR),hisilicon)
+# libbin.so: Hisilicon's proprietary PQ (picture-quality) ISP tuning bin
+# import/export library (OT_PQ_BIN_Import/ExportBinData et al, linked
+# against hisilicon-opensdk's ss_mpi_isp_*/ss_mpi_vi_* symbols) -- without
+# it, waybeam's isp.sensorBin config path and /api/v1/iq/export_bin API
+# just warn and no-op; the rest of the image still boots and streams
+# fine. Not committed here (proprietary Hisilicon binary, this repo is
+# public) -- fetched at build time from a pinned commit of a fork that
+# already carries it (upstream OpenIPC/waybeam_venc doesn't ship it),
+# same spirit as package/ascent-vendor-firmware's CADDX fetches. SHA256-
+# pinned since, unlike the CADDX flow, there's no magic-byte format to
+# sanity-check the download against.
+#
+# Gated on the SoC vendor, not folded into WAYBEAM_INSTALL_TARGET_CMDS
+# above: that whole block is already Hisilicon-cv610-specific in this
+# package as currently written, but this guard keeps the fetch correctly
+# scoped if a non-Hisilicon backend (SigmaStar, say) is ever added here.
+WAYBEAM_LIBBIN_SO_URL = https://raw.githubusercontent.com/snokvist/firmware/f293f585006b15397f17b31753c233a20e2726c7/general/package/waybeam/files/libbin.so
+WAYBEAM_LIBBIN_SO_SHA256 = 71eada7288dabef2dc8bf07ae94b8693f02c13281171a362defb101feeb4cd75
+
+define WAYBEAM_FETCH_LIBBIN_SO
+	if curl -sL --fail -o $(@D)/libbin.so.tmp "$(WAYBEAM_LIBBIN_SO_URL)" && \
+	   echo "$(WAYBEAM_LIBBIN_SO_SHA256)  $(@D)/libbin.so.tmp" | sha256sum -c - >/dev/null 2>&1; then \
+		$(INSTALL) -D -m 0755 $(@D)/libbin.so.tmp $(TARGET_DIR)/usr/lib/libbin.so; \
+	else \
+		echo "waybeam: could not fetch libbin.so -- ISP tuning bin import/export will no-op" >&2; \
+	fi
+	rm -f $(@D)/libbin.so.tmp
+endef
+WAYBEAM_POST_INSTALL_TARGET_HOOKS += WAYBEAM_FETCH_LIBBIN_SO
+endif
 
 $(eval $(generic-package))

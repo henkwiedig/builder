@@ -25,6 +25,23 @@ is still a real correctness bug in its own right (silently continuing
 past a confirmed-incomplete transfer) worth fixing independently of
 that.
 
+UPDATE (during 0011-sdio-add-direct-artosyn_sdio-chardev.patch_skip's
+own bring-up testing): enabling this patch on real hardware turned the
+occasional silent "upgrade transfer failed" into a **hard, repeatable**
+firmware-download abort (5/5 retries failing, oal_add_card() giving up)
+on several boots in a row -- worse in practice than the bug it fixes,
+even though logically more correct. Whether the retried transfer is
+genuinely failing every time, or whether oal_send_dnld_req()/
+sdio_rom_send() have some non-idempotent side effect that dooms a retry
+of the same chunk regardless of the underlying transfer's real success,
+was not determined; a from-scratch rebuild of *pristine* upstream source
+(this patch and 0011 both reverted) also hit the same underlying
+transient failure intermittently, just via the original silent-continue
+path instead of a hard abort, so the failure itself predates and is
+independent of this patch -- this patch just stopped masking it. Keep
+this skipped until that's actually understood; see ar8030-transport's
+own README for the full writeup.
+
 diff --git a/driver/linux/oal_dnld.c b/driver/linux/oal_dnld.c
 --- a/driver/linux/oal_dnld.c	2026-09-09 01:10:33.095901820 +0200
 +++ b/driver/linux/oal_dnld.c	2026-09-09 01:10:46.835240397 +0200

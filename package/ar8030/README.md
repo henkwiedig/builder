@@ -34,6 +34,43 @@ userspace path — mdev hotplug on VID:PID `4152:8030` calling `autoload`, which
 shells out to `ar8030_usb_test_tool` — is *not* packaged; only the loader
 binary itself is available, behind `BR2_PACKAGE_AR8030_USB_LOADER`.
 
+### Where the demo firmware comes from
+
+`ar8030.json` (`files/lib/firmware/ar8030/`) is CADDX's own `bb_config_sky.json`
+— plain config, committed. `ar8030.img` (CADDX's `bb_demo_sky_3v3.img`) is a
+proprietary vendor binary blob and is deliberately **not** committed — this
+repo is public. (This board's camera sensor tuning comes from the same
+vendor image too, but that's `package/waybeam`'s concern, not this
+package's — see its own `.mk` comments.)
+
+Every build with `BR2_PACKAGE_AR8030_FIRMWARE=y` fetches `ar8030.img` fresh,
+via `AR8030_PRE_BUILD_HOOKS` in `ar8030.mk` — which runs whatever script this
+device's defconfig names in `BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT` (see
+that Config.in entry: this package carries no vendor-specific logic itself,
+since a different AR8030 board sources this from a different vendor
+entirely). For this device that script is `general/scripts/fetch-vendor-
+firmware.py`, and it's deliberately thin: the actual download+extraction
+happens once, shared with waybeam's sensor tuning fetch, in the
+`package/ascent-vendor-firmware` package (see that package's `Config.in`
+and `extract.py`) — this device's defconfig also sets
+`BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY="ascent-vendor-firmware"` so
+Buildroot's own scheduler guarantees that package has already built (and so
+`$(BINARIES_DIR)/ar8030.img` already exists — `extract.py` writes straight
+there, not to an intermediate cache) by the time this script runs — a real
+ordering guarantee `BR2_ROOTFS_PRE_BUILD_SCRIPT` cannot give here, since it
+turns out not to be wired into this project's build at all (see
+`extract.py`'s docstring).
+
+`AR8030_INSTALL_FIRMWARE` installs `ar8030.img` to `/lib/firmware/ar8030/`
+and also archives it into `$(BINARIES_DIR)` (`output/images/ar8030.img`)
+alongside `fitImage`/`rootfs.ubi`/etc, for inspection/reuse outside the
+image.
+
+This is best-effort throughout: no network or a broken Google Drive scrape
+(see `fetch-vendor-img.sh`'s docstring) just means `ar8030.img` isn't
+installed that build — `S60ar8030` already omits `fw_name=` gracefully when
+it's absent — never fails the build.
+
 ## Kernel requirements
 
 The package's `LINUX_CONFIG_FIXUPS` force `CONFIG_FW_LOADER`, `CONFIG_PROC_FS`,

@@ -57,11 +57,15 @@ BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/$(OPENIPC_KERNEL).tar.gz"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/$(BR2_OPENIPC_SOC_MODEL).generic.config"
-# Runs both scripts, space-separated: the shared SoC script (fitImage /
-# firmware.bin) and our own, which builds the blank usrdata0/usrdata1 UBI
-# image — see general/scripts/make-usrdata-image.sh for why that has to
-# happen at build time rather than on first boot.
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh $(BR2_EXTERNAL)/scripts/make-usrdata-image.sh"
+# Runs three scripts, space-separated, in order: the shared SoC script
+# (fitImage/firmware.bin), our own that builds the blank usrdata0/usrdata1
+# UBI image (see general/scripts/make-usrdata-image.sh for why that has to
+# happen at build time rather than on first boot), and last, a hook that
+# repacks all three into the vendor's "ASW" container for the stock
+# CADDX_PCTool flasher (see general/scripts/pack-caddx-ascent-hook.sh) --
+# it's listed last because it needs fitImage and usrdata.ubi the first two
+# produce.
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh $(BR2_EXTERNAL)/scripts/make-usrdata-image.sh $(BR2_EXTERNAL)/scripts/pack-caddx-ascent-hook.sh"
 # general/scripts/embed-usrdata-blank.sh (which embeds a blank UBIFS image
 # into the rootfs for /init to self-heal a corrupted or never-provisioned
 # usrdataN overlay volume via ubiupdatevol — this board power-cuts by
@@ -125,6 +129,18 @@ BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000
 BR2_PACKAGE_AR8030=y
 BR2_PACKAGE_AR8030_BUS_SDIO_ONLY=y
 BR2_PACKAGE_AR8030_FIRMWARE=y
+# Points at general/scripts/fetch-vendor-firmware.py, a thin script that
+# copies ar8030.img out of the shared vendor-firmware cache
+# package/ascent-vendor-firmware/extract.py populates -- see
+# package/ar8030/Config.in's BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT for
+# the generic contract. FETCH_DEPENDENCY names that package (enabled just
+# below) so Buildroot guarantees it has already fetched+extracted CADDX's
+# vendor image (shared with waybeam's sensor tuning, see
+# package/waybeam/Config.in's own FETCH_SCRIPT/FETCH_DEPENDENCY) before
+# this runs.
+BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT="scripts/fetch-vendor-firmware.py"
+BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY="ascent-vendor-firmware"
+BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE=y
 BR2_PACKAGE_AR8030_INIT=y
 BR2_PACKAGE_AR8030_PAIR_TOOL=y
 # BR2_PACKAGE_AR8030_USB_LOADER is not set
@@ -180,6 +196,16 @@ BR2_PACKAGE_VTUND_OPENIPC=y
 # its own /etc/init.d/S95waybeam. See package/waybeam/Config.in.
 BR2_PACKAGE_WAYBEAM=y
 BR2_PACKAGE_WAYBEAM_JSON_CLI=y
+# Points at general/scripts/fetch-vendor-sensors.py, a thin script that
+# copies the os02k10 tuning set out of the shared vendor-firmware cache
+# package/ascent-vendor-firmware/extract.py populates -- see
+# package/waybeam/Config.in's BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT for
+# the generic contract. FETCH_DEPENDENCY names that package (see
+# BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE below) so Buildroot guarantees it
+# has already fetched+extracted CADDX's vendor image (shared with
+# ar8030's baseband firmware, see package/ar8030) before this runs.
+BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT="scripts/fetch-vendor-sensors.py"
+BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_DEPENDENCY="ascent-vendor-firmware"
 BR2_PACKAGE_YAML_CLI=y
 # Dropped: SD-WAN/VPN overlay, nothing an air unit does.
 # BR2_PACKAGE_ZEROTIER_ONE is not set

@@ -3,6 +3,9 @@
     "webPort": 80,
     "verbose": false
   },
+  "isp": {
+    "sensorBin": "/etc/sensors/cam_os02k10_100fps_xg1_day.bin"
+  },
   "video0": {
     "rcMode": "cbr",
     "fps": 100,
@@ -16,7 +19,7 @@
   },
   "outgoing": {
     "enabled": true,
-    "server": "udp://192.168.3.204:5600",
+    "server": "frame-shm://venc_frames",
     "streamMode": "rtp",
     "maxPayloadSize": 1400,
     "connectedUdp": false,

@@ -15,7 +15,38 @@ AR8030_INSTALL_STAGING = YES
 
 # bb_pair (0006-*.patch) links libcjson via pkg-config to persist a paired
 # peer into the on-disk baseband config; nothing else in this package needs it.
-AR8030_DEPENDENCIES = $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson)
+AR8030_DEPENDENCIES = $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson) \
+	$(if $(BR2_PACKAGE_AR8030_FIRMWARE),$(call qstrip,$(BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY)))
+
+AR8030_VENDOR_FETCH_SCRIPT = $(call qstrip,$(BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT))
+ifneq ($(AR8030_VENDOR_FETCH_SCRIPT),)
+# Runs the device-configured fetch script (BR2_PACKAGE_AR8030_FIRMWARE_
+# FETCH_SCRIPT, set in the device's own defconfig -- see this package's
+# Config.in) before the package builds, so it can populate $(@D)/
+# vendor-firmware/ with this board's own ar8030.img -- see that Config.in
+# entry for the full contract and devices/hi3516cv6xx_fpv_caddx-ascent-
+# lite/general/scripts/fetch-vendor-firmware.py for a worked example.
+# Deliberately not this package's own concern: a different AR8030 board
+# sources this from a different vendor in a different format, and
+# $(BINARIES_DIR) is the one stable way such a script finds the
+# long-lived builder checkout from inside a build recipe -- $(TOPDIR) is
+# NOT stable enough (it's the extracted *buildroot source* directory,
+# whose depth relative to the checkout root isn't a build-system-wide
+# invariant the way $(BINARIES_DIR) is; got this wrong once already).
+#
+# BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY above (also device-set,
+# also optional) is what actually gets this fetch script's own
+# dependencies -- e.g. a package that does the real vendor download --
+# built before this hook runs, with a genuine Buildroot-scheduler
+# guarantee. But the fetch script can still legitimately produce nothing
+# (no network, an upstream format change), in which case
+# AR8030_INSTALL_FIRMWARE below just installs without ar8030.img rather
+# than failing the build.
+define AR8030_FETCH_VENDOR_FIRMWARE
+	$(BR2_EXTERNAL)/$(AR8030_VENDOR_FETCH_SCRIPT) $(BINARIES_DIR) $(@D)/vendor-firmware
+endef
+AR8030_PRE_BUILD_HOOKS += AR8030_FETCH_VENDOR_FIRMWARE
+endif
 
 #
 # Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
@@ -54,20 +85,26 @@ endef
 #
 # Userspace (CMake).
 #
-# USING_8030DRV alone is the driver-backed transport: the daemon reaches the
-# chip through /dev/ar_mdev<N> (created by our out-of-tree kernel driver,
-# built above), instead of talking raw SDIO/USB/UART itself. USING_8030SDIO
-# is a *different*, mutually exclusive architecture -- daemon/main.c's
-# INTF_TYPE_SDIO path opens /dev/artosyn_sdio directly and expects a thin
-# passthrough kernel module (the vendor's own artosyn_sdio.ko, not anything
-# this package builds) to do all SDIO bus handling in userspace instead.
-# Mixing the two -- our driver-backed kernel module with a daemon compiled
-# for raw-SDIO -- builds and installs fine but the daemon can never find a
-# device (bb_dev_getlist() always returns 0; confirmed live, `strings` on
-# the resulting daemon binary shows only "/dev/artosyn_sdio", no "ar_mdev"
-# at all). USING_8030USB/UART are likewise alternatives to the driver, not
-# additions to it, so all three stay off (0001-* teaches the CMakeLists
-# that DRV on its own is a valid choice; upstream rejects it).
+# USING_8030DRV is the driver-backed transport: the daemon reaches the chip
+# through /dev/ar_mdev<N> (created by our out-of-tree kernel driver, built
+# above) via oal_mdev.c's per-write-skb-allocation/multiplexing-for-8-devices
+# architecture -- confirmed on real hardware to plateau around 5-7Mbps
+# regardless of link bandwidth/MCS. USING_8030SDIO is daemon/main.c's
+# INTF_TYPE_SDIO path: it opens /dev/artosyn_sdio directly
+# (daemon/dev8030/sdio8030/sdio_dev.c) and expects a much thinner kernel
+# interface -- open/poll/read/write, no multiplexing -- to do all SDIO bus
+# handling. This used to require the vendor's own closed artosyn_sdio.ko;
+# 0011-sdio-add-direct-artosyn_sdio-chardev.patch (see driver/linux/bus/
+# sdio.c) implements that same /dev/artosyn_sdio interface directly in our
+# own driver instead, on top of the SDIO bus code this package already
+# builds -- confirmed with the vendor's own daemon/artosyn_sdio.ko as a
+# proof of concept to reach ~18Mbps unmodified. Both DEV_8030_DRV and
+# DEV_8030_SDIO compile into the same daemon binary (main.c's reg_8030_dev()
+# gates each behind its own #ifdef, not an #elif) -- runtime -i selects
+# between them (3=drv, 1=sdio), so enabling SDIO here doesn't remove the
+# DRV fallback. USING_8030USB/UART stay off -- alternatives to the driver
+# entirely, not related to this choice (0001-* teaches the CMakeLists that
+# DRV/SDIO without USB/UART is a valid choice; upstream rejects it).
 #
 # OpenIPC's rootfs_script.sh deletes /usr/lib/libstdc++* on musl builds, so the
 # handful of C++ tools have to carry it statically. Buildroot's toolchainfile
@@ -78,7 +115,7 @@ AR8030_CONF_OPTS = \
 	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
 	-DUSING_8030DRV=ON \
 	-DUSING_8030USB=OFF \
-	-DUSING_8030SDIO=OFF \
+	-DUSING_8030SDIO=ON \
 	-DUSING_8030UART=OFF \
 	-DUSING_XDS_HDR=ON \
 	-DENABLE_UDS=ON \
@@ -144,11 +181,27 @@ endef
 endif
 
 ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
+# ar8030.json (plain config) is committed and always installed. ar8030.img
+# is an unlicensed vendor binary blob -- not committed -- so it's only
+# installed when AR8030_FETCH_VENDOR_FIRMWARE (above) managed to fetch one
+# this build; S60ar8030 already omits fw_name= gracefully when it's
+# absent. Sensor/camera tuning is NOT this package's concern -- see
+# package/waybeam for that, on boards where waybeam is what needs it.
+#
+# Also archived into $(BINARIES_DIR) (output/images/ar8030.img) alongside
+# fitImage/rootfs.ubi/etc, purely for inspection/reuse -- copy_to_archive
+# in builder.sh doesn't special-case it, it just rides along with
+# everything else under output/images/.
 define AR8030_INSTALL_FIRMWARE
 	$(INSTALL) -d -m 0755 $(TARGET_DIR)/lib/firmware/ar8030
-	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.img \
-		$(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.json \
+	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.json \
 		$(TARGET_DIR)/lib/firmware/ar8030
+	if [ -f $(@D)/vendor-firmware/ar8030.img ]; then \
+		$(INSTALL) -m 0644 $(@D)/vendor-firmware/ar8030.img $(TARGET_DIR)/lib/firmware/ar8030; \
+		$(INSTALL) -D -m 0644 $(@D)/vendor-firmware/ar8030.img $(BINARIES_DIR)/ar8030.img; \
+	else \
+		echo "ar8030: no vendor ar8030.img fetched this build -- baseband will boot without a fw_name=" >&2; \
+	fi
 endef
 endif
 

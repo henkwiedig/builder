@@ -1,0 +1,22 @@
+config BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE
+	bool "ascent-vendor-firmware"
+	help
+	  Fetches and extracts CADDX's "Ascent H Sky" vendor OTA image
+	  exactly once, straight into BINARIES_DIR (output/images/
+	  ar8030.img, output/images/sensors/*.bin), for hi3516cv6xx_fpv_
+	  caddx-ascent-lite's ar8030 (baseband demo firmware) and waybeam
+	  (os02k10 sensor tuning) packages to each copy what they need out
+	  of and install themselves -- see extract.py's docstring for the
+	  full story, including why only the raw vendor zip/img itself
+	  (cache/vendor-images/, shared and surviving builder.sh's
+	  `rm -rf openipc`) needs persistent caching, not these extracted
+	  artifacts.
+
+	  Not meant to be enabled by hand: hi3516cv6xx_fpv_caddx-ascent-
+	  lite's defconfig turns this on directly, and ar8030's/waybeam's
+	  own FETCH_DEPENDENCY string options (see those packages'
+	  Config.in) name it so Buildroot's scheduler builds it first.
+	  Single-device-specific by design, same as this repo's
+	  kc110-board-support -- not something another AR8030/waybeam
+	  board would select unless it also happens to use this exact
+	  vendor image.
