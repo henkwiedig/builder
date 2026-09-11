@@ -11,21 +11,104 @@
 test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
 
 DAEMON="/usr/bin/ar8030-transport-tx"
-PIDFILE="/var/run/ar8030-transport-tx.pid"
+RUNDIR="/tmp/ar8030"
+PIDFILE="$RUNDIR/ar8030-transport-tx.pid"
+LOGFILE="$RUNDIR/ar8030-transport-tx.log"
+WATCHDOG_PIDFILE="$RUNDIR/ar8030-transport-tx-watchdog.pid"
 
 if [ "x$AR8030_TRANSPORT_TX_ENABLED" = "xfalse" ]; then
 	echo "Starting ar8030-transport-tx... skipped (disabled)"
 	exit 0
 fi
 
+# Confirmed on real hardware (SDIO daemon mode bring-up, see
+# ar8030-transport's own README "SDIO chardev" section): a stuck RPC
+# reply somewhere in the SDK client library (libar8030_client.so) can
+# wedge one of this process's own threads forever, blocked waiting on a
+# reply that never arrives -- while ar8030d itself and a *completely
+# separate, freshly-started* client both stay perfectly healthy at the
+# same time. The process doesn't crash and doesn't spin (0% CPU), so
+# nothing external can distinguish "genuinely idle, nothing to send
+# right now" from "permanently wedged" except this process's own
+# forward progress -- and a thread stuck this way can't be gracefully
+# unstuck from outside, so recovery needs a full process restart, not a
+# soft reconnect.
+#
+# -v's own stats line (tx/main.c, STATS_INTERVAL_S=1.0) becomes the
+# heartbeat: it only gets printed by the main loop actually still
+# iterating, so its log file's mtime staleness is a reliable "has this
+# process made forward progress recently" signal regardless of which
+# internal call is stuck. WATCHDOG_STALE_S gives a wide margin over the
+# expected ~1s cadence to avoid false triggers from e.g. a slow frame-shm
+# ring wait.
+WATCHDOG_STALE_S=6
+
+start_tx() {
+	mkdir -p "$RUNDIR"
+	(
+		exec "$DAEMON" -v $AR8030_TRANSPORT_TX_ARGS
+	) >>"$LOGFILE" 2>&1 &
+	echo $! > "$PIDFILE"
+}
+
+watchdog() {
+	# Checks actual byte-progress from -v's own "totals: ... bytes=N"
+	# field, not just log mtime: confirmed on real hardware that a
+	# different failure mode also happens where the main loop keeps
+	# iterating and printing fresh stats lines every second (so an
+	# mtime-only check never notices anything wrong) while
+	# bb_socket_write() fails fast and repeatedly, "bytes=" frozen at
+	# the same value indefinitely -- a real stall from the user's
+	# perspective (no video) that isn't a frozen process. Two
+	# consecutive unchanged readings (2x WATCHDOG_STALE_S) before
+	# restarting, to tolerate a transient backlog spike that clears on
+	# its own within one check interval. A fully wedged process (no new
+	# log lines at all) also shows unchanged "bytes=" here, so this one
+	# check covers both failure modes -- the earlier mtime-only version
+	# only caught the frozen-process case.
+	last_bytes=""
+	stall_count=0
+	while true; do
+		sleep "$WATCHDOG_STALE_S"
+		pid=$(cat "$PIDFILE" 2>/dev/null)
+		if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+			last_bytes=""
+			stall_count=0
+			continue
+		fi
+
+		bytes=$(tail -n 20 "$LOGFILE" 2>/dev/null | grep -o 'bytes=[0-9]*' | tail -1 | cut -d= -f2)
+		if [ -n "$bytes" ] && [ "$bytes" = "$last_bytes" ]; then
+			stall_count=$((stall_count + 1))
+		else
+			stall_count=0
+		fi
+		last_bytes="$bytes"
+
+		if [ "$stall_count" -ge 2 ]; then
+			echo "$(date): no byte progress for $((stall_count * WATCHDOG_STALE_S))s (stuck at bytes=$bytes), restarting" >>"$LOGFILE"
+			kill -9 "$pid" 2>/dev/null
+			start_tx
+			last_bytes=""
+			stall_count=0
+		fi
+	done
+}
+
 start() {
 	echo "Starting ar8030-transport-tx..."
-	start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- $AR8030_TRANSPORT_TX_ARGS
+	mkdir -p "$RUNDIR"
+	: > "$LOGFILE"
+	start_tx
+	watchdog &
+	echo $! > "$WATCHDOG_PIDFILE"
 }
 
 stop() {
 	echo "Stopping ar8030-transport-tx..."
-	start-stop-daemon -K -q -p "$PIDFILE"
+	[ -f "$WATCHDOG_PIDFILE" ] && kill "$(cat "$WATCHDOG_PIDFILE")" 2>/dev/null
+	rm -f "$WATCHDOG_PIDFILE"
+	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 	rm -f "$PIDFILE"
 }
 
