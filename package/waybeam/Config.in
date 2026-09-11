@@ -40,4 +40,52 @@ config BR2_PACKAGE_WAYBEAM_JSON_CLI
 	  model staging). The init script degrades gracefully without it,
 	  but then none of those boot-time fixups happen.
 
+config BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT
+	string "sensor tuning fetch script (path relative to the external tree)"
+	help
+	  Some boards' sensor plugin (CV610_SENSOR_PLUGIN, currently always
+	  os02k10 -- see WAYBEAM_MAKE_OPTS) ships its per-fps/gain/day-
+	  night tuning presets as vendor-provided binary blobs, not
+	  anything this package or upstream waybeam_venc carries -- e.g.
+	  this device's CADDX Ascent vendor image. This package deliberately
+	  carries none of that itself, same reasoning as package/ar8030's
+	  own BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT (see that Config.in
+	  entry for the full rationale) -- a board using a different sensor
+	  or a different vendor's tuning data sources it differently.
+
+	  Set this in your device's own defconfig to a script path relative
+	  to the external tree root (the BR2_EXTERNAL variable, this
+	  build's general/ directory), e.g. "scripts/fetch-vendor-
+	  sensors.py" for a script living at your device's general/scripts/
+	  fetch-vendor-sensors.py.
+
+	  Called as: <script> <BINARIES_DIR> <output-dir>, before this
+	  package builds. Must write a *.bin file per tuning preset into
+	  <output-dir>, and must never fail the build itself -- print a
+	  warning and leave <output-dir> empty on any failure instead.
+
+	  See devices/hi3516cv6xx_fpv_caddx-ascent-lite's defconfig +
+	  general/scripts/fetch-vendor-sensors.py for a full example. Left
+	  empty, no fetch runs and /etc/sensors ships empty.
+
+config BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_DEPENDENCY
+	string "extra package this fetch script needs built first (optional)"
+	depends on BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT != ""
+	help
+	  Optional Buildroot package name, added to WAYBEAM_DEPENDENCIES,
+	  that BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT (above) needs
+	  already built -- e.g. a device-owned package that does the
+	  actual vendor download/extraction once and caches it, shared
+	  with other packages that also need pieces of the same vendor
+	  image (this device's own ascent-vendor-firmware, shared with
+	  package/ar8030's baseband firmware fetch, is the worked
+	  example -- see BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY
+	  there too). This is what actually gets you "downloaded/
+	  extracted before this package builds" with a real guarantee --
+	  BR2_ROOTFS_PRE_BUILD_SCRIPT looks like the obvious tool for that
+	  but is not wired into this project's build (nothing
+	  make BOARD=... runs depends on it).
+
+	  Leave empty if your fetch script is self-contained.
+
 endif

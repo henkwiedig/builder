@@ -34,12 +34,26 @@ AR8030_TRANSPORT_TX_DEPENDENCIES = ar8030
 # not tied to tx specifically, but this package is the natural place to
 # build+install the air-side copy since it already stages against this
 # same ar8030 dependency.
+#
+# `make clean` before each: when built via AR8030_TRANSPORT_TX_OVERRIDE_
+# SRCDIR (see this file's header comment), $(@D) is an `rsync -au` copy of
+# the *live* ar8030-transport working tree, mtimes preserved -- and that
+# same tree is also the OVERRIDE_SRCDIR for sbc-groundstations' ar8030-
+# transport-rx package (AArch64 groundstation, a different repo), built
+# from the same linkctl/ directory with the same default build/ and
+# ar8030-linkctl output names. Without a clean first, a binary/object left
+# over from whichever side built more recently rsyncs in looking newer
+# than its .c source, and Make silently reuses it unrebuilt for the wrong
+# architecture -- confirmed: an AArch64 ar8030-linkctl survived into an
+# ARM build this way and failed Buildroot's post-install arch check.
 define AR8030_TRANSPORT_TX_BUILD_CMDS
+	$(MAKE) -C $(@D)/tx clean
 	$(MAKE) -C $(@D)/tx \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS)" \
 		AR8030_SDK_INC=$(STAGING_DIR)/usr/include/ar8030 \
 		AR8030_SDK_LIB=$(STAGING_DIR)/usr/lib
+	$(MAKE) -C $(@D)/linkctl clean
 	$(MAKE) -C $(@D)/linkctl \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS)" \

@@ -64,14 +64,67 @@ config BR2_PACKAGE_AR8030_FIRMWARE
 	bool "install the demo baseband firmware"
 	default y
 	help
-	  Installs the SDK's demo baseband image and its config to
-	  /lib/firmware/ar8030 (bb_demo.img, bb_config.json, and the
-	  usr_{ap,dev,master,slave}.json role overlays), so the driver can
+	  Installs the vendor's demo baseband image + config to
+	  /lib/firmware/ar8030 (ar8030.img, ar8030.json), so the driver can
 	  boot the chip with fw_name=/cfg_name= module parameters.
 
-	  Costs about 340 KB uncompressed. Turn it off if the AR8030 on
-	  your board boots from its own flash, or if you ship a different
-	  image out of an overlay.
+	  ar8030.json is committed; ar8030.img is fetched fresh at build
+	  time instead, by whatever script BR2_PACKAGE_AR8030_FIRMWARE_
+	  FETCH_SCRIPT names (below) -- it's a proprietary vendor binary
+	  this repo does not commit. Best-effort: no network or a broken
+	  fetch just means ar8030.img isn't installed that build, not a
+	  build failure (S60ar8030 already omits fw_name= gracefully when
+	  it's absent). Sensor/camera tuning, if this board needs any, is
+	  a *different* package's concern (e.g. waybeam) -- not this one's.
+
+	  Turn this off if the AR8030 on your board boots from its own
+	  flash.
+
+config BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT
+	string "vendor firmware fetch script (path relative to the external tree)"
+	depends on BR2_PACKAGE_AR8030_FIRMWARE
+	help
+	  Every AR8030-based board sources its demo baseband image from
+	  its own vendor's stock firmware, in that vendor's own format --
+	  this package deliberately carries none of that itself, so it
+	  stays reusable across boards from different vendors. Set this in
+	  your device's own defconfig to a script path relative to the
+	  external tree root (the BR2_EXTERNAL variable, this build's
+	  general/ directory), e.g. "scripts/fetch-vendor-firmware.py" for
+	  a script living at your device's general/scripts/fetch-vendor-
+	  firmware.py -- it gets copied there the same way general/
+	  scripts/make-usrdata-image.sh does.
+
+	  Called as: <script> <BINARIES_DIR> <output-dir>, before this
+	  package builds. Must write ar8030.img into <output-dir> (nothing
+	  else -- a sibling package handles any sensor tuning this board
+	  also needs from the same vendor image), and must never fail the
+	  build itself -- print a warning and leave <output-dir> empty on
+	  any failure instead.
+
+	  See devices/hi3516cv6xx_fpv_caddx-ascent-lite's defconfig +
+	  general/scripts/fetch-vendor-firmware.py for a full example
+	  (CADDX's "Ascent H Sky" OTA image on Google Drive). Left empty,
+	  no fetch runs and ar8030.img doesn't get installed.
+
+config BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY
+	string "extra package this fetch script needs built first (optional)"
+	depends on BR2_PACKAGE_AR8030_FIRMWARE
+	help
+	  Optional Buildroot package name, added to AR8030_DEPENDENCIES,
+	  that BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT (above) needs
+	  already built -- e.g. a device-owned package that does the
+	  actual vendor download/extraction once and caches it, shared
+	  with other packages that also need pieces of the same vendor
+	  image (this device's own ascent-vendor-firmware, shared with
+	  waybeam's sensor tuning, is the worked example). This is what
+	  actually gets you "downloaded/extracted before this package
+	  builds" with a real guarantee -- BR2_ROOTFS_PRE_BUILD_SCRIPT
+	  looks like the obvious tool for that but is not wired into this
+	  project's build (nothing make BOARD=... runs depends on it).
+
+	  Leave empty if your fetch script is self-contained (does its own
+	  fetching with no ordering requirement against another package).
 
 config BR2_PACKAGE_AR8030_INIT
 	bool "install /etc/init.d/S60ar8030"

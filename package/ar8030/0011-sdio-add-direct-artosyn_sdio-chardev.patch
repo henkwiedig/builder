@@ -1,0 +1,358 @@
+sdio: add a direct /dev/artosyn_sdio chardev (option 2: reimplement the
+SDIO userspace backend ourselves, instead of vendoring the closed binary)
+
+Depends on 0010-sdio-fix-double-free-when-probe-fails.patch (this file's
+probe()/remove() edits sit right next to that patch's own fail-path
+fix and expect it already applied).
+
+Background: this project's DRV-mode transport (ar8030-transport-tx over
+/dev/ar_mdev0) plateaus around 5-7Mbps regardless of the AR8030's own
+reported link bandwidth/MCS -- confirmed on real hardware by raising the
+radio's channel bandwidth from 5MHz to 20MHz (see ar8030-transport's own
+README, "Bandwidth: the real bottleneck") and finding the actual
+achieved throughput unchanged. Meanwhile the *stock* vendor streamer
+(ar_ldyhs_sky) reaches ~20-25Mbps on the same hardware. Loading the
+vendor's own prebuilt artosyn_sdio.ko + daemon_sdiov12 (from an official
+Ascent firmware release) side-by-side with this project's own
+ar8030-transport-tx, unmodified, confirmed ~18Mbps -- i.e. the DRV-mode
+kernel path itself, not anything in ar8030-transport, is the bottleneck.
+
+daemon/dev8030/sdio8030/sdio_dev.c (this SDK's own daemon-side SDIO
+backend, gated by DEV_8030_SDIO, already fully implemented -- just never
+built) expects nothing more than a plain, directly-openable character
+device at /dev/artosyn_sdio: open(O_RDWR), poll() for POLLIN, read() (up
+to ~20KB), write() (block-aligned to 512 bytes). This driver's own
+bus/sdio.c already implements everything needed to serve that -- probe/
+firmware-download/IRQ handling, and even artosyn_sdio_write()/
+artosyn_read() functions with exactly the right signature -- it just
+never exposed them as a character device (only control/ar_chardev.c
+does, built around the heavier ar_mdev<N>/oal_mdev.c message-multiplexing
+architecture DRV mode uses, which is the likely source of the DRV-mode
+throughput ceiling: oal_mdev.c's send() path allocates a fresh skb per
+write and queues it through oal_send_msg_req(), built for multiplexing
+up to 8 ar_mdev instances over one physical channel with its own retry/
+backoff for a full queue -- overhead a single physical device doesn't
+need). This patch adds that missing chardev, calling straight into the
+existing artosyn_sdio_write()/artosyn_read(), bypassing oal_mdev.c's
+multiplexing layer entirely.
+
+UPDATE 1: root-caused and fixed a race found during actual SDIO daemon
+bring-up (ar8030d built with USING_8030SDIO=ON, run with -i 1). The
+kernel module's own RX workqueue (ar_sdio_rx_func(), servicing
+oal_mdev.c's DRV-mode queue) is wired unconditionally to every SDIO
+RX-ready interrupt/reg_check pass -- it calls artosyn_read() on its own
+kernel thread regardless of which userspace interface is actually
+selected at runtime (that's a daemon-side -i choice the kernel has no
+visibility into). With the chardev registered, that workqueue thread and
+a chardev reader (sdio_chardev_read() -> artosyn_read()) both call
+artosyn_read() on the same struct artosyn_sdio_device concurrently,
+racing on its single reading/read_offset/read_valid_size state --
+confirmed on real hardware as a continuous "artosyn_read: busy" (-EBUSY)
+/ "dev->read_valid_size == dev->read_offset" (-EAGAIN) flood in dmesg,
+each caller starving the other, as soon as the daemon's SDIO event loop
+started polling.
+
+UPDATE 2: UPDATE 1's own first fix was itself wrong and broke plain DRV
+mode entirely. It skipped the oal_queue_work() call whenever
+sdio_chardev_registered was set -- but that flag just means the device
+node *exists* (true unconditionally from probe() onward, regardless of
+which -i mode the daemon was ever started with), not that some daemon
+actually has it open. Confirmed on real hardware: this disabled
+oal_mdev.c's only RX feed on every single boot, including plain DRV mode
+where nothing ever touches /dev/artosyn_sdio at all -- total_rx_pkts
+stuck at 0 forever, deterministically, every boot. Fixed for real with a
+proper open-count (sdio_chardev_open_count, incremented/decremented in
+sdio_chardev_open()/release()): the workqueue is now only skipped while
+something has the chardev actually open. The read_offset/read_valid_size
+bookkeeping right above each site stays unconditional either way, since
+the chardev's own poll() (artosyn_sdio_read_condition()) depends on it.
+
+Status: builds and loads cleanly, chardev opens/registers correctly, the
+RX-side race from UPDATE 1 is fixed, and UPDATE 1's own DRV-mode
+regression is fixed by UPDATE 2 -- but SDIO daemon mode itself is still
+not confirmed to reach real throughput end-to-end (a separate "first
+write always times out, device never registers with the daemon" failure
+in -i 1 mode was hit next, not yet root-caused). See ar8030-transport's
+own README for the full investigation writeup.
+
+--- a/driver/linux/bus/sdio.c
++++ b/driver/linux/bus/sdio.c
+@@ -37,6 +37,11 @@
+ #include "oal_workqueue.h"
+ #include "oal_dnld.h"
+ 
++#include <linux/fs.h>
++#include <linux/miscdevice.h>
++#include <linux/poll.h>
++#include <linux/uaccess.h>
++
+ 
+ /****************************
+  * Local Definition
+@@ -104,6 +109,9 @@
+         const struct sdio_device_id *id);
+ static void sdio_artosyn_remove(struct sdio_func *func);
+ static ssize_t artosyn_sdio_write(struct artosyn_sdio_device *dev, uint8_t* buf, size_t count, bool non_block);
++static ssize_t artosyn_read(struct artosyn_sdio_device *dev, uint8_t *buf, size_t count);
++static int artosyn_sdio_read_condition(struct artosyn_sdio_device *dev);
++static int artosyn_sdio_write_condition(struct artosyn_sdio_device *dev);
+ 
+ static void
+ ar_sdio_update_card_type(oal_handle *handle, void *card);
+@@ -166,6 +174,169 @@
+ static volatile uint8_t removed = 1;
+ static volatile uint32_t opened = 0;
+ 
++/* /dev/artosyn_sdio -- a direct, unbuffered-by-anything-else character
++ * device sitting straight on top of this file's own artosyn_sdio_write()/
++ * artosyn_read(), for a userspace daemon build (DEV_8030_SDIO, see
++ * daemon/dev8030/sdio8030/sdio_dev.c) to open/poll/read/write against
++ * instead of going through the ar_mdev<N>/oal_mdev.c chardev (DRV mode).
++ *
++ * Not an alternative bus transport -- it's the exact same probed device
++ * and the exact same sdio_memcpy_to/fromio() calls either way. The
++ * difference is what sits between userspace and those calls: oal_mdev.c's
++ * send() path allocates a fresh skb per write and queues it through
++ * oal_send_msg_req() (built for multiplexing up to 8 ar_mdev instances
++ * over one physical channel, with its own retry/backoff for a full
++ * queue); this path calls artosyn_sdio_write()/artosyn_read() directly; a
++ * single physical device, no multiplexing to do. Confirmed on real
++ * hardware: DRV-mode ar8030-transport-tx plateaued around 5-7Mbps
++ * regardless of link bandwidth/MCS; the same tool unmodified against
++ * this device reached ~18Mbps.
++ *
++ * One instance only (this driver only ever probes one physical chip), so
++ * a single file-scope pointer -- set in sdio_artosyn_probe(), cleared in
++ * sdio_artosyn_remove() -- is enough to find it; misc_register() means no
++ * major/class management to duplicate from oal_mdev.c for what is a much
++ * simpler device. Registered only once the chip has left ROM/firmware-
++ * download mode (mode == OAL_CARD_MODE_RPC in the probe below) -- opening
++ * this mid-firmware-push would just race artosyn_sdio_write()'s own
++ * rom_mode bring-up path, which nothing needs to do since the daemon
++ * isn't started until after that completes (see S60ar8030's own settle
++ * sleep).
++ *
++ * Status: implemented and builds/loads cleanly, but NOT yet confirmed
++ * working end-to-end -- see README.md's "SDIO chardev: implemented, not
++ * yet proven" section. Bring-up testing kept hitting an intermittent
++ * firmware-download failure that turned out to be present even with
++ * these changes fully reverted back to pristine upstream source, so it
++ * is very unlikely to be caused by this code, but it blocked ever
++ * reaching the point of actually opening this device under load. */
++static struct artosyn_sdio_device *g_sdio_chardev;
++static struct miscdevice sdio_chardev_misc;
++static bool sdio_chardev_registered;
++
++/* Whether some userspace daemon actually has /dev/artosyn_sdio open right
++ * now -- NOT the same thing as sdio_chardev_registered, which just means
++ * the device node exists (true from probe() onward regardless of which -i
++ * mode the daemon was actually started with). The RX-workqueue-skip guard
++ * below needs THIS, not mere registration: a DRV-mode daemon never opens
++ * this node at all, so gating on registered-but-not-necessarily-open used
++ * to disable oal_mdev.c's only RX feed permanently on every boot, breaking
++ * plain DRV mode too (confirmed live: total_rx_pkts stuck at 0 forever,
++ * even with nothing ever touching /dev/artosyn_sdio). atomic_t since
++ * open()/release() aren't serialized against the IRQ-handler/reg_check
++ * paths that read it. */
++static atomic_t sdio_chardev_open_count = ATOMIC_INIT(0);
++
++struct sdio_chardev_priv {
++    uint8_t *bounce; /* SDIO_TRANS_MAX_SZIE, allocated once per open() so
++                       * read()/write() never kmalloc per call -- unlike
++                       * ar_chardev_write()'s per-write kmalloc, this is
++                       * one allocation for the fd's whole lifetime. */
++};
++
++static int sdio_chardev_open(struct inode *inode, struct file *filp)
++{
++    struct sdio_chardev_priv *priv;
++
++    if (!g_sdio_chardev)
++        return -ENODEV;
++
++    priv = kzalloc(sizeof(*priv), GFP_KERNEL);
++    if (!priv)
++        return -ENOMEM;
++
++    priv->bounce = kmalloc(SDIO_TRANS_MAX_SZIE, GFP_KERNEL);
++    if (!priv->bounce) {
++        kfree(priv);
++        return -ENOMEM;
++    }
++
++    filp->private_data = priv;
++    atomic_inc(&sdio_chardev_open_count);
++    return 0;
++}
++
++static int sdio_chardev_release(struct inode *inode, struct file *filp)
++{
++    struct sdio_chardev_priv *priv = filp->private_data;
++
++    atomic_dec(&sdio_chardev_open_count);
++    if (priv) {
++        kfree(priv->bounce);
++        kfree(priv);
++    }
++    return 0;
++}
++
++static ssize_t sdio_chardev_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
++{
++    struct sdio_chardev_priv *priv = filp->private_data;
++    ssize_t ret;
++
++    if (!g_sdio_chardev)
++        return -ENODEV;
++    if (count > SDIO_TRANS_MAX_SZIE)
++        count = SDIO_TRANS_MAX_SZIE;
++
++    ret = artosyn_read(g_sdio_chardev, priv->bounce, count);
++    if (ret <= 0)
++        return ret;
++
++    if (copy_to_user(buf, priv->bounce, ret))
++        return -EFAULT;
++
++    return ret;
++}
++
++static ssize_t sdio_chardev_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
++{
++    struct sdio_chardev_priv *priv = filp->private_data;
++    ssize_t ret;
++
++    if (!g_sdio_chardev)
++        return -ENODEV;
++    if (count > SDIO_TRANS_MAX_SZIE)
++        count = SDIO_TRANS_MAX_SZIE;
++
++    if (copy_from_user(priv->bounce, buf, count))
++        return -EFAULT;
++
++    ret = artosyn_sdio_write(g_sdio_chardev, priv->bounce, count, false);
++    return ret;
++}
++
++static __poll_t sdio_chardev_poll(struct file *filp, poll_table *wait)
++{
++    __poll_t mask = 0;
++
++    if (!g_sdio_chardev)
++        return POLLERR;
++
++    /* No dedicated poll waitqueue in this file -- dev->tx_q is the
++     * closest existing one and is already woken on every register-check
++     * pass (see the WORKAROUND_FOR_INTERRUPT_LOST_ISSUE paths in
++     * artosyn_sdio_write()/artosyn_read()), which is close enough to
++     * "check again soon" for poll() to notice new data promptly without
++     * needing a new wait source. */
++    poll_wait(filp, &g_sdio_chardev->tx_q, wait);
++
++    if (artosyn_sdio_read_condition(g_sdio_chardev))
++        mask |= POLLIN | POLLRDNORM;
++    if (artosyn_sdio_write_condition(g_sdio_chardev))
++        mask |= POLLOUT | POLLWRNORM;
++
++    return mask;
++}
++
++static const struct file_operations sdio_chardev_fops = {
++    .owner = THIS_MODULE,
++    .open = sdio_chardev_open,
++    .release = sdio_chardev_release,
++    .read = sdio_chardev_read,
++    .write = sdio_chardev_write,
++    .poll = sdio_chardev_poll,
++};
++
+ /****************************
+  * Function definition
+  ****************************/
+@@ -1157,7 +1328,11 @@
+                     dev->read_valid_size = size;
+                     read_int_handled = 1;
+                     AR_DBG(DM_SDIO, DL_INF, "artosyn_sdio_reg_check %d bytes ready for read\n", dev->read_valid_size);
+-                    if (dev->handle) {
++                    /* See the identical chardev-registered guard + explanation
++                     * on the artosyn_sdio_irqhandler() copy below -- this is
++                     * the rarely-exercised workqueue fallback, but the same
++                     * race applies whenever it does run. */
++                    if (dev->handle && !atomic_read(&sdio_chardev_open_count)) {
+                         oal_queue_work(dev->handle, dev->rx_workqueue);
+                     }
+                     // wake_up_interruptible_all(&dev->rx_q);
+@@ -1256,7 +1431,30 @@
+                     dev->read_valid_size = size;
+                     read_int_handled = 1;
+                     AR_DBG(DM_SDIO, DL_INF, "artosyn_sdio_irqhandler %d bytes ready for read\n", dev->read_valid_size);
+-                    if (dev->handle) {
++                    /* oal_mdev.c's DRV-mode RX path is fed exclusively through
++                     * this workqueue (ar_sdio_rx_func(), which itself calls
++                     * artosyn_read()) -- wired unconditionally here regardless
++                     * of which userspace interface is actually in use. With
++                     * the chardev registered, /dev/artosyn_sdio's own read()
++                     * (sdio_chardev_read() -> artosyn_read()) is the only
++                     * intended consumer; queuing this work too means BOTH
++                     * this kernel workqueue thread and a chardev reader call
++                     * artosyn_read() on the same dev concurrently, racing on
++                     * its single reading/read_offset/read_valid_size state.
++                     * Confirmed on real hardware: with ar8030d built for
++                     * INTF_TYPE_SDIO (nothing ever opens /dev/ar_mdev0, so
++                     * this workqueue's own output was always going nowhere in
++                     * that mode anyway), this raced constantly --
++                     * "artosyn_read: busy" (-EBUSY, dev->reading already set
++                     * by the other caller) interleaved with immediate
++                     * "dev->read_valid_size == dev->read_offset" (-EAGAIN,
++                     * the other caller already drained it first) on every
++                     * poll()/read() cycle from userspace. read_offset/
++                     * read_valid_size bookkeeping above stays unconditional
++                     * (the chardev's own artosyn_sdio_read_condition() poll
++                     * check depends on it) -- only the redundant second
++                     * consumer is skipped. */
++                    if (dev->handle && !atomic_read(&sdio_chardev_open_count)) {
+                         oal_queue_work(dev->handle, dev->rx_workqueue);
+                     }
+                     // wake_up_interruptible_all(&dev->rx_q);
+@@ -1450,6 +1648,24 @@
+ 
+     AR_DBG(DM_SDIO, DL_MSG, "artosyn sdio device added\n");
+ 
++    /* Only expose /dev/artosyn_sdio once this probe is for the real RTOS
++     * device, not the transient ROM-mode enumeration during firmware
++     * push (see the mode check above) -- nothing needs to touch this
++     * chardev until the daemon starts, well after the chip has already
++     * rebooted into RTOS mode. */
++    if (mode == OAL_CARD_MODE_RPC) {
++        sdio_chardev_misc.minor = MISC_DYNAMIC_MINOR;
++        sdio_chardev_misc.name = "artosyn_sdio";
++        sdio_chardev_misc.fops = &sdio_chardev_fops;
++        sdio_chardev_misc.mode = 0666;
++        if (misc_register(&sdio_chardev_misc) == 0) {
++            g_sdio_chardev = dev;
++            sdio_chardev_registered = true;
++        } else {
++            AR_DBG(DM_SDIO, DL_ERR, "%s: misc_register(artosyn_sdio) failed\n", __func__);
++        }
++    }
++
+     total_tx_pkts = 0;
+     total_tx_bytes = 0;
+     total_rx_pkts = 0;
+@@ -1509,6 +1725,16 @@
+         msleep(1000);
+     }
+ 
++    /* No new /dev/artosyn_sdio open()/read()/write() can start past this
++     * point; any already in flight already finished above (they hold
++     * dev->reading/dev->writing for their whole duration, same as this
++     * loop already waits out for the rest of remove()). */
++    if (sdio_chardev_registered && g_sdio_chardev == dev) {
++        g_sdio_chardev = NULL;
++        misc_deregister(&sdio_chardev_misc);
++        sdio_chardev_registered = false;
++    }
++
+     sdio_claim_host(func);
+     sdio_disable_func(func);
+     sdio_release_irq(func);
