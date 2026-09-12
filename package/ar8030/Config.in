@@ -1,18 +1,13 @@
 config BR2_PACKAGE_AR8030
 	bool "ar8030"
-	depends on BR2_LINUX_KERNEL
 	depends on BR2_INSTALL_LIBSTDCPP
 	depends on BR2_TOOLCHAIN_HAS_THREADS
 	help
 	  Artosyn AR8030 baseband host support — the vendor "yz_host_drv"
-	  SDK (kernel driver + userspace RPC daemon + client library).
+	  SDK's userspace RPC daemon + client library (userspace only; the
+	  kernel driver is a separate concern, see below).
 
 	  Always installed:
-	  - artosyn_drv.ko: out-of-tree host driver. Binds the AR8030 over
-	    USB (4152:8030) and/or SDIO, pushes the baseband firmware into
-	    the chip at probe time via request_firmware(), and exposes
-	    /dev/ar_mdev<N> char devices, a /proc interface and a network
-	    interface.
 	  - ar8030d: the SDK "daemon". It owns the char device and serves
 	    the RPC that applications talk to (TCP on 127.0.0.1 plus a unix
 	    socket). Nothing else can reach the baseband while it is down,
@@ -24,10 +19,17 @@ config BR2_PACKAGE_AR8030
 	  are installed with an ar8030 prefix here so they can share
 	  /usr/bin with the rest of the rootfs.
 
-	  The driver needs a Linux 4.x or newer kernel — its compat shims
-	  bottom out around 3.10 and the netdev/USB code is written against
-	  4.x APIs. It will not build against the 3.0.8/3.4 vendor BSP
-	  kernels used by the older HiSilicon SoCs.
+	  This package does not build a kernel module at all -- it used to
+	  (the vendor SDK's own out-of-tree driver, USB+SDIO+DRV-mode in
+	  one module, incrementally patched here to fix a series of real
+	  bugs found over an extended investigation), but that driver is
+	  gone in favor of a clean-room-rewritten replacement:
+	  ar8030-transport's own kmod/artosyn_drv.c, built and installed by
+	  the ar8030-transport-tx package instead. See that repo's
+	  README.md ("Clean-room rewrite" section) for the full story of
+	  why. Only SDIO-mode transport (daemon -i 1, /dev/artosyn_sdio) is
+	  available as a result -- DRV-mode (-i 3, /dev/ar_mdev<N>) has no
+	  kernel-side counterpart left to open.
 
 	  The SDK is only published as source on a vendor Gitea instance
 	  (no releases, no tags), so the package is pinned to a commit.
@@ -35,47 +37,28 @@ config BR2_PACKAGE_AR8030
 	  https://git.topxgun.com/czdu/yz_host_drv
 
 comment "ar8030 needs a toolchain w/ C++, threads"
-	depends on BR2_LINUX_KERNEL
 	depends on !BR2_INSTALL_LIBSTDCPP || !BR2_TOOLCHAIN_HAS_THREADS
 
 if BR2_PACKAGE_AR8030
-
-choice
-	prompt "host bus"
-	default BR2_PACKAGE_AR8030_BUS_BOTH
-	help
-	  Which transport(s) the kernel driver is compiled with. Each one
-	  needs the matching subsystem in the kernel config: USB needs
-	  CONFIG_USB plus a host controller, SDIO needs CONFIG_MMC plus an
-	  SDIO-capable host controller driver.
-
-config BR2_PACKAGE_AR8030_BUS_BOTH
-	bool "USB and SDIO"
-
-config BR2_PACKAGE_AR8030_BUS_USB_ONLY
-	bool "USB only"
-
-config BR2_PACKAGE_AR8030_BUS_SDIO_ONLY
-	bool "SDIO only"
-
-endchoice
 
 config BR2_PACKAGE_AR8030_FIRMWARE
 	bool "install the demo baseband firmware"
 	default y
 	help
 	  Installs the vendor's demo baseband image + config to
-	  /lib/firmware/ar8030 (ar8030.img, ar8030.json), so the driver can
-	  boot the chip with fw_name=/cfg_name= module parameters.
+	  /lib/firmware/ar8030 (ar8030.img, ar8030.json), so the kernel
+	  module (ar8030-transport-tx's own artosyn_drv.ko) can boot the
+	  chip with fw_name=/cfg_name= module parameters.
 
 	  ar8030.json is committed; ar8030.img is fetched fresh at build
 	  time instead, by whatever script BR2_PACKAGE_AR8030_FIRMWARE_
 	  FETCH_SCRIPT names (below) -- it's a proprietary vendor binary
 	  this repo does not commit. Best-effort: no network or a broken
 	  fetch just means ar8030.img isn't installed that build, not a
-	  build failure (S60ar8030 already omits fw_name= gracefully when
-	  it's absent). Sensor/camera tuning, if this board needs any, is
-	  a *different* package's concern (e.g. waybeam) -- not this one's.
+	  build failure (ar8030-transport-tx's own S65 init script already
+	  omits fw_name= gracefully when it's absent). Sensor/camera
+	  tuning, if this board needs any, is a *different* package's
+	  concern (e.g. waybeam) -- not this one's.
 
 	  Turn this off if the AR8030 on your board boots from its own
 	  flash.
@@ -126,16 +109,6 @@ config BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY
 	  Leave empty if your fetch script is self-contained (does its own
 	  fetching with no ordering requirement against another package).
 
-config BR2_PACKAGE_AR8030_INIT
-	bool "install /etc/init.d/S60ar8030"
-	default y
-	help
-	  Boot script that loads artosyn_drv (with fw_name/cfg_name when
-	  /lib/firmware/ar8030 is populated) and starts ar8030d from a
-	  writable working directory — the daemon puts its log directory
-	  and its unix socket in $PWD, which does not work from a
-	  read-only rootfs.
-
 config BR2_PACKAGE_AR8030_PAIR_TOOL
 	bool "bb_pair binding tool"
 	default y
@@ -147,10 +120,10 @@ config BR2_PACKAGE_AR8030_PAIR_TOOL
 
 	  On a successful pair, also writes the peer's MAC into the
 	  on-disk baseband config (see 0006-*.patch) so it survives the
-	  next reboot's firmware push, and S60ar8030 spawns a background
-	  loop (see 0007-*.patch) that keeps reconnecting to it at every
-	  boot -- so a paired unit no longer needs to be re-paired by
-	  hand every time.
+	  next reboot's firmware push, and ar8030-transport-tx's own S65
+	  init script spawns a background loop (see 0007-*.patch) that
+	  keeps reconnecting to it at every boot -- so a paired unit no
+	  longer needs to be re-paired by hand every time.
 
 config BR2_PACKAGE_AR8030_USB_LOADER
 	bool "USB rom-code firmware loader"

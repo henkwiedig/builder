@@ -72,4 +72,46 @@ define AR8030_TRANSPORT_TX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/etc/default/ar8030-transport-tx
 endef
 
+#
+# Kernel module (kmod/, out-of-tree, built by the kernel's own kbuild) --
+# this package's own clean-room replacement for the vendor's closed
+# artosyn_sdio.ko, see kmod/artosyn_drv.c's header comment and this repo's
+# README "Clean-room rewrite" section for the full story of why it exists
+# and what it does/doesn't implement (SDIO-mode chardev only, no DRV-mode).
+#
+# AR8030_SDK_DRIVER_INC reaches directly into the ar8030 package's own
+# extracted+patched source tree for the shared ioctl/protocol header
+# (driver/linux/bus/sdio.h) -- $(AR8030_DIR) is Buildroot's own
+# auto-generated <PKG>_DIR variable, a standard cross-package reference
+# (see package/ar8030/ar8030.mk's AR8030_INSTALL_STAGING_CMDS comment,
+# which documents this same reasoning from the other side). That source
+# tree already has to exist for the ar8030 package's own build, and this
+# package already depends on ar8030, so Buildroot's scheduler guarantees
+# it is extracted (and patched) before this module builds against it.
+AR8030_TRANSPORT_TX_MODULE_SUBDIRS = kmod
+
+AR8030_TRANSPORT_TX_MODULE_MAKE_OPTS = \
+	AR8030_SDK_DRIVER_INC=$(AR8030_DIR)/driver/linux/bus
+
+# Only the subset of the old ar8030.mk's own AR8030_LINUX_CONFIG_FIXUPS
+# that this module still actually needs: CONFIG_FW_LOADER for
+# request_firmware() (the boot-ROM firmware push) and CONFIG_MMC for the
+# SDIO bus itself. CONFIG_PROC_FS/CONFIG_NET/CONFIG_USB were only ever
+# needed by the old combined driver's proc-file/netdev/USB-bus code, none
+# of which this module has (see kmod/artosyn_drv.c -- SDIO chardev only).
+define AR8030_TRANSPORT_TX_LINUX_CONFIG_FIXUPS
+	$(call KCONFIG_SET_OPT,CONFIG_FW_LOADER,y)
+	$(call KCONFIG_SET_OPT,CONFIG_MMC,y)
+endef
+
+# kernel-module must be $(eval)'d *before* generic-package: $(eval ...)
+# expands and fixes a rule's prerequisite list (e.g. the order-only wait
+# on this package's own DEPENDENCIES) the moment it runs, and it's
+# kernel-module's own eval that appends "linux" to DEPENDENCIES -- doing
+# this the other way around silently drops that wait (the variable
+# itself still ends up correct for anyone who inspects it afterward, so
+# this is easy to get backwards without noticing: confirmed on a genuine
+# from-scratch build, where it raced against the kernel's own build and
+# failed with "scripts/mod/modpost: not found").
+$(eval $(kernel-module))
 $(eval $(generic-package))
