@@ -10,7 +10,7 @@
 AR8030_VERSION = 3bb948de118b94d2ede751d55f1b28b7e0b9ab62
 AR8030_SITE = https://git.topxgun.com/czdu/yz_host_drv.git
 AR8030_SITE_METHOD = git
-AR8030_LICENSE = GPL-2.0 (kernel driver), PROPRIETARY (host SDK)
+AR8030_LICENSE = PROPRIETARY (host SDK)
 AR8030_INSTALL_STAGING = YES
 
 # bb_pair (0006-*.patch) links libcjson via pkg-config to persist a paired
@@ -49,62 +49,32 @@ AR8030_PRE_BUILD_HOOKS += AR8030_FETCH_VENDOR_FIRMWARE
 endif
 
 #
-# Kernel driver (driver/linux, out-of-tree, built by the kernel's own kbuild).
+# Userspace only (CMake) -- no kernel module built by this package anymore.
 #
-# The vendor Makefile pulls its per-bus switches out of driver/linux/config.mk,
-# which hardcodes both buses to y. Passing them on the command line overrides
-# that (command-line variables beat file assignments, and make propagates them
-# to the kbuild sub-make). DRV_DIR is what the KERNELRELEASE branch of that
-# Makefile uses to find config.mk and its own -I paths; nothing sets it when
-# kbuild is entered directly the way buildroot does.
+# This package used to also build the vendor SDK's own out-of-tree kernel
+# driver (driver/linux, USB+SDIO+DRV-mode all in one module) here. That
+# driver -- and the six patches this package used to carry fixing bugs in
+# it (0003/0004/0010/0011/0012/0014, all touching driver/linux/bus/
+# sdio.c) -- is gone as of the ar8030-transport project's own clean-room
+# rewrite of the SDIO chardev (ar8030-transport/kmod/artosyn_drv.c, see
+# that repo's README "Clean-room rewrite" section for the full story):
+# confirmed on real hardware to be dramatically more reliable under
+# sustained throughput than this package's own incrementally-patched
+# driver ever became, so there's no reason left to keep building or
+# maintaining the old one. The ar8030-transport-tx package now builds
+# and installs that replacement kernel module instead (see its own
+# ar8030-transport-tx.mk) -- DRV-mode transport (INTF_TYPE_DRV,
+# /dev/ar_mdev<N>) is not available at all anymore as a result; only
+# INTF_TYPE_SDIO (daemon -i 1) is.
 #
-AR8030_MODULE_SUBDIRS = driver/linux
-
-AR8030_MODULE_MAKE_OPTS = \
-	DRV_DIR=$(@D)/driver/linux \
-	CONFIG_BUS_USB=$(if $(BR2_PACKAGE_AR8030_BUS_SDIO_ONLY),n,y) \
-	CONFIG_BUS_SDIO=$(if $(BR2_PACKAGE_AR8030_BUS_USB_ONLY),n,y)
-
-# Everything the driver links against has to be built *in*, not modular. This
-# kernel's Module.symvers carries vmlinux exports only, so a symbol coming from
-# a =m subsystem cannot be resolved: artosyn_drv.ko then links with e.g.
-# request_firmware/release_firmware undefined — modpost only warns — and the
-# failure surfaces much later as an insmod-time "Unknown symbol".
-# hi3516cv6xx ships CONFIG_FW_LOADER=m, which hits exactly that.
-#
-# KCONFIG_ENABLE_OPT is not enough here: it treats an existing =m as already
-# enabled and leaves it alone. KCONFIG_SET_OPT forces the value.
-define AR8030_LINUX_CONFIG_FIXUPS
-	$(call KCONFIG_SET_OPT,CONFIG_FW_LOADER,y)
-	$(call KCONFIG_SET_OPT,CONFIG_PROC_FS,y)
-	$(call KCONFIG_SET_OPT,CONFIG_NET,y)
-	$(if $(BR2_PACKAGE_AR8030_BUS_SDIO_ONLY),,$(call KCONFIG_SET_OPT,CONFIG_USB,y))
-	$(if $(BR2_PACKAGE_AR8030_BUS_USB_ONLY),,$(call KCONFIG_SET_OPT,CONFIG_MMC,y))
-endef
-
-#
-# Userspace (CMake).
-#
-# USING_8030DRV is the driver-backed transport: the daemon reaches the chip
-# through /dev/ar_mdev<N> (created by our out-of-tree kernel driver, built
-# above) via oal_mdev.c's per-write-skb-allocation/multiplexing-for-8-devices
-# architecture -- confirmed on real hardware to plateau around 5-7Mbps
-# regardless of link bandwidth/MCS. USING_8030SDIO is daemon/main.c's
-# INTF_TYPE_SDIO path: it opens /dev/artosyn_sdio directly
-# (daemon/dev8030/sdio8030/sdio_dev.c) and expects a much thinner kernel
-# interface -- open/poll/read/write, no multiplexing -- to do all SDIO bus
-# handling. This used to require the vendor's own closed artosyn_sdio.ko;
-# 0011-sdio-add-direct-artosyn_sdio-chardev.patch (see driver/linux/bus/
-# sdio.c) implements that same /dev/artosyn_sdio interface directly in our
-# own driver instead, on top of the SDIO bus code this package already
-# builds -- confirmed with the vendor's own daemon/artosyn_sdio.ko as a
-# proof of concept to reach ~18Mbps unmodified. Both DEV_8030_DRV and
-# DEV_8030_SDIO compile into the same daemon binary (main.c's reg_8030_dev()
-# gates each behind its own #ifdef, not an #elif) -- runtime -i selects
-# between them (3=drv, 1=sdio), so enabling SDIO here doesn't remove the
-# DRV fallback. USING_8030USB/UART stay off -- alternatives to the driver
-# entirely, not related to this choice (0001-* teaches the CMakeLists that
-# DRV/SDIO without USB/UART is a valid choice; upstream rejects it).
+# USING_8030DRV is therefore OFF too now: nothing can ever create
+# /dev/ar_mdev<N> for that daemon code path to open. USING_8030SDIO
+# (daemon/main.c's INTF_TYPE_SDIO, opening /dev/artosyn_sdio directly via
+# daemon/dev8030/sdio8030/sdio_dev.c) is the only transport this daemon
+# build supports now. USING_8030USB/UART stay off -- always were
+# alternatives to the driver entirely, unrelated to this choice (0001-*
+# teaches the CMakeLists that SDIO-only, no DRV/USB/UART, is a valid
+# combination; upstream rejects it otherwise).
 #
 # OpenIPC's rootfs_script.sh deletes /usr/lib/libstdc++* on musl builds, so the
 # handful of C++ tools have to carry it statically. Buildroot's toolchainfile
@@ -113,7 +83,7 @@ endef
 #
 AR8030_CONF_OPTS = \
 	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
-	-DUSING_8030DRV=ON \
+	-DUSING_8030DRV=OFF \
 	-DUSING_8030USB=OFF \
 	-DUSING_8030SDIO=ON \
 	-DUSING_8030UART=OFF \
@@ -143,6 +113,17 @@ AR8030_CONF_OPTS = \
 # Upstream's install rules scatter binaries over bin/ and a dev_helper/ prefix
 # and call them "daemon", "app" and "ota", so pick the artifacts out of the
 # build tree by hand instead.
+#
+# The headers staged here (com/*.h, app/ar8030/*.h) are the *userspace*
+# client API. The kernel driver's own shared header
+# (driver/linux/bus/sdio.h -- ioctl commands, protocol structs/constants)
+# is staged nowhere by this package; ar8030-transport-tx's kernel module
+# build reaches into this package's own extracted source tree directly
+# instead ($(AR8030_DIR)/driver/linux/bus, a standard Buildroot
+# cross-package reference -- see ar8030-transport-tx.mk), since that
+# source tree already has to be extracted+patched for this package's own
+# build anyway and copying one more header into staging just for that
+# would be more machinery for no real benefit.
 define AR8030_INSTALL_STAGING_CMDS
 	$(INSTALL) -d -m 0755 $(STAGING_DIR)/usr/include/ar8030
 	$(INSTALL) -m 0644 $(@D)/com/bb_api.h $(@D)/com/bb_config.h \
@@ -184,9 +165,10 @@ ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
 # ar8030.json (plain config) is committed and always installed. ar8030.img
 # is an unlicensed vendor binary blob -- not committed -- so it's only
 # installed when AR8030_FETCH_VENDOR_FIRMWARE (above) managed to fetch one
-# this build; S60ar8030 already omits fw_name= gracefully when it's
-# absent. Sensor/camera tuning is NOT this package's concern -- see
-# package/waybeam for that, on boards where waybeam is what needs it.
+# this build; ar8030-transport-tx's own S65 init script already omits
+# fw_name= gracefully when it's absent. Sensor/camera tuning is NOT this
+# package's concern -- see package/waybeam for that, on boards where
+# waybeam is what needs it.
 #
 # Also archived into $(BINARIES_DIR) (output/images/ar8030.img) alongside
 # fitImage/rootfs.ubi/etc, purely for inspection/reuse -- copy_to_archive
@@ -205,13 +187,6 @@ define AR8030_INSTALL_FIRMWARE
 endef
 endif
 
-ifeq ($(BR2_PACKAGE_AR8030_INIT),y)
-define AR8030_INSTALL_INIT
-	$(INSTALL) -D -m 0755 $(AR8030_PKGDIR)/files/etc/init.d/S60ar8030 \
-		$(TARGET_DIR)/etc/init.d/S60ar8030
-endef
-endif
-
 define AR8030_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/app/ar8030/libar8030_client.so \
 		$(TARGET_DIR)/usr/lib/libar8030_client.so
@@ -221,10 +196,6 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(AR8030_INSTALL_USB_LOADER)
 	$(AR8030_INSTALL_TOOLS)
 	$(AR8030_INSTALL_FIRMWARE)
-	$(AR8030_INSTALL_INIT)
-	$(INSTALL) -D -m 0644 $(AR8030_PKGDIR)/files/etc/network/interfaces.d/ar_net0 \
-		$(TARGET_DIR)/etc/network/interfaces.d/ar_net0
 endef
 
-$(eval $(kernel-module))
 $(eval $(cmake-package))

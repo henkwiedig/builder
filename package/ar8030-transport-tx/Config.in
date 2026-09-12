@@ -2,6 +2,7 @@ config BR2_PACKAGE_AR8030_TRANSPORT_TX
 	bool "ar8030-transport-tx"
 	depends on BR2_PACKAGE_AR8030
 	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on BR2_LINUX_KERNEL
 	help
 	  Air-side bridge between waybeam's frame-shm:// ring and the
 	  AR8030's non-IP baseband data channel (bb_socket) -- see
@@ -13,6 +14,16 @@ config BR2_PACKAGE_AR8030_TRANSPORT_TX
 	  local TX MCS/throughput reading, so the encoder does not outrun
 	  the radio.
 
+	  Also builds and installs this project's own clean-room-rewritten
+	  AR8030 SDIO chardev kernel module (kmod/artosyn_drv.c -- see the
+	  README's "Clean-room rewrite" section) and this package's own
+	  S65 init script loads it, starts ar8030d against it (-i 1, SDIO
+	  mode -- the only mode this module implements), and keeps it
+	  paired to its ground-side peer, before starting the transport
+	  bridge itself. The ar8030 package no longer builds a kernel
+	  module at all, so this package is now the sole provider of AR8030
+	  kernel-side support.
+
 	  Requires the ar8030 package's own
 	  0008-session_socket-preserve-datagram-flag-on-open.patch (see
 	  ar8030-transport's README "Required AR8030 SDK fix" -- without
@@ -22,8 +33,8 @@ config BR2_PACKAGE_AR8030_TRANSPORT_TX
 	  different image; enable it yourself if this device doesn't
 	  already have it.
 
-	  Installs /usr/bin/ar8030-transport-tx and
-	  /etc/init.d/S65ar8030-transport-tx.
+	  Installs /usr/bin/ar8030-transport-tx, /usr/bin/ar8030-linkctl,
+	  artosyn_drv.ko, and /etc/init.d/S65ar8030-transport-tx.
 
-comment "ar8030-transport-tx needs ar8030 and a toolchain w/ threads"
-	depends on !BR2_PACKAGE_AR8030 || !BR2_TOOLCHAIN_HAS_THREADS
+comment "ar8030-transport-tx needs ar8030, a Linux kernel, and a toolchain w/ threads"
+	depends on !BR2_PACKAGE_AR8030 || !BR2_LINUX_KERNEL || !BR2_TOOLCHAIN_HAS_THREADS

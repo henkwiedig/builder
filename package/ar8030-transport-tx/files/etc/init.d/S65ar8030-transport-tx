@@ -1,25 +1,96 @@
 #!/bin/sh
 #
-# ar8030-transport-tx: bridges waybeam's frame-shm:// ring to the AR8030's
-# non-IP baseband data channel (bb_socket). Retries both the frame-shm
-# ring and the ar8030d connection on its own (see ar8030-transport's
-# README "Runtime deployment"), so this only needs to run after S60ar8030
-# has been *installed* -- not necessarily after ar8030d or waybeam have
-# actually come up.
+# ar8030-transport-tx: loads the AR8030's kernel module (artosyn_drv, this
+# repo's own clean-room rewrite of the SDIO chardev -- see kmod/artosyn_drv.c
+# and the README's "Clean-room rewrite" section for the full story), starts
+# ar8030d against it, keeps it paired to its ground-side peer, and bridges
+# waybeam's frame-shm:// ring to the AR8030's non-IP baseband data channel
+# (bb_socket).
+#
+# This absorbs what used to be the separate ar8030 package's own
+# S60ar8030 init script -- that script is gone now that ar8030 no longer
+# builds a kernel module at all (see package/ar8030/ar8030.mk's "Userspace
+# only" comment), so this is the one script that owns the whole AR8030
+# bring-up sequence end to end: module -> daemon -> pairing -> transport.
 #
 
 test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
+
+MODULE="artosyn_drv"
+FW_NAME="ar8030/ar8030.img"
+CFG_NAME="ar8030/ar8030.json"
+# 1 = INTF_TYPE_SDIO (/dev/artosyn_sdio) -- the only interface this
+# module implements. INTF_TYPE_DRV (3, /dev/ar_mdev<N>) has no kernel-side
+# counterpart left to open at all (see package/ar8030/Config.in).
+INTF=1
+
+AR8030D="/usr/bin/ar8030d"
+AR8030D_PIDFILE="/var/run/ar8030d.pid"
 
 DAEMON="/usr/bin/ar8030-transport-tx"
 RUNDIR="/tmp/ar8030"
 PIDFILE="$RUNDIR/ar8030-transport-tx.pid"
 LOGFILE="$RUNDIR/ar8030-transport-tx.log"
 WATCHDOG_PIDFILE="$RUNDIR/ar8030-transport-tx-watchdog.pid"
+AUTORECONNECT_PIDFILE="$RUNDIR/autoreconnect.pid"
 
 if [ "x$AR8030_TRANSPORT_TX_ENABLED" = "xfalse" ]; then
 	echo "Starting ar8030-transport-tx... skipped (disabled)"
 	exit 0
 fi
+
+# request_firmware() (kmod/artosyn_drv.c's artosyn_download_firmware(),
+# module params fw_name=/cfg_name=) resolves relative to this sysfs path,
+# not a compiled-in default -- has to be set before modprobe.
+load_module() {
+	echo -n "/lib/firmware" > /sys/module/firmware_class/parameters/path
+	args=""
+	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"
+	[ -f "/lib/firmware/$CFG_NAME" ] && args="$args cfg_name=$CFG_NAME"
+	modprobe "$MODULE" $args || return 1
+	# Settle time for the boot-ROM firmware push + the chip's
+	# re-enumeration from its ROMCODE identity (4152:8030) to its RTOS
+	# identity (4152:8031) to finish before ar8030d tries to open
+	# /dev/artosyn_sdio.
+	sleep 3
+}
+
+start_daemon() {
+	mkdir -p "$RUNDIR"
+	cd "$RUNDIR" || return 1
+	start-stop-daemon -S -q -b -m -p "$AR8030D_PIDFILE" -x "$AR8030D" -- -i $INTF
+}
+
+apply_link_tuning() {
+	[ -x /usr/bin/ar8030-linkctl ] || return 0
+	ar8030-linkctl bandwidth 20 -d tx -s auto -w 30 >>"$RUNDIR/autoreconnect.log" 2>&1
+}
+
+link_is_connected() {
+	ar8030-linkctl status 2>/dev/null | grep -q ' CONNECT '
+}
+
+# Keeps a previously-paired peer (see 0006-*.patch's on-disk cfg persist)
+# reconnected across firmware pushes/link drops, so a paired unit doesn't
+# need to be re-paired by hand every boot -- see package/ar8030/Config.in's
+# BR2_PACKAGE_AR8030_PAIR_TOOL help.
+autoreconnect() {
+	[ -x /usr/bin/ar8030-pair ] || return 0
+	[ -f "/lib/firmware/$CFG_NAME.paired" ] || return 0
+	(
+		while true; do
+			while ! ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$CFG_NAME" >>"$RUNDIR/autoreconnect.log" 2>&1; do
+				sleep 10
+			done
+			apply_link_tuning
+			while link_is_connected; do
+				sleep 10
+			done
+			echo "$(date): link dropped, re-pairing" >>"$RUNDIR/autoreconnect.log"
+		done
+	) &
+	echo $! > "$AUTORECONNECT_PIDFILE"
+}
 
 # Confirmed on real hardware (SDIO daemon mode bring-up, see
 # ar8030-transport's own README "SDIO chardev" section): a stuck RPC
@@ -98,6 +169,9 @@ watchdog() {
 start() {
 	echo "Starting ar8030-transport-tx..."
 	mkdir -p "$RUNDIR"
+	load_module || echo "artosyn_drv: modprobe failed, continuing without it"
+	start_daemon
+	autoreconnect
 	: > "$LOGFILE"
 	start_tx
 	watchdog &
@@ -110,6 +184,24 @@ stop() {
 	rm -f "$WATCHDOG_PIDFILE"
 	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 	rm -f "$PIDFILE"
+	[ -f "$AUTORECONNECT_PIDFILE" ] && kill "$(cat "$AUTORECONNECT_PIDFILE")" 2>/dev/null
+	rm -f "$AUTORECONNECT_PIDFILE"
+	[ -f "$AR8030D_PIDFILE" ] && kill "$(cat "$AR8030D_PIDFILE")" 2>/dev/null
+	rm -f "$AR8030D_PIDFILE"
+	rmmod "$MODULE" 2>/dev/null
+}
+
+# Re-pulses the AR8030's hardware reset line (GPIO7_3) without a full
+# board power-cycle, forcing a fresh firmware push -- useful to recover a
+# card left in a bad state (e.g. a stale socket held by a killed daemon)
+# without rebooting the whole device.
+reset() {
+	stop
+	devmem 0x11097020 32 0x00
+	sleep 1
+	devmem 0x11097020 32 0x08
+	sleep 1
+	start
 }
 
 case "$1" in
@@ -127,8 +219,12 @@ case "$1" in
 		start
 		;;
 
+	reset)
+		reset
+		;;
+
 	*)
-		echo "Usage: $0 {start|stop|restart}"
+		echo "Usage: $0 {start|stop|restart|reset}"
 		exit 1
 		;;
 esac
