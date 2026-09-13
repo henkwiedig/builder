@@ -31,3 +31,14 @@ echo 56 > /sys/class/gpio/export
 echo in > /sys/class/gpio/gpio56/direction
 echo 57 > /sys/class/gpio/export
 echo in > /sys/class/gpio/gpio57/direction
+
+# Status LEDs -- same two pins the vendor's fpv_run_cx482.sh drives
+# (LED_R=gpio7_7/gpio63, LED_G=gpio1_0/gpio8), confirmed by hand on real
+# hardware: value 1 = ON. Direction only, no value -- S67ar8030-led-status
+# owns the actual on/off/blink state from first boot onward, see its own
+# script for the pattern (reverse-engineered from the vendor's
+# ar_ldyhs_sky binary, see ar8030-transport/README.md).
+echo 63 > /sys/class/gpio/export
+echo out > /sys/class/gpio/gpio63/direction
+echo 8 > /sys/class/gpio/export
+echo out > /sys/class/gpio/gpio8/direction

@@ -1,0 +1,29 @@
+#!/bin/sh
+# Starts the status LED daemon (ar8030-led-status.sh). S67, after
+# S65ar8030-transport-tx/S66ar8030-bind-button: only needs gpio63/gpio8
+# already exported (S30customizer's muxes.sh) and reads S65's own tx
+# PIDFILE, both already true by S67, but neither is a hard ordering
+# requirement -- it degrades gracefully (just shows "not streaming") if
+# either isn't up yet.
+DAEMON=/usr/sbin/ar8030-led-status.sh
+PIDFILE=/var/run/ar8030-led-status.pid
+
+case "$1" in
+	start)
+		echo "Starting ar8030-led-status..."
+		start-stop-daemon -S -b -q -m -p "$PIDFILE" -x "$DAEMON"
+		;;
+	stop)
+		echo "Stopping ar8030-led-status..."
+		start-stop-daemon -K -q -p "$PIDFILE"
+		;;
+	restart|reload)
+		$0 stop
+		sleep 1
+		$0 start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

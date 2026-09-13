@@ -14,6 +14,42 @@
 # bring-up sequence end to end: module -> daemon -> pairing -> transport.
 #
 
+# Serializes every invocation of this script (start/stop/restart/reset)
+# against each other. Without this, two overlapping invocations (e.g. a
+# bind-button press landing while an earlier manual "restart" is still
+# finishing) can race: the second one's stop() reads $AUTORECONNECT_PIDFILE
+# after the first's start() has already overwritten it with a new PID,
+# so the first's still-running autoreconnect() background loop never gets
+# killed and leaks forever (confirmed live -- found via `ps` showing two
+# `ar8030-pair --skip-if-connected` retry loops, one long-orphaned and no
+# longer referenced by the pidfile at all).
+#
+# NOT `exec flock LOCKFILE "$0" "$@"` -- tried that first, and it
+# deadlocks this specific script: flock's lock is held by an *open file
+# descriptor*, and start()'s own autoreconnect()/watchdog()/start_tx()
+# all fork long-lived detached background children that inherit that
+# descriptor across fork(). Those children outlive this script's own
+# process by design (that's the whole point of backgrounding them), so
+# the lock never actually releases -- confirmed live: a second
+# invocation hung forever waiting to acquire it, killing the video link
+# in the process (had to kill -9 everything and manually recover).
+#
+# A plain PID-file mutex instead: only waits for the *previous top-level
+# script process* to exit (which happens right after start() finishes
+# launching its background children and their pidfiles are already
+# written), never for anything backgrounded. That's the actual race this
+# needs to close.
+ACTION_LOCKFILE=/var/run/ar8030-transport-tx.action.lock
+lock_pid=$(cat "$ACTION_LOCKFILE" 2>/dev/null)
+if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+	echo "ar8030-transport-tx: waiting for pid $lock_pid's start/stop/reset to finish..."
+	while kill -0 "$lock_pid" 2>/dev/null; do
+		sleep 1
+	done
+fi
+echo $$ >"$ACTION_LOCKFILE"
+trap 'rm -f "$ACTION_LOCKFILE"' EXIT
+
 test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
 
 MODULE="artosyn_drv"
@@ -186,6 +222,22 @@ stop() {
 	rm -f "$PIDFILE"
 	[ -f "$AUTORECONNECT_PIDFILE" ] && kill "$(cat "$AUTORECONNECT_PIDFILE")" 2>/dev/null
 	rm -f "$AUTORECONNECT_PIDFILE"
+	# The kill above only reaches autoreconnect()'s own subshell, not the
+	# ar8030-pair process it forks and blocks on inside its retry loop --
+	# confirmed live that ar8030-pair itself can hang well past the couple
+	# of seconds a pairing attempt should ever take (an orphaned instance
+	# survived 2+ minutes after its parent subshell was already killed).
+	# Find and kill it explicitly by matching its argv: nothing else on
+	# this system invokes ar8030-pair with --no-persist --skip-if-connected.
+	for p in /proc/[0-9]*; do
+		pid=${p#/proc/}
+		cmd=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)
+		case "$cmd" in
+		*"ar8030-pair --no-persist --skip-if-connected"*)
+			kill "$pid" 2>/dev/null
+			;;
+		esac
+	done
 	[ -f "$AR8030D_PIDFILE" ] && kill "$(cat "$AR8030D_PIDFILE")" 2>/dev/null
 	rm -f "$AR8030D_PIDFILE"
 	rmmod "$MODULE" 2>/dev/null
