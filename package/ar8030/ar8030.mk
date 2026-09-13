@@ -18,6 +18,35 @@ AR8030_INSTALL_STAGING = YES
 AR8030_DEPENDENCIES = $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson) \
 	$(if $(BR2_PACKAGE_AR8030_FIRMWARE),$(call qstrip,$(BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY)))
 
+ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
+# tuntap_bb's vendored libtuntap (FetchContent'd from a tarball at
+# CMake-configure time, not something a 00NN-*.patch against this
+# package's own git checkout can reach) hardcodes /usr/include and
+# /usr/local/include as public include dirs unconditionally on ALL Unix,
+# a host-native-build assumption that predates ever being used in a
+# cross toolchain. Buildroot's compiler wrapper refuses those on
+# principle ("unsafe header/library path used in cross-compilation" --
+# exactly the class of bug that wrapper exists to catch). Strip just
+# those two lines from the tarball's CMakeLists.txt before CMake ever
+# unpacks it, rather than patching the resulting build files after the
+# fact (FetchContent re-extracts on every configure). Ported verbatim
+# from sbc-groundstations' own ar8030.mk, which hit this same problem
+# first (same upstream commit, same vendored tarball).
+define AR8030_FIX_LIBTUNTAP_TARBALL
+	rm -rf $(@D)/third_package/.libtuntap-fix
+	mkdir -p $(@D)/third_package/.libtuntap-fix
+	tar -xf $(@D)/third_package/libtuntap.tar \
+		-C $(@D)/third_package/.libtuntap-fix
+	sed -i -e '\|^[[:space:]]*/usr/include/[[:space:]]*$$|d' \
+		-e '\|^[[:space:]]*/usr/local/include/[[:space:]]*$$|d' \
+		$(@D)/third_package/.libtuntap-fix/libtuntap/CMakeLists.txt
+	tar -cf $(@D)/third_package/libtuntap.tar \
+		-C $(@D)/third_package/.libtuntap-fix libtuntap
+	rm -rf $(@D)/third_package/.libtuntap-fix
+endef
+AR8030_PRE_CONFIGURE_HOOKS += AR8030_FIX_LIBTUNTAP_TARBALL
+endif
+
 AR8030_VENDOR_FETCH_SCRIPT = $(call qstrip,$(BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT))
 ifneq ($(AR8030_VENDOR_FETCH_SCRIPT),)
 # Runs the device-configured fetch script (BR2_PACKAGE_AR8030_FIRMWARE_
@@ -76,13 +105,21 @@ endif
 # teaches the CMakeLists that SDIO-only, no DRV/USB/UART, is a valid
 # combination; upstream rejects it otherwise).
 #
-# OpenIPC's rootfs_script.sh deletes /usr/lib/libstdc++* on musl builds, so the
-# handful of C++ tools have to carry it statically. Buildroot's toolchainfile
-# only defaults CMAKE_EXE_LINKER_FLAGS when it is not already defined, and
-# CONF_OPTS is appended last, so setting it here is safe.
+# OpenIPC's rootfs_script.sh deletes /usr/lib/libstdc++* on musl builds, so
+# anything that actually pulls in C++ runtime symbols has to carry it
+# statically -- both flags, since libar8030_client.so/daemon/etc. turned
+# out to genuinely have no libstdc++ symbols at all (nothing broke without
+# this before BR2_PACKAGE_AR8030_TUNTAP existed), but the vendored
+# libtuntap++ does and is a SHARED library, so CMAKE_EXE_LINKER_FLAGS
+# alone (which only reaches executable targets) left it dynamically
+# linked against a libstdc++.so.6 that plain doesn't exist on this rootfs
+# -- confirmed live, ar8030-tun failed to load it outright. Buildroot's
+# toolchainfile only defaults these when not already defined, and
+# CONF_OPTS is appended last, so setting both here is safe.
 #
 AR8030_CONF_OPTS = \
 	-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
+	-DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++" \
 	-DUSING_8030DRV=OFF \
 	-DUSING_8030USB=OFF \
 	-DUSING_8030SDIO=ON \
@@ -95,7 +132,7 @@ AR8030_CONF_OPTS = \
 	-DAPP_STATIC_LIB=OFF \
 	-DBUILD_ARTOSYN_EXAMPLE=OFF \
 	-DBUILD_RAM_INIT=OFF \
-	-DBUILD_TUNTAP=OFF \
+	-DBUILD_TUNTAP=$(if $(BR2_PACKAGE_AR8030_TUNTAP),ON,OFF) \
 	-DBUILD_BW_UPDATE_DEMO=OFF \
 	-DBUILD_IMG_UPGRADE=OFF \
 	-DBUILD_XDATA_TEST=OFF \
@@ -161,6 +198,28 @@ define AR8030_INSTALL_TOOLS
 endef
 endif
 
+ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
+# tuntap_bb links a vendored libtuntap/libtuntap++ (FetchContent'd from
+# third_package/libtuntap.tar at CMake-configure time, not part of this
+# package's own git checkout, so it can't be reached by a 00NN-*.patch)
+# as shared libs -- Buildroot's cmake-package always forces
+# -DBUILD_SHARED_LIBS=ON, and this package's own AR8030_INSTALL_TARGET_
+# CMDS below replaces CMake's install step entirely (same reason
+# libar8030_client.so and the daemon are hand-copied instead), so they
+# need the same explicit treatment. Ported verbatim from
+# sbc-groundstations' own AR8030_INSTALL_TUNTAP.
+define AR8030_INSTALL_TUNTAP
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/tuntap_bb/tuntap_bb \
+		$(TARGET_DIR)/usr/bin/ar8030-tun
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/_deps/libtuntap-build/lib/libtuntap.so.2.2 \
+		$(TARGET_DIR)/usr/lib/libtuntap.so.2.2
+	ln -sf libtuntap.so.2.2 $(TARGET_DIR)/usr/lib/libtuntap.so
+	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/_deps/libtuntap-build/lib/libtuntap++.so.2.1 \
+		$(TARGET_DIR)/usr/lib/libtuntap++.so.2.1
+	ln -sf libtuntap++.so.2.1 $(TARGET_DIR)/usr/lib/libtuntap++.so
+endef
+endif
+
 ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
 # ar8030.json (plain config) is committed and always installed. ar8030.img
 # is an unlicensed vendor binary blob -- not committed -- so it's only
@@ -195,6 +254,7 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(AR8030_INSTALL_PAIR_TOOL)
 	$(AR8030_INSTALL_USB_LOADER)
 	$(AR8030_INSTALL_TOOLS)
+	$(AR8030_INSTALL_TUNTAP)
 	$(AR8030_INSTALL_FIRMWARE)
 endef
 
