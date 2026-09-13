@@ -149,5 +149,43 @@ config BR2_PACKAGE_AR8030_TOOLS
 	    ar8030-netdev-demo  network-interface configuration demo
 
 	  These are vendor test programs, not production tooling.
+	  ar8030-netdev-demo in particular is dead weight on this board now:
+	  it talks to /dev/ar_net<N>, a char device only the old combined
+	  kernel driver's net_dev.c ever created (see BR2_PACKAGE_AR8030's
+	  own help), and that driver is gone -- see BR2_PACKAGE_AR8030_TUNTAP
+	  below for this board's actual way to get an IP-routable interface
+	  over the RF link.
+
+config BR2_PACKAGE_AR8030_TUNTAP
+	bool "TUN bridge over the RF link"
+	default n
+	help
+	  Installs tuntap_bb as /usr/bin/ar8030-tun: bridges a normal Linux
+	  TUN interface to a raw baseband socket (bb_socket_open/read/write
+	  in libar8030_client, com/bb_api.h) opened over the RPC connection
+	  to ar8030d -- unlike ar8030-netdev-demo (see BR2_PACKAGE_AR8030_TOOLS),
+	  this only needs the daemon's RPC socket, not any kernel-side netdev
+	  support, so it works fine on top of this board's SDIO-only
+	  clean-room driver (ar8030-transport-tx's artosyn_drv.ko) with
+	  nothing added to it. Gives an IP-routable interface over the RF
+	  link once both ends run a matching bridge at the same slot/port --
+	  see OpenIPC/sbc-groundstations' own BR2_PACKAGE_AR8030_TUNTAP,
+	  which this option mirrors (same upstream tool, same two patches
+	  below), for the ground-side half.
+
+	  Needs CONFIG_TUN in the kernel (this device's own defconfig adds
+	  a fragment for it -- see devices/hi3516cv6xx_fpv_caddx-ascent-lite/
+	  br-ext-chip-hisilicon/board/hi3516cv6xx/fragments/tun.config).
+
+	  Links a vendored copy of libtuntap (dev_helper/tuntap_bb/
+	  third_package/libtuntap.tar) -- there is no standalone Buildroot
+	  package for it to use instead; see AR8030_INSTALL_TUNTAP in
+	  ar8030.mk for how its shared libs get shipped since this package's
+	  own AR8030_INSTALL_TARGET_CMDS override skips CMake's install()
+	  step. Costs some flash (ar8030-tun + libtuntap*.so*) that this
+	  board otherwise deliberately avoids spending on network tooling
+	  (see the device defconfig's own comment on why iptables/mosquitto/
+	  wireguard are dropped) -- worth it here because, unlike those,
+	  this is IP connectivity actually asked for, not carried by default.
 
 endif

@@ -57,6 +57,12 @@ BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/$(OPENIPC_KERNEL).tar.gz"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/$(BR2_OPENIPC_SOC_MODEL).generic.config"
+# The shared hi3516cv6xx.generic.config above ships with CONFIG_TUN off --
+# only this device needs it, for ar8030-tun (BR2_PACKAGE_AR8030_TUNTAP
+# below), so it's layered on as a fragment instead of touching the file
+# every hi3516cv6xx device builds against. See that fragment's own
+# comment for why.
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config"
 # Runs three scripts, space-separated, in order: the shared SoC script
 # (fitImage/firmware.bin), our own that builds the blank usrdata0/usrdata1
 # UBI image (see general/scripts/make-usrdata-image.sh for why that has to
@@ -144,6 +150,11 @@ BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE=y
 BR2_PACKAGE_AR8030_PAIR_TOOL=y
 # BR2_PACKAGE_AR8030_USB_LOADER is not set
 BR2_PACKAGE_AR8030_TOOLS=y
+# IP-based comm over the RF link (ar8030-tun, see general/overlay/etc/
+# network/interfaces.d/ar_net0 and package/ar8030/Config.in). Ground side
+# runs the same tool -- OpenIPC/sbc-groundstations' own
+# BR2_PACKAGE_AR8030_TUNTAP.
+BR2_PACKAGE_AR8030_TUNTAP=y
 # Dropped: browser-facing WebRTC streaming is majestic-side plumbing and
 # waybeam does its own RTP.
 # BR2_PACKAGE_AWS_WEBRTC is not set
