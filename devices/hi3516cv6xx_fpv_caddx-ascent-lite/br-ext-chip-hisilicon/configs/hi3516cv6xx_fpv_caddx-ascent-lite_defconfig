@@ -62,7 +62,7 @@ BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMI
 # below), so it's layered on as a fragment instead of touching the file
 # every hi3516cv6xx device builds against. See that fragment's own
 # comment for why.
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config"
 # Runs three scripts, space-separated, in order: the shared SoC script
 # (fitImage/firmware.bin), our own that builds the blank usrdata0/usrdata1
 # UBI image (see general/scripts/make-usrdata-image.sh for why that has to
@@ -190,6 +190,10 @@ BR2_PACKAGE_LIBWEBSOCKETS_OPENIPC=y
 # libevent-openipc key off this symbol too.
 BR2_PACKAGE_MBEDTLS_OPENIPC=y
 BR2_PACKAGE_MOTORS=y
+# A/B bank switch (fpvboot/"sel" partition compatible) so OpenIPC can flip
+# back to the stock bootloader's other bank on its own. See
+# package/openipc-bsel/Config.in.
+BR2_PACKAGE_OPENIPC_BSEL=y
 BR2_PACKAGE_OPUS_OPENIPC=y
 BR2_PACKAGE_OPUS_OPENIPC_FIXED_POINT=y
 BR2_PACKAGE_OPUS_OPENIPC_HISI_SHIM=y

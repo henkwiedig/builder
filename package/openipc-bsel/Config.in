@@ -1,0 +1,21 @@
+config BR2_PACKAGE_OPENIPC_BSEL
+	bool "openipc-bsel"
+	depends on BR2_arm
+	help
+	  A/B bank selector for boards whose stock bootloader picks which
+	  kernel/rootfs bank to boot next (e.g. CADDX Ascent's "fpvboot" u-boot
+	  command) by reading a small "BSEL" magic record out of an MTD
+	  partition named "sel". Reimplements that same record format
+	  (reverse-engineered from the stock ar_bsel binary) so an OpenIPC
+	  image running on either bank can flip which bank boots next, without
+	  needing the stock bootloader's own userspace tool or its rootfs.
+
+	  Installs /usr/bin/openipc-bsel, CLI-compatible with the stock tool:
+	    openipc-bsel check_flash      read current bank from "sel"
+	    openipc-bsel check_cmdline    read fpvbsel=N from /proc/cmdline
+	    openipc-bsel set 0|1          switch the next boot to bank 0/1
+
+	  Currently enabled by hi3516cv6xx_fpv_caddx-ascent-lite's defconfig.
+	  Not device-specific by construction (it locates the "sel" partition
+	  by name rather than hardcoding a device), so any other board using
+	  the same BSEL scheme could select it too.
