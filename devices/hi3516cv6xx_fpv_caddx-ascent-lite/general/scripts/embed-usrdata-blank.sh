@@ -17,8 +17,10 @@
 # general/scripts/make-usrdata-image.sh does: the rootfs ships busybox's
 # ubiattach/ubimkvol/ubiupdatevol applets, not mkfs.ubifs.
 #
-# Costs ~1.7MiB of the already-tight 16MiB rootfs0/rootfs1 partition — a
-# deliberate trade for not bricking the overlay on a routine power cut.
+# The embedded file is 1.7MiB raw, but it's almost entirely padding (an
+# empty UBIFS filesystem), so it costs only a few KiB once compressed into
+# the parent rootfs.ubifs (built with -x lzo) — cheap, for not bricking the
+# overlay on a routine power cut.
 #
 # Runs after the general/overlay rsync (Buildroot's target-finalize order),
 # so it can't be clobbered by overlay content and needs no overlay/ entry

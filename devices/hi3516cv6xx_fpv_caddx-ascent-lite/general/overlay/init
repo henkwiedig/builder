@@ -23,13 +23,23 @@
 # "usrdata0"/"usrdata1" — always the partition that matches the rootfs
 # bank actually booted, regardless of how it was selected.
 #
-# usrdata0/usrdata1 must be pre-formatted and flashed once before first
-# use — see general/scripts/make-usrdata-image.sh. The rootfs ships
-# busybox's ubiattach/ubimkvol/ubiupdatevol applets but not mkfs.ubifs, so
-# /init can attach an already-UBI-formatted partition and rewrite an
-# existing UBIFS volume's *content*, but it cannot format a blank volume
-# from nothing at runtime; that has to happen on the host, at build/
-# provisioning time.
+# usrdata0/usrdata1 do NOT need to be pre-flashed before first use — a
+# blank/erased partition works too. mount_usrdata_overlay() below already
+# handles a virgin partition live, on first boot: ubiattach on blank/
+# erased flash succeeds, ubimkvol creates the "data" volume, and
+# ubiupdatevol formats it from the blank UBIFS image embedded in the
+# rootfs (/usr/share/openipc/usrdata-blank.ubifs, built once at build time
+# by general/scripts/embed-usrdata-blank.sh). The rootfs ships busybox's
+# ubiattach/ubimkvol/ubiupdatevol applets but not mkfs.ubifs, so /init can
+# manage an existing UBI volume's *content* but can't construct a UBIFS
+# filesystem's bytes from nothing — that blob still has to be built once,
+# on the host, at build time.
+#
+# general/scripts/make-usrdata-image.sh's usrdata.ubi is a separate thing
+# with a separate consumer: scripts/pack-caddx-ascent.py uses it as slot 4
+# of the vendor's fixed ASW container for the stock Windows flasher, which
+# writes raw bytes with zero on-device logic involved — that path still
+# needs a real pre-built image regardless of what /init can do.
 #
 # Self-heal on mount failure: this board is an FPV air unit — normal
 # shutdown is a power cut, not a clean reboot, every time. UBIFS's own
