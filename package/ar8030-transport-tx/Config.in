@@ -3,6 +3,7 @@ config BR2_PACKAGE_AR8030_TRANSPORT_TX
 	depends on BR2_PACKAGE_AR8030
 	depends on BR2_TOOLCHAIN_HAS_THREADS
 	depends on BR2_LINUX_KERNEL
+	select BR2_PACKAGE_AR8030_LIFECYCLED
 	help
 	  Air-side bridge between waybeam's frame-shm:// ring and the
 	  AR8030's non-IP baseband data channel (bb_socket) -- see
@@ -18,11 +19,14 @@ config BR2_PACKAGE_AR8030_TRANSPORT_TX
 	  AR8030 SDIO chardev kernel module (kmod/artosyn_drv.c -- see the
 	  README's "Clean-room rewrite" section) and this package's own
 	  S65 init script loads it, starts ar8030d against it (-i 1, SDIO
-	  mode -- the only mode this module implements), and keeps it
-	  paired to its ground-side peer, before starting the transport
-	  bridge itself. The ar8030 package no longer builds a kernel
-	  module at all, so this package is now the sole provider of AR8030
-	  kernel-side support.
+	  mode -- the only mode this module implements), hands the chip's
+	  whole lifecycle to ar8030-lifecycled (hardware reset, pairing,
+	  reconnect-on-drop, link-state tracking -- see
+	  BR2_PACKAGE_AR8030_LIFECYCLED's own help, selected automatically
+	  by this option), before starting the transport bridge itself.
+	  The ar8030 package no longer builds a kernel module at all, so
+	  this package is now the sole provider of AR8030 kernel-side
+	  support.
 
 	  Requires the ar8030 package's own
 	  0008-session_socket-preserve-datagram-flag-on-open.patch (see

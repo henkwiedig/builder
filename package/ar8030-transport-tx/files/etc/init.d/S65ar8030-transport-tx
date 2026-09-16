@@ -3,36 +3,49 @@
 # ar8030-transport-tx: loads the AR8030's kernel module (artosyn_drv, this
 # repo's own clean-room rewrite of the SDIO chardev -- see kmod/artosyn_drv.c
 # and the README's "Clean-room rewrite" section for the full story), starts
-# ar8030d against it, keeps it paired to its ground-side peer, and bridges
-# waybeam's frame-shm:// ring to the AR8030's non-IP baseband data channel
-# (bb_socket).
+# ar8030d against it, hands the chip's whole lifecycle (hardware reset,
+# pairing, reconnect-on-drop, link-state tracking) to ar8030-lifecycled, and
+# bridges waybeam's frame-shm:// ring to the AR8030's non-IP baseband data
+# channel (bb_socket).
 #
 # This absorbs what used to be the separate ar8030 package's own
 # S60ar8030 init script -- that script is gone now that ar8030 no longer
 # builds a kernel module at all (see package/ar8030/ar8030.mk's "Userspace
 # only" comment), so this is the one script that owns the whole AR8030
-# bring-up sequence end to end: module -> daemon -> pairing -> transport.
+# bring-up sequence end to end: module -> daemon -> lifecycle -> transport.
+#
+# ar8030-lifecycled replaces this script's own former autoreconnect/
+# device_watchdog/apply_link_tuning shell logic (see package/ar8030's own
+# Config.in BR2_PACKAGE_AR8030_LIFECYCLED help, and dev_helper/
+# ar8030-lifecycled/main.c's header comment, for the full story of why a
+# dedicated process rather than more shell watchdogs). It does NOT yet do
+# tuning persistence (bandwidth/channel surviving a reconnect) or hook-
+# script dispatch on state transitions -- deliberately deferred rather than
+# rushed. Concretely, that means: the board LED (this device's own
+# ar8030-led-status.sh/S67, if present) has nothing left driving it from
+# link state, and a bandwidth/channel changed by hand via ar8030-linkctl no
+# longer survives a reconnect on its own. Both are known, accepted gaps
+# until ar8030-lifecycled grows hook-script dispatch and tuning persistence.
 #
 
 # Serializes every invocation of this script (start/stop/restart/reset)
 # against each other. Without this, two overlapping invocations (e.g. a
 # bind-button press landing while an earlier manual "restart" is still
-# finishing) can race: the second one's stop() reads $AUTORECONNECT_PIDFILE
-# after the first's start() has already overwritten it with a new PID,
-# so the first's still-running autoreconnect() background loop never gets
-# killed and leaks forever (confirmed live -- found via `ps` showing two
-# `ar8030-pair --skip-if-connected` retry loops, one long-orphaned and no
-# longer referenced by the pidfile at all).
+# finishing) can race: the second one's stop() reads a pidfile after the
+# first's start() has already overwritten it with a new PID, so the
+# first's still-running background child never gets killed and leaks
+# forever (confirmed live -- found via `ps` showing two long-orphaned
+# processes, neither referenced by its pidfile anymore).
 #
 # NOT `exec flock LOCKFILE "$0" "$@"` -- tried that first, and it
 # deadlocks this specific script: flock's lock is held by an *open file
-# descriptor*, and start()'s own autoreconnect()/watchdog()/start_tx()
-# all fork long-lived detached background children that inherit that
-# descriptor across fork(). Those children outlive this script's own
-# process by design (that's the whole point of backgrounding them), so
-# the lock never actually releases -- confirmed live: a second
-# invocation hung forever waiting to acquire it, killing the video link
-# in the process (had to kill -9 everything and manually recover).
+# descriptor*, and start()'s own start_tx() forks a long-lived detached
+# background child that inherits that descriptor across fork(). That
+# child outlives this script's own process by design (that's the whole
+# point of backgrounding it), so the lock never actually releases --
+# confirmed live: a second invocation hung forever waiting to acquire it,
+# killing the video link in the process (had to kill -9 everything and
+# manually recover).
 #
 # A plain PID-file mutex instead: only waits for the *previous top-level
 # script process* to exit (which happens right after start() finishes
@@ -63,12 +76,20 @@ INTF=1
 AR8030D="/usr/bin/ar8030d"
 AR8030D_PIDFILE="/var/run/ar8030d.pid"
 
+# Hardware reset line (GPIO7_3) this board wires the AR8030's own reset
+# input to -- ar8030-lifecycled pulses this itself at every startup now
+# (replacing this script's own former reset() devmem pokes), so a normal
+# `start` always begins from a known-good hardware state instead of only
+# a manual `reset` action forcing one.
+LIFECYCLED="/usr/bin/ar8030-lifecycled"
+LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
+LIFECYCLED_RESET_DEVMEM_ADDR="0x11097020"
+
 DAEMON="/usr/bin/ar8030-transport-tx"
 RUNDIR="/tmp/ar8030"
 PIDFILE="$RUNDIR/ar8030-transport-tx.pid"
 LOGFILE="$RUNDIR/ar8030-transport-tx.log"
 WATCHDOG_PIDFILE="$RUNDIR/ar8030-transport-tx-watchdog.pid"
-AUTORECONNECT_PIDFILE="$RUNDIR/autoreconnect.pid"
 
 if [ "x$AR8030_TRANSPORT_TX_ENABLED" = "xfalse" ]; then
 	echo "Starting ar8030-transport-tx... skipped (disabled)"
@@ -97,35 +118,16 @@ start_daemon() {
 	start-stop-daemon -S -q -b -m -p "$AR8030D_PIDFILE" -x "$AR8030D" -- -i $INTF
 }
 
-apply_link_tuning() {
-	[ -x /usr/bin/ar8030-linkctl ] || return 0
-	ar8030-linkctl bandwidth 20 -d tx -s auto -w 30 >>"$RUNDIR/autoreconnect.log" 2>&1
-}
-
-link_is_connected() {
-	ar8030-linkctl status 2>/dev/null | grep -q ' CONNECT '
-}
-
-# Keeps a previously-paired peer (see 0006-*.patch's on-disk cfg persist)
-# reconnected across firmware pushes/link drops, so a paired unit doesn't
-# need to be re-paired by hand every boot -- see package/ar8030/Config.in's
-# BR2_PACKAGE_AR8030_PAIR_TOOL help.
-autoreconnect() {
-	[ -x /usr/bin/ar8030-pair ] || return 0
-	[ -f "/lib/firmware/$CFG_NAME.paired" ] || return 0
-	(
-		while true; do
-			while ! ar8030-pair --no-persist --skip-if-connected -c "/lib/firmware/$CFG_NAME" >>"$RUNDIR/autoreconnect.log" 2>&1; do
-				sleep 10
-			done
-			apply_link_tuning
-			while link_is_connected; do
-				sleep 10
-			done
-			echo "$(date): link dropped, re-pairing" >>"$RUNDIR/autoreconnect.log"
-		done
-	) &
-	echo $! > "$AUTORECONNECT_PIDFILE"
+start_lifecycled() {
+	[ -x "$LIFECYCLED" ] || return 0
+	mkdir -p "$RUNDIR"
+	cd "$RUNDIR" || return 1
+	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
+		--role ap \
+		--reset-method devmem --reset-devmem-addr "$LIFECYCLED_RESET_DEVMEM_ADDR" \
+		--hook-dir /etc/ar8030/hooks.d \
+		--cfg-path "/lib/firmware/$CFG_NAME" \
+		--default-bandwidth 20
 }
 
 # Confirmed on real hardware (SDIO daemon mode bring-up, see
@@ -207,7 +209,7 @@ start() {
 	mkdir -p "$RUNDIR"
 	load_module || echo "artosyn_drv: modprobe failed, continuing without it"
 	start_daemon
-	autoreconnect
+	start_lifecycled
 	: > "$LOGFILE"
 	start_tx
 	watchdog &
@@ -220,39 +222,21 @@ stop() {
 	rm -f "$WATCHDOG_PIDFILE"
 	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 	rm -f "$PIDFILE"
-	[ -f "$AUTORECONNECT_PIDFILE" ] && kill "$(cat "$AUTORECONNECT_PIDFILE")" 2>/dev/null
-	rm -f "$AUTORECONNECT_PIDFILE"
-	# The kill above only reaches autoreconnect()'s own subshell, not the
-	# ar8030-pair process it forks and blocks on inside its retry loop --
-	# confirmed live that ar8030-pair itself can hang well past the couple
-	# of seconds a pairing attempt should ever take (an orphaned instance
-	# survived 2+ minutes after its parent subshell was already killed).
-	# Find and kill it explicitly by matching its argv: nothing else on
-	# this system invokes ar8030-pair with --no-persist --skip-if-connected.
-	for p in /proc/[0-9]*; do
-		pid=${p#/proc/}
-		cmd=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)
-		case "$cmd" in
-		*"ar8030-pair --no-persist --skip-if-connected"*)
-			kill "$pid" 2>/dev/null
-			;;
-		esac
-	done
+	[ -f "$LIFECYCLED_PIDFILE" ] && kill "$(cat "$LIFECYCLED_PIDFILE")" 2>/dev/null
+	rm -f "$LIFECYCLED_PIDFILE"
 	[ -f "$AR8030D_PIDFILE" ] && kill "$(cat "$AR8030D_PIDFILE")" 2>/dev/null
 	rm -f "$AR8030D_PIDFILE"
 	rmmod "$MODULE" 2>/dev/null
 }
 
-# Re-pulses the AR8030's hardware reset line (GPIO7_3) without a full
-# board power-cycle, forcing a fresh firmware push -- useful to recover a
-# card left in a bad state (e.g. a stale socket held by a killed daemon)
-# without rebooting the whole device.
+# Recovers a card left in a bad state (e.g. a stale socket held by a
+# killed daemon) without a full board power-cycle. Used to also pulse the
+# AR8030's hardware reset line here directly (devmem pokes) before
+# start() -- that now happens inside ar8030-lifecycled's own startup
+# instead (see start_lifecycled() above), so a plain stop-then-start
+# already gets a fresh hardware reset every time.
 reset() {
 	stop
-	devmem 0x11097020 32 0x00
-	sleep 1
-	devmem 0x11097020 32 0x08
-	sleep 1
 	start
 }
 
