@@ -10,23 +10,22 @@
 # reasoning). Run as a background daemon from S66ar8030-bind-button.
 #
 # A fresh pair writes the on-disk config + the ".paired" marker
-# S65ar8030-transport-tx's own autoreconnect() loop gates on (see
-# 0007-bb_pair-auto-reconnect-on-boot.patch) -- but that gate is only
-# checked once, at S65's own start() time. If this is the unit's
-# first-ever pair (marker didn't exist at boot), or the button is used to
-# switch to a different peer than the one already connected, S65 has to
-# be told to notice.
+# lc_pair_has_been_paired()/ar8030-lifecycled's own re-pair path gate on
+# (see dev_helper/ar8030-lifecycled/lifecycle_pair.c) -- this script
+# itself doesn't need to do anything more once ar8030-pair succeeds.
 #
-# S65's own "restart" (rmmod+modprobe the host driver, restart ar8030d)
-# is NOT enough: confirmed live -- it left ar8030d's own SDIO worker
-# desynced from the chip's still-running RTOS session ("sdio_write err
-# = -1" then a forced device detach in ar8030d's log), so
-# ar8030-linkctl reported "no AR8030 device known to the daemon" until
-# a real "reset" (same stop/start, but also pulses the chip's own
-# hardware reset line via the devmem pokes at 0x11097020 first) was run
-# by hand. Use "reset", not "restart", here for exactly that reason.
-# This necessarily interrupts any video stream already in progress --
-# expected for a physical bind button.
+# Used to also call `S65ar8030-transport-tx reset` here on success (a
+# full module reload + hardware reset), needed under the OLD shell-
+# watchdog architecture because a fresh pair could leave ar8030d's own
+# SDIO worker desynced from the chip's still-running RTOS session. That
+# is no longer this script's problem: ar8030-lifecycled already owns the
+# chip's hardware reset (at its own startup) and is subscribed to the
+# daemon's BB_EVENT_LINK_STATE the whole time it's running, so a fresh
+# CONNECT from this button's own ar8030-pair call is picked up on its
+# own via lifecycle.c's "observed CONNECT, following" path -- no reset
+# needed, and forcing one here now would just reboot the chip right
+# after a pair that already succeeded, tearing the just-established link
+# back down for no reason.
 
 GPIO_VALUE=/sys/class/gpio/gpio0/value
 CFG=/lib/firmware/ar8030/ar8030.json
@@ -57,8 +56,7 @@ while true; do
 	pair_rc=$?
 	echo "$pair_out" | logger -t ar8030-bind-button
 	if [ "$pair_rc" -eq 0 ]; then
-		logger -t ar8030-bind-button "pair succeeded, resetting ar8030-transport-tx"
-		/etc/init.d/S65ar8030-transport-tx reset
+		logger -t ar8030-bind-button "pair succeeded, ar8030-lifecycled will pick up the new link on its own"
 	else
 		logger -t ar8030-bind-button "pair failed (rc=$pair_rc), leaving current link alone"
 	fi
