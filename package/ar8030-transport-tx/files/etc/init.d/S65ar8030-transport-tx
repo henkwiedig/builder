@@ -18,14 +18,22 @@
 # device_watchdog/apply_link_tuning shell logic (see package/ar8030's own
 # Config.in BR2_PACKAGE_AR8030_LIFECYCLED help, and dev_helper/
 # ar8030-lifecycled/main.c's header comment, for the full story of why a
-# dedicated process rather than more shell watchdogs). It does NOT yet do
-# tuning persistence (bandwidth/channel surviving a reconnect) or hook-
-# script dispatch on state transitions -- deliberately deferred rather than
-# rushed. Concretely, that means: the board LED (this device's own
-# ar8030-led-status.sh/S67, if present) has nothing left driving it from
-# link state, and a bandwidth/channel changed by hand via ar8030-linkctl no
-# longer survives a reconnect on its own. Both are known, accepted gaps
-# until ar8030-lifecycled grows hook-script dispatch and tuning persistence.
+# dedicated process rather than more shell watchdogs).
+#
+# start() no longer starts the tx binary itself -- that is now fully
+# hook-driven (see the "tx-start"/"tx-stop" actions below), matching the
+# board LED (hooks.d/*/10-led.sh) and the AR8030 TUN bridge's own
+# ifup/ifdown (hooks.d/*/30-ifup.sh, .../30-ifdown.sh): ar8030-lifecycled
+# calls "tx-start" on reaching a real CONNECT and "tx-stop" on a real
+# drop, so no video process runs at all while there is no link to carry
+# it. Deliberate tradeoff, chosen over leaving tx running through drops
+# (which it already tolerates internally, waiting for the next CONNECT
+# on its own): full symmetry with ifup/ifdown at the cost of restarting
+# the video process on every drop/reconnect cycle, including during a
+# flapping link. A board with no working ar8030-lifecycled (binary
+# missing, or a board that opts out) gets no video at all as a result --
+# accepted, since ar8030-lifecycled owning tx's lifecycle end to end is
+# the whole point of this cutover.
 #
 
 # Serializes every invocation of this script (start/stop/restart/reset)
@@ -204,24 +212,46 @@ watchdog() {
 	done
 }
 
-start() {
-	echo "Starting ar8030-transport-tx..."
+tx_running() {
+	pid=$(cat "$PIDFILE" 2>/dev/null)
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Idempotent -- ar8030-lifecycled's own hooks.d/connected/20-tx.sh calls
+# this on every CONNECT, including a warm restart that observes a link
+# already up, so this must be safe to call when tx is already running.
+tx_start_action() {
+	if tx_running; then
+		echo "ar8030-transport-tx already running"
+		return 0
+	fi
+	echo "Starting ar8030-transport-tx (tx)..."
 	mkdir -p "$RUNDIR"
-	load_module || echo "artosyn_drv: modprobe failed, continuing without it"
-	start_daemon
-	start_lifecycled
 	: > "$LOGFILE"
 	start_tx
 	watchdog &
 	echo $! > "$WATCHDOG_PIDFILE"
 }
 
-stop() {
-	echo "Stopping ar8030-transport-tx..."
+tx_stop_action() {
+	echo "Stopping ar8030-transport-tx (tx)..."
 	[ -f "$WATCHDOG_PIDFILE" ] && kill "$(cat "$WATCHDOG_PIDFILE")" 2>/dev/null
 	rm -f "$WATCHDOG_PIDFILE"
 	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 	rm -f "$PIDFILE"
+}
+
+start() {
+	echo "Starting ar8030-transport-tx..."
+	mkdir -p "$RUNDIR"
+	load_module || echo "artosyn_drv: modprobe failed, continuing without it"
+	start_daemon
+	start_lifecycled
+}
+
+stop() {
+	echo "Stopping ar8030-transport-tx..."
+	tx_stop_action
 	[ -f "$LIFECYCLED_PIDFILE" ] && kill "$(cat "$LIFECYCLED_PIDFILE")" 2>/dev/null
 	rm -f "$LIFECYCLED_PIDFILE"
 	[ -f "$AR8030D_PIDFILE" ] && kill "$(cat "$AR8030D_PIDFILE")" 2>/dev/null
@@ -259,8 +289,16 @@ case "$1" in
 		reset
 		;;
 
+	tx-start)
+		tx_start_action
+		;;
+
+	tx-stop)
+		tx_stop_action
+		;;
+
 	*)
-		echo "Usage: $0 {start|stop|restart|reset}"
+		echo "Usage: $0 {start|stop|restart|reset|tx-start|tx-stop}"
 		exit 1
 		;;
 esac
