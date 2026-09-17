@@ -36,7 +36,24 @@ Format reference (reverse-engineered, not vendor-documented):
         u32 flash_offset       (vendor bookkeeping; NOT this file's byte
                                  offset -- copied through unchanged)
         u32 sub_img_offset     (this file's byte offset -- recomputed here)
-      u8  reserved[40]
+      u8  reserved[40]        -- NOT actually all reserved: bytes [32:36] of
+                                 this block (absolute header offset 0x70) hold
+                                 a u32 CRC-32 (zlib/PNG/gzip variant: poly
+                                 0xEDB88320, init 0xFFFFFFFF, final XOR
+                                 0xFFFFFFFF -- i.e. plain zlib.crc32()) of
+                                 everything from offset 0x80 to EOF. Found by
+                                 disassembling the vendor's ar_fpvhs_upgrade
+                                 daemon (AR_FPV_UPGRADE_VerifyImgCrc reads the
+                                 128-byte header, fread()s the rest of the
+                                 file in 4KiB chunks through
+                                 AR_FPV_UPGRADE_Crc32Update, and compares the
+                                 result against this exact offset) after a
+                                 zero-filled version of this field produced an
+                                 image that CADDX_PCTool accepted and
+                                 transferred but that never advanced past
+                                 Percent=0,Status=0. The other 36 reserved
+                                 bytes are, as far as that disassembly shows,
+                                 genuinely unused.
       u64 build_time
     offset 0x80  sub-image 0: boot_image.bin
                  sub-image 1: nand_env.bin
@@ -47,13 +64,35 @@ Format reference (reverse-engineered, not vendor-documented):
                  sub-image 4: usrdata ubifs
     (no padding/alignment between sub-images or after the header)
 
-CAVEAT -- not yet verified on hardware: this produces a structurally correct
-container and boot_image.bin/nand_env.bin are untouched vendor binaries, but
-nobody has flashed an OpenIPC-packed image with this tool through the stock
-PC tool yet. nand_env.bin's bootargs still say `mem=64m` (vendor's cap, not
-this board's real 128MB) and its `fpvboot` bootcmd is the vendor's own --
-review devices/hi3516cv6xx_fpv_caddx-ascent-lite before trusting this for
-anything you can't recover from a bad flash. The BootROM UART pad (see
+The OUTPUT FILENAME is part of the format too, not just its bytes: the
+receiving daemon (ar_fpvhs_upgrade) never even inspects a transferred file's
+contents unless its name matches. AR_FPV_UPGRADE_PCRemoteImgManage polls
+AR_FPV_UPGRADE_SearchImgFile every 2s for ~150 tries (~5 minutes) looking
+for a filename that (a) starts with "Ascent_H_Sky" or "Ascent_Lite_Sky"
+(config-driven, seen as `file_name`/`file_name2` in the device's own boot
+log) and (b) ends in ".img" -- anything else is silently skipped forever,
+which is indistinguishable, from the PC tool, from a device that's stuck
+(Percent=0,Status=0 until CADDX_PCTool's own shorter poll budget gives up
+first with "Upgrade status query limit exceeded"). Past that gate,
+AR_FPV_UPGARDE_ParseImgNameVersion reads the version out of the filename
+itself -- confirmed on real hardware (not just from disassembly) to be the
+THREE UNDERSCORE-SEPARATED TOKENS RIGHT AFTER THE PREFIX (sdk_app_qa, e.g.
+"Ascent_H_Sky_18_21_10..."), not the three right before ".img" as an
+earlier reading of the decompile guessed: "Ascent_H_Sky_18_21_10.img",
+"Ascent_H_Sky_18_21_10_OpenIPC.img" and "Ascent_H_Sky_18_21_19_OpenIPC_
+aabbccdd.img" all flash fine (anything after the three version tokens is
+free-form and ignored), "Ascent_H_Sky_0_0_0.img" and
+"Ascent_H_Sky_18_21_09_OpenIPC.img" (one point below the installed 18_21_10)
+both get an on-device "version too low" rejection, and an exact version
+match (18_21_10) is accepted, not treated as "already up to date" -- so
+this script reuses the vendor header's own sdk/app/qa numbers for the
+mandatory three tokens and lets the caller (pack-caddx-ascent-hook.sh)
+append a free-form OpenIPC build identifier after them.
+
+CAVEAT: nand_env.bin's bootargs still say `mem=64m` (vendor's cap, not this
+board's real 128MB) and its `fpvboot` bootcmd is the vendor's own -- review
+devices/hi3516cv6xx_fpv_caddx-ascent-lite before trusting this for anything
+you can't recover from a bad flash. The BootROM UART pad (see
 ASCENT_LITE_PLUS_RECOVERY.md) is the recovery path if a flash goes wrong.
 """
 
@@ -61,6 +100,7 @@ import argparse
 import struct
 import sys
 import time
+import zlib
 from pathlib import Path
 
 MAGIC = 0x575341
@@ -116,6 +156,11 @@ def build_image(boot_image: bytes, nand_env: bytes, kernel: bytes,
         offsets.append(cur)
         cur += len(f)
 
+    # AR_FPV_UPGRADE_VerifyImgCrc (device side) CRC-32s everything from
+    # offset 0x80 to EOF and compares it against header offset 0x70 -- see
+    # the module docstring's Format reference for how that was found.
+    payload_crc = zlib.crc32(b"".join(files)) & 0xffffffff
+
     out = bytearray()
     out += struct.pack("<IIIII", MAGIC, vendor_hdr["board_type"],
                         vendor_hdr["sdk_version"], vendor_hdr["app_version"],
@@ -123,7 +168,9 @@ def build_image(boot_image: bytes, nand_env: bytes, kernel: bytes,
     for i, s in enumerate(vendor_hdr["subs"]):
         out += struct.pack("<bbbbII", s["type"], s["upgrade"], s["dual_part"],
                             s["reserved"], s["flash_offset"], offsets[i])
-    out += b"\x00" * 40  # reserved
+    reserved_start = len(out)
+    out += b"\x00" * 32 + struct.pack("<I", payload_crc) + b"\x00" * 4
+    assert reserved_start + 0x20 == 0x70  # the CRC lands at header offset 0x70
     out += struct.pack("<Q", int(time.strftime("%Y%m%d%H%M")))
     assert len(out) == HEADER_SIZE
 
@@ -153,6 +200,22 @@ def main():
     boot_image, nand_env, vendor_hdr = slice_vendor_boot_and_env(args.vendor_img)
     print(f"Sliced boot_image.bin ({len(boot_image)} bytes) and "
           f"nand_env.bin ({len(nand_env)} bytes) from {args.vendor_img.name}")
+
+    # Confirmed on real hardware: the device reads sdk_app_qa as the three
+    # tokens right after the "Ascent_H_Sky"/"Ascent_Lite_Sky" prefix -- what
+    # follows (up to ".img") is free-form and ignored. See module docstring.
+    required_prefix = (f"_{vendor_hdr['sdk_version']}_{vendor_hdr['app_version']}"
+                        f"_{vendor_hdr['qa_version']}")
+    name_ok = (args.output.suffix == ".img"
+               and any(args.output.stem.startswith(p + required_prefix)
+                       for p in ("Ascent_H_Sky", "Ascent_Lite_Sky")))
+    if not name_ok:
+        print(f"\nWARNING: -o filename '{args.output.name}' will never be found by "
+              f"the device's SearchImgFile scan (needs an 'Ascent_H_Sky' or "
+              f"'Ascent_Lite_Sky' prefix, immediately followed by "
+              f"'{required_prefix}' matching this vendor image, then '.img') -- "
+              f"CADDX_PCTool will accept the transfer and then poll forever. "
+              f"See the module docstring.\n")
 
     kernel = args.kernel.read_bytes()
     rootfs = args.rootfs.read_bytes()
