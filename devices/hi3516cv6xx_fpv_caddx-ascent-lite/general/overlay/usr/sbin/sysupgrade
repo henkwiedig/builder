@@ -1,0 +1,650 @@
+#!/bin/sh
+# Caddx Ascent Lite -- A/B-aware replacement for firmware's shared
+# general/overlay/usr/sbin/sysupgrade.
+#
+# Why this can't be the shared script with a patch: that script's get_device()
+# does an exact-match grep against /proc/mtd for partitions literally named
+# "kernel"/"rootfs" -- this board has "kernel0"/"kernel1"/"rootfs0"/"rootfs1"
+# instead (see general/overlay/init's own header), so those lookups always
+# come back empty. It also assumes a squashfs+jffs2/mtdblock rootfs
+# (mount_rootfs -t squashfs) and a live majestic to coordinate with
+# (MAJESTIC_OWNER); this board's rootfs is UBI/UBIFS and it ships waybeam, no
+# majestic at all (see the device defconfig). None of manifest/channel OTA
+# resolution, the RAM-pivot page-cache dance, or majestic's upgrade-mode
+# handshake translate to this board's A/B scheme, so rather than bend that
+# ~1500-line script around a partition layout it was never written for, this
+# is a much smaller standalone script for this device only.
+#
+# The A/B scheme itself (see general/overlay/init and
+# package/openipc-bsel/src/openipc-bsel.c): the stock "fpvboot" u-boot
+# command boots whichever of bank 0 (kernel0/rootfs0/usrdata0) or bank 1
+# (kernel1/rootfs1/usrdata1) the "sel" MTD partition's BSEL record names.
+# openipc-bsel reimplements that record format.
+#
+# This script ALWAYS targets the bank that is NOT currently running (detected
+# the same way general/overlay/init's mount_usrdata_overlay() does: which mtd
+# backs the attached ubi0), flashes kernel+rootfs there, and only switches the
+# "sel" record to it -- via `openipc-bsel set` -- once both writes succeed.
+# That gets a safety property the shared script's live-partition model
+# cannot: nothing this script does ever touches the flash the running system
+# is executing from, so a failed or interrupted run (power cut, dropped SSH
+# session) leaves the camera exactly as bootable as it was going in -- next
+# boot just lands on the same bank as before, "sel" untouched. There is no
+# ramfs-pivot dance, no forced reboot on failure, and -x is always honourable
+# (contrast the shared script's die()/reboot_system(), which both exist
+# because IT can strand the running filesystem mid-write).
+#
+# usrdata0/usrdata1 has three modes (usrdata_action below):
+#   flash (default)      write the usrdata the source provided (--asw='s
+#                         sub-image 4, or an explicit --usrdata=)
+#   keep  (--keep-usrdata)  leave the target bank's usrdataN exactly as it is
+#   wipe  (-n)              force-erase it to blank instead
+# flash is the default, not keep, because a vendor ASW's usrdata sub-image is
+# NOT the blank filler this repo's own make-usrdata-image.sh produces -- it's
+# the vendor's real, pre-populated volume (product/factory config, whatever
+# else CADDX ships there), and CADDX_PCTool writes it verbatim on every stock
+# flash. Silently keeping the old bank's data instead would be surprising for
+# a "flash this image" command, so keep has to be asked for explicitly. When
+# the source has no usrdata at all (a bare --kernel=/--rootfs= OpenIPC
+# update, no --usrdata=), there is nothing to flash, so this degrades to keep
+# on its own -- --keep-usrdata is only needed to override a usrdata source
+# that IS present. wipe needs no image of our own: general/overlay/init's
+# mount_usrdata_overlay() self-heals a blank/virgin usrdataN live at boot
+# from the UBIFS image already embedded in the rootfs, so wipe is just
+# flash_eraseall.
+#
+# ASW container format (reverse-engineered, see
+# scripts/pack-caddx-ascent.py's own header for the full field-by-field
+# reference): magic "ASW\0" at offset 0, a 12-byte IMG_SUB_IMG_INFO_T per
+# sub-image starting at offset 20, sub_img_offset (this file's byte offset,
+# not vendor flash_offset) as the second u32 of each entry, little-endian.
+# Sub-image 2 is the kernel (FIT), 3 is the rootfs, 4 is usrdata (runs to
+# EOF, no trailing boundary). Accepting this format directly means both
+# CADDX's own stock OTA image and this repo's own pack-caddx-ascent.py
+# output can be pushed through the same path -- the whole reason the
+# CADDX_PCTool flasher exists is that CADDX's distribution format has no
+# signature check, only this same magic.
+#
+# CAVEAT -- not yet verified on hardware, same as pack-caddx-ascent.py.
+
+scr_version=1.0.0
+LOCK_FILE=/tmp/sysupgrade.lock
+DEVICE_PLATFORM=hi3516cv6xx_fpv_caddx-ascent-lite
+
+extracted_files=
+lock_owned=
+
+echo_c() {
+	[ -z "$HASERLVER" ] && t="\e[1;$1m$2\e[0m" || t="$2"
+	echo -e "$t"
+}
+
+# Unlike the shared script's die(), never needs to force a reboot: nothing
+# here ever writes to the bank the camera is currently running from, so
+# however far a failed run got, the camera is exactly as bootable as before
+# it started -- see the header comment.
+die() {
+	echo_c 31 "$1 Aborting."
+	cleanup
+	exit 1
+}
+
+cleanup() {
+	local_f=
+	for local_f in $extracted_files; do
+		rm -f "$local_f"
+	done
+	[ "1" = "$lock_owned" ] && rm -f "$LOCK_FILE"
+}
+
+create_lock() {
+	if [ -f "$LOCK_FILE" ]; then
+		echo_c 31 "Another sysupgrade process is already running!"
+		exit 1
+	fi
+	touch "$LOCK_FILE"
+	lock_owned=1
+}
+
+get_mtd_device() {
+	echo -n "/dev/$(grep "\"$1\"" /proc/mtd | cut -d: -f1)"
+}
+
+mtd_size() {
+	n="${1#/dev/mtd}"
+	cat "/sys/class/mtd/mtd${n}/size" 2>/dev/null
+}
+
+next_free_ubi() {
+	n=0
+	while [ -e "/sys/class/ubi/ubi${n}" ]; do
+		n=$((n + 1))
+	done
+	echo "$n"
+}
+
+# Volume id on ubi device $1 named "ubifs" if present, else (single-volume
+# partition) whatever the sole volume is -- same reasoning as otherbank's
+# find_vol_id: a vendor-sourced rootfs might not use our naming, but is
+# still a single meaningful volume to find. Unlike otherbank this only ever
+# runs against a partition THIS script just flashed itself, so more than
+# one volume with no "ubifs" match means something is genuinely wrong, not
+# an expected vendor-naming mismatch -- still fails rather than guessing.
+find_ubifs_vol_id() {
+	ubinum=$1
+	match=
+	count=0
+	only_id=
+	list=
+	for d in /sys/class/ubi/ubi${ubinum}_*; do
+		[ -f "$d/name" ] || continue
+		vid=$(basename "$d" | sed "s/^ubi${ubinum}_//")
+		vname=$(cat "$d/name")
+		count=$((count + 1))
+		only_id=$vid
+		list="$list $vid:$vname"
+		[ "$vname" = "ubifs" ] && match=$vid
+	done
+	[ -n "$match" ] && { echo "$match"; return 0; }
+	if [ "$count" -eq 1 ]; then
+		echo "$only_id"
+		return 0
+	fi
+	echo_c 31 "No 'ubifs' volume on ubi${ubinum}, and more than one volume so none can be picked automatically. Volumes present:$list" >&2
+	return 1
+}
+
+# Sets root's password on the just-flashed target bank, by attaching its
+# rootfs as one more ubi device, mounting it read-write, and running
+# chpasswd -R against it -- same technique otherbank uses to inspect a
+# bank, scoped to this one write and torn down immediately after. Runs
+# right after rootfs is flashed, against the mtd this script just wrote, so
+# the volume is always exactly what flash_part put there.
+set_root_password() {
+	echo_c 33 "\nPassword"
+	ubinum=$(next_free_ubi)
+	ubiattach -m "${rootfs_dev#/dev/mtd}" -d "$ubinum" /dev/ubi_ctrl ||
+		die "Cannot attach $rootfs_dev to set the password"
+	volid=$(find_ubifs_vol_id "$ubinum") || {
+		ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+		die "Cannot find a rootfs volume on $rootfs_dev to set the password"
+	}
+	mnt="/tmp/sysupgrade-passwd.$$"
+	mkdir -p "$mnt"
+	if ! mount -t ubifs "ubi${ubinum}_${volid}" "$mnt"; then
+		rmdir "$mnt" 2>/dev/null
+		ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+		die "Cannot mount $rootfs_dev to set the password"
+	fi
+	printf 'root:%s\n' "$explicit_password" | chpasswd -R "$mnt" -c sha512
+	rc=$?
+	umount "$mnt"
+	rmdir "$mnt" 2>/dev/null
+	ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+	[ "$rc" -eq 0 ] || die "Setting the root password on bank $target_bank failed"
+	echo_c 32 "Root password set on bank $target_bank"
+}
+
+# Which bank (0/1) is currently running, by asking which mtd backs the
+# already-attached ubi0 -- the same method general/overlay/init's
+# mount_usrdata_overlay() uses, and for the same reason: the fpvbsel=N
+# cmdline value is a vendor bootarg nothing in this image actually reads.
+active_bank() {
+	[ -f /sys/class/ubi/ubi0/mtd_num ] || die "ubi0 is not attached; is this camera booted from flash?"
+	mtdnum=$(cat /sys/class/ubi/ubi0/mtd_num)
+	name=$(grep "^mtd${mtdnum}:" /proc/mtd | sed 's/.*"\(.*\)"/\1/')
+	case "$name" in
+		rootfs0) echo 0 ;;
+		rootfs1) echo 1 ;;
+		*) die "Cannot tell which bank is active (ubi0 is on mtd${mtdnum} = '$name')" ;;
+	esac
+}
+
+# Decimal value of a little-endian u32 at a given byte offset.
+le32() {
+	hex=$(xxd -p -l 4 -s "$2" "$1" 2>/dev/null) || return 1
+	[ "${#hex}" = 8 ] || return 1
+	hex=$(printf '%s' "$hex" | sed -E 's/(..)(..)(..)(..)/\4\3\2\1/')
+	echo $((0x$hex))
+}
+
+# KB free on the filesystem backing $1, or empty if it can't be determined.
+# /tmp and /dev/shm are both tmpfs here (see the header comment), and
+# CONFIG_FEATURE_DF_FANCY is off in this device's busybox config, so no -P/
+# -h/-k -- plain `df` (1024-byte blocks is its compiled-in default) is what's
+# available, and its "long source name wraps onto two lines" quirk never
+# triggers for a source named "tmpfs".
+free_kb() {
+	kb=$(df "$1" 2>/dev/null | awk 'NR==2 {print $4}')
+	case "$kb" in '' | *[!0-9]*) return 1 ;; esac
+	echo "$kb"
+}
+
+# Best-effort: refuse to spend time/bandwidth downloading an ASW that plainly
+# will not fit in /tmp, using Content-Length from a HEAD request. Never
+# fatal on its own uncertainty -- a server with no Content-Length (chunked
+# encoding) or a blocked HEAD just skips this; the real, load-bearing check
+# is check_extract_space below, once the file (or its header) actually
+# exists.
+check_download_fits() {
+	len=$(curl --connect-timeout 30 -s -I -L $curl_insecure "$1" 2>/dev/null |
+		tr -d '\r' | awk 'tolower($0) ~ /^content-length:/ {v=$2} END{print v}')
+	case "$len" in '' | *[!0-9]*) return 0 ;; esac
+	kb=$(free_kb /tmp) || return 0
+	margin_kb=1024
+	if [ "$kb" -lt "$((len / 1024 + margin_kb))" ]; then
+		die "ASW at $1 is ${len}B; only $((kb * 1024))B free in /tmp. Aborting before downloading."
+	fi
+}
+
+# Sets fetched=1 when $1 was a URL and got downloaded to a temp file we own
+# (safe to delete once we're done reading it); leaves it empty for a local
+# path, which belongs to the operator.
+fetch_if_url() {
+	fetched=
+	case "$1" in
+		http://* | https://*)
+			check_download_fits "$1"
+			dst="/tmp/sysupgrade-fetch.$$"
+			echo_c 33 "Downloading $1"
+			curl --connect-timeout 30 -m 1800 -# -L $curl_insecure -o "$dst" "$1" || die "Cannot fetch $1"
+			extracted_files="$extracted_files $dst"
+			fetched=1
+			echo "$dst"
+			;;
+		*)
+			echo "$1"
+			;;
+	esac
+}
+
+# Reads and validates the ASW header ONLY -- no sub-image is extracted here.
+# /tmp is tmpfs (RAM), and the container itself already runs ~18MB on this
+# device (fitImage + rootfs.ubi + usrdata.ubi); extracting all three
+# sub-images up front, on top of the still-resident container, would peak
+# near 36MB just in temp files. Sizes/offsets from the header are enough to
+# print the Plan and size-check partitions -- actual slicing happens lazily,
+# one sub-image at a time, in the flashing phase below, each one flashed and
+# deleted before the next is cut. Sets asw_off2/3/4, asw_fsize, asw_klen,
+# asw_rlen, asw_ulen.
+asw_read_header() {
+	f=$1
+
+	[ -f "$f" ] || die "ASW image not found: $f"
+	magic=$(xxd -p -l 4 "$f" 2>/dev/null)
+	[ "1" = "$force" ] || [ "$magic" = "41535700" ] || die "Not an ASW image (bad magic): $f. Pass -f to override."
+
+	asw_off2=$(le32 "$f" 52) || die "Cannot read ASW header: $f"
+	asw_off3=$(le32 "$f" 64) || die "Cannot read ASW header: $f"
+	asw_off4=$(le32 "$f" 76) || die "Cannot read ASW header: $f"
+	asw_fsize=$(wc -c <"$f" | tr -d ' ')
+
+	[ "$asw_off2" -gt 0 ] && [ "$asw_off3" -gt "$asw_off2" ] && [ "$asw_off4" -gt "$asw_off3" ] && [ "$asw_fsize" -gt "$asw_off4" ] ||
+		die "ASW sub-image offsets look wrong (kernel=$asw_off2 rootfs=$asw_off3 usrdata=$asw_off4 size=$asw_fsize): $f"
+
+	asw_klen=$((asw_off3 - asw_off2))
+	asw_rlen=$((asw_off4 - asw_off3))
+	asw_ulen=$((asw_fsize - asw_off4))
+	echo_c 32 "ASW: kernel ${asw_klen}B, rootfs ${asw_rlen}B, usrdata ${asw_ulen}B"
+}
+
+# Cuts one sub-image out of the ASW container into a fresh temp file.
+#
+# tail streams from the offset to EOF; head -c takes only $len bytes and
+# exits once it has them, which is every slice but the last (usrdata, which
+# runs to EOF anyway). tail then hits a SIGPIPE writing further bytes nobody
+# is reading and reports it -- "tail: write error: Broken pipe" -- which is
+# harmless noise, not a real failure: $out still gets exactly $len bytes
+# (head's own exit status is what `|| die` below checks), so it's silenced
+# here rather than left to alarm whoever is watching the log.
+asw_extract_slice() {
+	f=$1
+	off=$2
+	len=$3
+	out=$4
+	tail -c +$((off + 1)) "$f" 2>/dev/null | head -c "$len" >"$out" || die "Cannot slice $out from $f"
+	extracted_files="$extracted_files $out"
+}
+
+# Frees the downloaded ASW container as soon as nothing is left to slice out
+# of it -- asw_pending tracks how many of kernel/rootfs/usrdata are still
+# going to be extracted from it. Only ever deletes OUR OWN fetched copy
+# (asw_is_temp); a local --asw=PATH the operator supplied is theirs to keep
+# or remove.
+asw_consume() {
+	asw_pending=$((asw_pending - 1))
+	if [ "$asw_pending" -le 0 ] && [ "1" = "$asw_is_temp" ] && [ -n "$resolved_asw" ]; then
+		rm -f "$resolved_asw"
+		resolved_asw=
+	fi
+}
+
+# Sanity only: catches an obviously wrong or truncated file before flash is
+# touched. Not a signature check -- the ASW format has none (see the header
+# comment), and neither does a bare --kernel=/--rootfs= file.
+check_fit_magic() {
+	m=$(xxd -p -l 4 "$1" 2>/dev/null)
+	[ "$m" = "d00dfeed" ] || echo_c 33 "Warning: $1 does not look like a FIT image (no d00dfeed magic)."
+}
+
+# The real, load-bearing space check: once the ASW container (or its header)
+# actually exists, is there room in /tmp for the single largest sub-image
+# still pending extraction? asw_consume already frees the container itself
+# the moment it's no longer needed, so the only additional tmpfs cost at any
+# point is one slice at a time -- checking against the largest one covers
+# every step. Fatal, unlike check_download_fits: nothing has touched flash
+# yet at the point this runs, so refusing here costs nothing but a retry.
+check_extract_space() {
+	need=0
+	[ "$1" -gt "$need" ] && need=$1
+	[ "$2" -gt "$need" ] && need=$2
+	[ "$3" -gt "$need" ] && need=$3
+	[ "$need" -eq 0 ] && return 0
+	kb=$(free_kb /tmp) || {
+		echo_c 33 "Warning: could not determine free /tmp space; proceeding anyway."
+		return 0
+	}
+	margin_kb=1024
+	need_kb=$((need / 1024 + margin_kb))
+	if [ "$kb" -lt "$need_kb" ]; then
+		die "Only ${kb}KB free in /tmp, need ~${need_kb}KB for the largest pending ASW slice (${need}B). Free up /tmp, or pass --kernel=/--rootfs=/--usrdata= to skip extraction for that part."
+	fi
+	echo_c 33 "tmpfs check: ${kb}KB free, largest pending slice $((need / 1024))KB -- OK"
+}
+
+# flashcp only erases+writes the eraseblocks the file's length actually
+# spans -- it never touches anything past that. On a UBI-formatted
+# partition (kernel is not, but rootfs and a flashed usrdata are) that is
+# genuinely dangerous, not just untidy: a PEB flashcp left alone keeps
+# whatever valid-looking UBI erase-counter header it already had, stamped
+# with WHATEVER image's sequence number wrote it last (a previous, bigger
+# build; a vendor ASW; original factory provisioning) -- and UBI's own
+# attach scan treats one good PEB with a mismatched image_seq as fatal
+# corruption for the WHOLE device ("bad image sequence number ... expected
+# ...", errno -22), not as harmless trailing leftovers. That is a partition
+# that will not attach again -- on the NEXT bank-N boot, not just for a
+# tool like otherbank -- whenever the new image needs fewer eraseblocks
+# than whatever occupied that partition before, which is the common case,
+# not the exception. flash_eraseall first makes every PEB flashcp doesn't
+# reach genuinely blank (no EC header at all), which UBI always treats as
+# free space rather than a competing image.
+flash_part() {
+	file=$1
+	dev=$2
+	label=$3
+	fsize=$(wc -c <"$file" | tr -d ' ')
+	psize=$(mtd_size "$dev")
+	[ -n "$psize" ] && [ "$fsize" -gt "$psize" ] &&
+		die "$label ($fsize bytes) is larger than $dev ($psize bytes)"
+	echo_c 33 "\n$label -> $dev"
+	flash_eraseall "$dev" || die "Erasing $dev before $label failed"
+	flashcp -v "$file" "$dev" || die "Flashing $label to $dev failed"
+}
+
+print_usage() {
+	echo "
+Usage: $0 [options]
+
+Flashes the bank NOT currently running (auto-detected), then switches
+openipc-bsel to it. Nothing on the running bank is ever touched.
+
+  --asw=FILE|URL        Vendor ASW container (CADDX's own OTA image, or this
+                        repo's scripts/pack-caddx-ascent.py output). Supplies
+                        kernel+rootfs+usrdata; --kernel=/--rootfs=/--usrdata=
+                        below override individual parts of it.
+  --kernel=FILE         Kernel (FIT/uImage) file, raw.
+  --rootfs=FILE         Rootfs (UBI image, e.g. output/images/rootfs.ubi), raw.
+  --usrdata=FILE        UserData (UBI image) file, raw.
+  --bank=0|1            Force the target bank instead of auto-detecting the
+                        inactive one. Refused against the active bank unless
+                        -f is also given.
+
+  usrdataN (default: flash whatever the source provided above; with none
+  given, nothing to flash, so it is left untouched either way):
+  -n, --wipe_overlay    Erase it to blank instead. Self-heals on next boot.
+  --keep-usrdata         Leave it exactly as it is instead, even if a
+                        usrdata source was given.
+
+  --set-password=PASS   Set root's password on the target bank's rootfs
+                        (needs --asw=/--rootfs= to actually flash one).
+                        Visible in 'ps' and shell history on this device.
+  -x, --no_reboot        Switch openipc-bsel but don't reboot now.
+  -f, --force            Skip the ASW magic check and the active-bank guard.
+  --insecure             Skip TLS verification when --asw= is an https URL.
+  -h, --help             Display this help and exit.
+"
+}
+
+target_bank=
+force_bank=
+wipe_overlay=
+keep_usrdata=
+no_reboot=
+force=
+asw_url=
+explicit_kernel=
+explicit_rootfs=
+explicit_usrdata=
+explicit_password=
+kernel_file=
+rootfs_file=
+usrdata_file=
+curl_insecure=
+
+for i in "$@"; do
+	case "$i" in
+		-h | --help) print_usage; exit 0 ;;
+		--asw=*) asw_url="${i#*=}" ;;
+		--kernel=*) explicit_kernel="${i#*=}" ;;
+		--rootfs=*) explicit_rootfs="${i#*=}" ;;
+		--usrdata=*) explicit_usrdata="${i#*=}" ;;
+		--set-password=*) explicit_password="${i#*=}" ;;
+		--bank=*)
+			force_bank="${i#*=}"
+			case "$force_bank" in 0 | 1) ;; *) die "--bank must be 0 or 1" ;; esac
+			;;
+		-n | --wipe_overlay) wipe_overlay=1 ;;
+		--keep-usrdata) keep_usrdata=1 ;;
+		-x | --no_reboot) no_reboot=1 ;;
+		-f | --force) force=1 ;;
+		--insecure) curl_insecure=-k ;;
+		*) echo_c 37 "Unknown option: $i"; print_usage; exit 1 ;;
+	esac
+done
+
+[ -n "$asw_url" ] || [ -n "$explicit_kernel" ] || [ -n "$explicit_rootfs" ] || {
+	print_usage
+	exit 0
+}
+
+[ "1" = "$wipe_overlay" ] && [ "1" = "$keep_usrdata" ] &&
+	die "-n/--wipe_overlay and --keep-usrdata contradict each other; pick one."
+
+if [ -n "$explicit_password" ]; then
+	[ -n "$explicit_rootfs" ] || [ -n "$asw_url" ] ||
+		die "--set-password= needs --asw= or --rootfs= to actually flash a rootfs to set it on."
+	echo_c 31 "--set-password: visible in 'ps' and shell history on this device -- fine for a session you trust, not for a shared one."
+	[ "${#explicit_password}" -lt 8 ] && echo_c 33 "Warning: that password is under 8 characters."
+fi
+
+plat=$(grep '^BUILD_PLATFORM=' /etc/os-release 2>/dev/null | cut -d= -f2)
+case "$plat" in
+	"$DEVICE_PLATFORM"*) ;;
+	*) [ "1" = "$force" ] || die "This sysupgrade is built for $DEVICE_PLATFORM, running platform is '$plat'. Pass -f to override." ;;
+esac
+
+create_lock
+trap cleanup EXIT
+
+bank_active=$(active_bank)
+if [ -n "$force_bank" ]; then
+	target_bank=$force_bank
+	if [ "$target_bank" = "$bank_active" ]; then
+		[ "1" = "$force" ] || die "--bank=$target_bank is the ACTIVE bank; this script never rewrites running flash. Pass -f to override."
+		echo_c 31 "WARNING: targeting the ACTIVE bank ($target_bank). This is unsupported: it rewrites the flash the camera is currently running from."
+	fi
+else
+	target_bank=$((1 - bank_active))
+fi
+echo_c 33 "\nActive bank: $bank_active   Target bank: $target_bank"
+
+resolved_asw=
+asw_is_temp=
+have_asw=
+if [ -n "$asw_url" ]; then
+	resolved_asw=$(fetch_if_url "$asw_url")
+	asw_is_temp=$fetched
+	asw_read_header "$resolved_asw"
+	have_asw=1
+fi
+
+# Explicit --kernel=/--rootfs=/--usrdata= override whatever --asw= supplied,
+# regardless of argument order.
+[ -n "$explicit_kernel" ] && kernel_file="$explicit_kernel"
+[ -n "$explicit_rootfs" ] && rootfs_file="$explicit_rootfs"
+[ -n "$explicit_usrdata" ] && usrdata_file="$explicit_usrdata"
+
+[ -n "$kernel_file" ] || [ "1" = "$have_asw" ] || die "No kernel image given (--asw= or --kernel=)"
+[ -n "$rootfs_file" ] || [ "1" = "$have_asw" ] || die "No rootfs image given (--asw= or --rootfs=)"
+[ -n "$kernel_file" ] && { [ -f "$kernel_file" ] || die "Kernel file not found: $kernel_file"; }
+[ -n "$rootfs_file" ] && { [ -f "$rootfs_file" ] || die "Rootfs file not found: $rootfs_file"; }
+[ -n "$usrdata_file" ] && { [ -f "$usrdata_file" ] || die "UserData file not found: $usrdata_file"; }
+
+[ -n "$kernel_file" ] && { [ "1" = "$force" ] || check_fit_magic "$kernel_file"; }
+
+# usrdata decision -- see the header comment. wipe_overlay/keep_usrdata were
+# already checked mutually exclusive above. "has usrdata" means either an
+# explicit file or an ASW that carries one.
+have_usrdata=
+[ -n "$usrdata_file" ] && have_usrdata=1
+[ "1" = "$have_asw" ] && have_usrdata=1
+if [ "1" = "$wipe_overlay" ]; then
+	usrdata_action=wipe
+	[ "1" = "$have_usrdata" ] && echo_c 33 "Note: -n/--wipe_overlay discards the usrdata the source provided; erasing to blank instead."
+elif [ "1" = "$keep_usrdata" ]; then
+	usrdata_action=keep
+	[ "1" = "$have_usrdata" ] && echo_c 33 "Note: --keep-usrdata leaves the target bank's usrdata as-is; the source's usrdata is not used."
+elif [ "1" = "$have_usrdata" ]; then
+	usrdata_action=flash
+else
+	usrdata_action=keep
+fi
+
+# How many of kernel/rootfs/usrdata still need slicing out of the ASW
+# (nothing, for any of them already satisfied by an explicit file) -- feeds
+# asw_consume's "is this the last read?" check in the flashing phase below.
+asw_pending=0
+pending_klen=0
+pending_rlen=0
+pending_ulen=0
+if [ "1" = "$have_asw" ]; then
+	[ -z "$kernel_file" ] && { asw_pending=$((asw_pending + 1)); pending_klen=$asw_klen; }
+	[ -z "$rootfs_file" ] && { asw_pending=$((asw_pending + 1)); pending_rlen=$asw_rlen; }
+	[ "flash" = "$usrdata_action" ] && [ -z "$usrdata_file" ] && { asw_pending=$((asw_pending + 1)); pending_ulen=$asw_ulen; }
+fi
+check_extract_space "$pending_klen" "$pending_rlen" "$pending_ulen"
+
+kernel_dev=$(get_mtd_device "kernel${target_bank}")
+rootfs_dev=$(get_mtd_device "rootfs${target_bank}")
+[ "$kernel_dev" = "/dev/" ] && die "No kernel${target_bank} MTD partition found"
+[ "$rootfs_dev" = "/dev/" ] && die "No rootfs${target_bank} MTD partition found"
+if [ "keep" != "$usrdata_action" ]; then
+	usrdata_dev=$(get_mtd_device "usrdata${target_bank}")
+	[ "$usrdata_dev" = "/dev/" ] && die "No usrdata${target_bank} MTD partition found"
+fi
+
+# Sizes for the Plan below: an explicit file's real size, or (not yet
+# extracted) the size read out of the ASW header.
+kernel_size=$asw_klen
+rootfs_size=$asw_rlen
+usrdata_size=$asw_ulen
+[ -n "$kernel_file" ] && kernel_size=$(wc -c <"$kernel_file" | tr -d ' ')
+[ -n "$rootfs_file" ] && rootfs_size=$(wc -c <"$rootfs_file" | tr -d ' ')
+[ -n "$usrdata_file" ] && usrdata_size=$(wc -c <"$usrdata_file" | tr -d ' ')
+
+echo_c 34 "\nPlan:"
+echo "  kernel${target_bank}  <- ${kernel_file:-ASW sub-image 2}  (${kernel_size} bytes) -> $kernel_dev"
+echo "  rootfs${target_bank}  <- ${rootfs_file:-ASW sub-image 3}  (${rootfs_size} bytes) -> $rootfs_dev"
+case "$usrdata_action" in
+	flash) echo "  usrdata${target_bank} <- ${usrdata_file:-ASW sub-image 4}  (${usrdata_size} bytes) -> $usrdata_dev" ;;
+	wipe) echo "  usrdata${target_bank} <- ERASED (self-heals to blank on next boot of bank $target_bank)" ;;
+	keep) echo "  usrdata${target_bank} left untouched" ;;
+esac
+[ "1" = "$have_asw" ] && echo "  (ASW sub-images are cut out and flashed one at a time, to keep tmpfs usage down)"
+[ -n "$explicit_password" ] && echo "  Root password will be set on bank $target_bank"
+echo "  Then: openipc-bsel set $target_bank"
+if [ "1" = "$no_reboot" ]; then
+	echo "  No reboot (per -x); reboot manually to boot bank $target_bank."
+else
+	echo "  Reboot into bank $target_bank"
+fi
+
+echo_c 37 "\nStarting in 5 seconds. Ctrl-C to abort -- nothing has been touched yet."
+sleep 5
+
+# Past this point we erase flash. A dropped SSH session must not kill flashcp
+# mid-write. SIG_IGN is inherited across fork+exec, so this also shields the
+# busybox flashcp child (same reasoning as the shared script's #2024 fix) --
+# though unlike that script, an interrupted write here only ever costs the
+# INACTIVE bank; "sel" is not touched until both writes below succeed.
+trap '' HUP INT TERM PIPE
+echo_c 37 "Protected: flashing continues even if this terminal disconnects."
+
+# Each ASW-sourced part is cut, flashed, and deleted before the next one is
+# cut -- see asw_read_header's header comment for why. asw_consume frees the
+# whole container the moment nothing further will be read from it, which may
+# happen here (before the LAST part's flash_part call) rather than waiting
+# for exit-time cleanup.
+kernel_extracted=
+if [ -z "$kernel_file" ]; then
+	kernel_file="/tmp/sysupgrade-kernel.$$"
+	asw_extract_slice "$resolved_asw" "$asw_off2" "$asw_klen" "$kernel_file"
+	kernel_extracted=1
+	asw_consume
+fi
+flash_part "$kernel_file" "$kernel_dev" "Kernel"
+[ "1" = "$kernel_extracted" ] && rm -f "$kernel_file"
+
+rootfs_extracted=
+if [ -z "$rootfs_file" ]; then
+	rootfs_file="/tmp/sysupgrade-rootfs.$$"
+	asw_extract_slice "$resolved_asw" "$asw_off3" "$asw_rlen" "$rootfs_file"
+	rootfs_extracted=1
+	asw_consume
+fi
+flash_part "$rootfs_file" "$rootfs_dev" "RootFS"
+[ "1" = "$rootfs_extracted" ] && rm -f "$rootfs_file"
+
+[ -n "$explicit_password" ] && set_root_password
+
+case "$usrdata_action" in
+	flash)
+		usrdata_extracted=
+		if [ -z "$usrdata_file" ]; then
+			usrdata_file="/tmp/sysupgrade-usrdata.$$"
+			asw_extract_slice "$resolved_asw" "$asw_off4" "$asw_ulen" "$usrdata_file"
+			usrdata_extracted=1
+			asw_consume
+		fi
+		flash_part "$usrdata_file" "$usrdata_dev" "UserData"
+		[ "1" = "$usrdata_extracted" ] && rm -f "$usrdata_file"
+		;;
+	wipe)
+		echo_c 33 "\nOverlay"
+		echo "Erasing $usrdata_dev (bank $target_bank self-heals it to blank on next boot)"
+		flash_eraseall "$usrdata_dev" || die "Erasing $usrdata_dev failed"
+		;;
+esac
+
+echo_c 33 "\nBank select"
+openipc-bsel set "$target_bank" || die "openipc-bsel set $target_bank failed"
+
+echo_c 32 "\nBank $target_bank is now flashed and selected."
+
+if [ "1" = "$no_reboot" ]; then
+	echo_c 33 "Not rebooting (per -x). Reboot manually to boot bank $target_bank."
+	exit 0
+fi
+
+echo_c 37 "\nRebooting into bank $target_bank"
+busybox reboot -d 1 -f

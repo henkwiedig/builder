@@ -16,9 +16,16 @@
 # has to run somewhere — here, at build time, using the host tool
 # Buildroot already built for the rootfs.ubi step.
 #
-# The image formats a single dynamic volume named "data", minimally sized
-# (mkfs.ubifs needs ~14 LEBs / 1.7MiB even for an empty filesystem), with
-# autoresize so it grows to fill whatever's actually free on the 32MiB
+# The image formats a single dynamic volume named "ubifs" — matching both
+# this board's own rootfs volume name (see ubinize-hi3516cv6xx.cfg's own
+# comment on that) and, empirically, what CADDX's stock usrdata image uses
+# too, so a bank never ends up with a usrdata volume general/overlay/init
+# doesn't recognize by name (mount_usrdata_overlay() there discovers the
+# volume name rather than assuming one, but "ubifs" is what it creates from
+# nothing, so producing the same name here means a fresh OpenIPC-only ASW
+# flash and a stock CADDX one leave the exact same thing behind). Minimally
+# sized (mkfs.ubifs needs ~14 LEBs / 1.7MiB even for an empty filesystem),
+# with autoresize so it grows to fill whatever's actually free on the 32MiB
 # partition (bad-block reserve aside) the first time UBI attaches it —
 # same pattern as the rootfs_data volume in ubinize-hi3516cv6xx.cfg.
 
@@ -46,7 +53,7 @@ cat > "$WORK/usrdata.cfg" <<EOF
 mode=ubi
 vol_id=0
 vol_type=dynamic
-vol_name=data
+vol_name=ubifs
 vol_alignment=1
 image=$WORK/data.ubifs
 vol_flags=autoresize

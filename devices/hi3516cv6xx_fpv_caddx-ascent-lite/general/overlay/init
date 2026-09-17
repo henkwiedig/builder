@@ -26,14 +26,24 @@
 # usrdata0/usrdata1 do NOT need to be pre-flashed before first use — a
 # blank/erased partition works too. mount_usrdata_overlay() below already
 # handles a virgin partition live, on first boot: ubiattach on blank/
-# erased flash succeeds, ubimkvol creates the "data" volume, and
-# ubiupdatevol formats it from the blank UBIFS image embedded in the
-# rootfs (/usr/share/openipc/usrdata-blank.ubifs, built once at build time
-# by general/scripts/embed-usrdata-blank.sh). The rootfs ships busybox's
-# ubiattach/ubimkvol/ubiupdatevol applets but not mkfs.ubifs, so /init can
-# manage an existing UBI volume's *content* but can't construct a UBIFS
-# filesystem's bytes from nothing — that blob still has to be built once,
-# on the host, at build time.
+# erased flash succeeds, ubimkvol creates a volume named "ubifs" (matches
+# the name CADDX's own stock usrdata image uses too — not a coincidence
+# with this board's rootfs volume name below, see that mount's own
+# comment), and ubiupdatevol formats it from the blank UBIFS image
+# embedded in the rootfs (/usr/share/openipc/usrdata-blank.ubifs, built
+# once at build time by general/scripts/embed-usrdata-blank.sh). The
+# rootfs ships busybox's ubiattach/ubimkvol/ubiupdatevol applets but not
+# mkfs.ubifs, so /init can manage an existing UBI volume's *content* but
+# can't construct a UBIFS filesystem's bytes from nothing — that blob
+# still has to be built once, on the host, at build time.
+#
+# The volume actually mounted is whatever name is already there, not a
+# hardcoded one — sysupgrade --asw= can put a vendor-sourced usrdata image
+# on a bank (real CADDX product/factory data, not our own blank filler; see
+# sysupgrade's own header comment), and mismatching that against a
+# hardcoded name here would misdiagnose real content as "never
+# provisioned" and silently wipe it via the self-heal path below. "ubifs"
+# is only what gets written when creating a volume from nothing.
 #
 # general/scripts/make-usrdata-image.sh's usrdata.ubi is a separate thing
 # with a separate consumer: scripts/pack-caddx-ascent.py uses it as slot 4
@@ -44,7 +54,7 @@
 # Self-heal on mount failure: this board is an FPV air unit — normal
 # shutdown is a power cut, not a clean reboot, every time. UBIFS's own
 # journal replay handles most unclean shutdowns, but a write torn across
-# NAND pages can still leave a "data" volume UBIFS can't recover
+# NAND pages can still leave the usrdata volume UBIFS can't recover
 # ("ubifs_recover_leb: corruption", bad CRC) — seen in practice on this
 # board's second boot after a power cut. Since that has to be treated as
 # routine here, not exceptional, a failed mount doesn't just fall through:
@@ -71,9 +81,9 @@ grep -q 'root=.*nfs\|mmcblk\|ram' /proc/cmdline && is_flash_root=false
 grep -q 'root=.*nfs' /proc/cmdline && is_nfs_root=true
 
 # Attach the bank-matched usrdataN as ubi1 and mount its pre-formatted
-# "data" volume at /overlay. Returns 1 on any failure, so the caller falls
-# back to the shared scheme's rootfs_data overlay — a board that hasn't
-# had usrdata provisioned yet still boots (read-only-ish: on this board
+# volume at /overlay. Returns 1 on any failure, so the caller falls back
+# to the shared scheme's rootfs_data overlay — a board that hasn't had
+# usrdata provisioned yet still boots (read-only-ish: on this board
 # rootfs_data itself is usually too small to hold a valid UBIFS filesystem
 # at all — see the ubinize-hi3516cv6xx.cfg header comment — so that
 # fallback is best-effort, not a guaranteed working overlay).
@@ -90,16 +100,22 @@ mount_usrdata_overlay() {
 	[ -n "$usrdata_mtd" ] || return 1
 
 	[ -e /sys/class/ubi/ubi1 ] || ubiattach -m "$usrdata_mtd" -d 1 /dev/ubi_ctrl || return 1
-	mount -t ubifs ubi1:data /overlay 2>/dev/null && return 0
 
-	# Mount failed: either "data" doesn't exist yet (virgin, never
-	# provisioned) or it exists but UBIFS couldn't recover it. Either way,
-	# (re)create it from the known-good blank image and retry once.
+	# Mount whatever volume is actually there, by whatever name it actually
+	# has (see the header comment) — usrdataN is always a single-volume
+	# partition, so /sys/class/ubi/ubi1_0 is the one, if anything is there
+	# at all.
+	vol=$(cat /sys/class/ubi/ubi1_0/name 2>/dev/null)
+	[ -n "$vol" ] && mount -t ubifs "ubi1:$vol" /overlay 2>/dev/null && return 0
+
+	# Mount failed: either nothing exists yet (virgin, never provisioned) or
+	# it exists but UBIFS couldn't recover it. Either way, (re)create it from
+	# the known-good blank image and retry once.
 	blank=/usr/share/openipc/usrdata-blank.ubifs
 	[ -f "$blank" ] || return 1
-	[ -e /sys/class/ubi/ubi1/ubi1_0 ] || ubimkvol -N data -m /dev/ubi1 || return 1
+	[ -e /sys/class/ubi/ubi1/ubi1_0 ] || ubimkvol -N ubifs -m /dev/ubi1 || return 1
 	ubiupdatevol /dev/ubi1_0 "$blank" || return 1
-	mount -t ubifs ubi1:data /overlay
+	mount -t ubifs ubi1:ubifs /overlay
 }
 
 if $is_flash_root; then
