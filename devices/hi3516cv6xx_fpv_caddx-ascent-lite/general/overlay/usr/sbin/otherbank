@@ -1,0 +1,212 @@
+#!/bin/sh
+# Caddx Ascent Lite -- mount the OTHER (currently inactive) A/B bank's
+# rootfs and usrdata under /mnt/other, to inspect a freshly sysupgrade'd
+# bank before switching to it, or to recover files from the other bank's
+# overlay, without rebooting.
+#
+# Bank detection is the same trick general/overlay/init's
+# mount_usrdata_overlay() and sysupgrade's active_bank() use: read which mtd
+# backs the already-attached ubi0 to learn which bank is running, then
+# target the other one.
+#
+# Attaches rootfsN/usrdataN as two ADDITIONAL ubi devices, picked as the
+# first free numbers above whatever the running bank already has attached
+# (ubi0 always, ubi1 usually -- see general/overlay/init) -- never touches
+# those. Looks for "ubifs" on both -- this board's own rootfs and usrdata
+# images both use that volume name (see ubinize-hi3516cv6xx.cfg and
+# make-usrdata-image.sh respectively), matching what CADDX's own stock ASW
+# empirically also uses for both, per a real device (not a design
+# assumption -- see the pack-caddx-ascent.py-adjacent sysupgrade flow this
+# device tested with). If some other image ever doesn't match -- a
+# different vendor build, say -- and exactly one volume exists on that
+# partition, that one is used instead (logged, not silent). More than one
+# volume and no name match is genuinely ambiguous and fails, listing what
+# IS there rather than guessing. Either way the actual mount is done by ubi
+# device+volume ID (mount -t ubifs ubiX_Y), never by name, so a fallback
+# match still mounts correctly.
+#
+# Both are read-only by default. usrdata's --rw and rootfs's --rw-rootfs are
+# separate flags, deliberately not one switch for both: mounting rootfs
+# writable is a bigger departure from "don't touch a bank you're not
+# running" than usrdata is, so it stays opt-in on its own.
+#
+# CAUTION: don't run sysupgrade against the bank these mounts are open on --
+# flashcp rewrites the raw MTD partition underneath a live UBI attach.
+# `otherbank umount` first.
+
+MNT_ROOT=/mnt/other
+ROOTFS_VOL=ubifs
+USRDATA_VOL=ubifs
+
+echo_c() {
+	[ -z "$HASERLVER" ] && t="\e[1;$1m$2\e[0m" || t="$2"
+	echo -e "$t"
+}
+
+die() {
+	echo_c 31 "$1"
+	exit 1
+}
+
+get_mtd_device() {
+	echo -n "/dev/$(grep "\"$1\"" /proc/mtd | cut -d: -f1)"
+}
+
+# Which bank (0/1) is currently running -- see the header comment.
+active_bank() {
+	[ -f /sys/class/ubi/ubi0/mtd_num ] || die "ubi0 is not attached; is this camera booted from flash?"
+	mtdnum=$(cat /sys/class/ubi/ubi0/mtd_num)
+	name=$(grep "^mtd${mtdnum}:" /proc/mtd | sed 's/.*"\(.*\)"/\1/')
+	case "$name" in
+		rootfs0) echo 0 ;;
+		rootfs1) echo 1 ;;
+		*) die "Cannot tell which bank is active (ubi0 is on mtd${mtdnum} = '$name')" ;;
+	esac
+}
+
+next_free_ubi() {
+	n=0
+	while [ -e "/sys/class/ubi/ubi${n}" ]; do
+		n=$((n + 1))
+	done
+	echo "$n"
+}
+
+# Ubi device number already attached to mtd number $1, if any.
+find_ubi_for_mtd() {
+	for d in /sys/class/ubi/ubi[0-9]*; do
+		[ -d "$d" ] || continue
+		case "$(basename "$d")" in *_*) continue ;; esac
+		[ -f "$d/mtd_num" ] || continue
+		if [ "$(cat "$d/mtd_num")" = "$1" ]; then
+			basename "$d" | sed 's/ubi//'
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Volume id on ubi device $1 named $2, if present. Otherwise, if exactly one
+# volume exists there, that one instead (an image that didn't use our own
+# naming -- see the header comment). More than one volume with no name
+# match is ambiguous: fails, listing what's there. Prints its reasoning to
+# stderr so it doesn't pollute stdout, which is "ID NAME" of whatever it
+# picked -- the caller runs in $(...), so a plain variable assignment here
+# would not survive back to it; splitting the one line of stdout is the only
+# way this reaches the caller.
+find_vol_id() {
+	ubinum=$1
+	pref=$2
+	match=
+	count=0
+	only_id=
+	only_name=
+	list=
+	for d in /sys/class/ubi/ubi${ubinum}_*; do
+		[ -f "$d/name" ] || continue
+		vid=$(basename "$d" | sed "s/^ubi${ubinum}_//")
+		vname=$(cat "$d/name")
+		count=$((count + 1))
+		only_id=$vid
+		only_name=$vname
+		list="$list $vid:$vname"
+		[ "$vname" = "$pref" ] && match=$vid
+	done
+	if [ -n "$match" ]; then
+		echo "$match $pref"
+		return 0
+	fi
+	if [ "$count" -eq 1 ]; then
+		echo_c 33 "Note: ubi${ubinum} has no '$pref' volume; using its only volume instead (id $only_id, name '$only_name') -- looks like a non-OpenIPC image." >&2
+		echo "$only_id $only_name"
+		return 0
+	fi
+	echo_c 31 "ubi${ubinum} has no '$pref' volume, and has more than one volume so none can be picked automatically. Volumes present:$list" >&2
+	return 1
+}
+
+# Attaches (if not already) and mounts one partition of the other bank.
+# $1=partition prefix (rootfs|usrdata) $2=preferred volume name $3=mountpoint $4=mount opts
+attach_and_mount() {
+	part=$1
+	vol=$2
+	dir=$3
+	opts=$4
+
+	dev=$(get_mtd_device "${part}${other_bank}")
+	[ "$dev" = "/dev/" ] && die "No ${part}${other_bank} MTD partition found"
+	mtdnum=${dev#/dev/mtd}
+
+	ubinum=$(find_ubi_for_mtd "$mtdnum") || {
+		ubinum=$(next_free_ubi)
+		ubiattach -m "$mtdnum" -d "$ubinum" /dev/ubi_ctrl || die "ubiattach failed for $dev"
+	}
+
+	result=$(find_vol_id "$ubinum" "$vol") || die "Could not find a usable volume on ubi${ubinum} ($dev)"
+	volid=${result%% *}
+	found_vol_name=${result#* }
+
+	mkdir -p "$dir"
+	if mountpoint -q "$dir"; then
+		echo_c 33 "$dir already mounted"
+		return 0
+	fi
+	# By id (ubiX_Y), not by name: a fallback match above may not be named
+	# $vol at all.
+	mount -t ubifs -o "$opts" "ubi${ubinum}_${volid}" "$dir" || die "Cannot mount ubi${ubinum}_${volid} on $dir"
+	echo_c 32 "$dir <- bank ${other_bank} ${part} (ubi${ubinum}_${volid} '${found_vol_name}', ${opts})"
+}
+
+do_mount() {
+	other_bank=$((1 - $(active_bank)))
+	echo_c 33 "Active bank: $((1 - other_bank))   Mounting bank: $other_bank"
+	attach_and_mount rootfs "$ROOTFS_VOL" "$MNT_ROOT/rootfs" "$rootfs_opts"
+	attach_and_mount usrdata "$USRDATA_VOL" "$MNT_ROOT/usrdata" "$usrdata_opts"
+}
+
+do_umount() {
+	for dir in "$MNT_ROOT/rootfs" "$MNT_ROOT/usrdata"; do
+		mountpoint -q "$dir" 2>/dev/null || continue
+		src=$(awk -v d="$dir" '$2==d{print $1}' /proc/mounts)
+		umount "$dir" || die "Cannot umount $dir"
+		case "$src" in
+			ubi*:*)
+				num=${src#ubi}
+				num=${num%%:*}
+				ubidetach -d "$num" /dev/ubi_ctrl 2>/dev/null
+				;;
+		esac
+		echo_c 32 "$dir unmounted"
+	done
+}
+
+print_usage() {
+	echo "
+Usage: $0 {mount|umount} [--rw] [--rw-rootfs]
+
+Mounts the currently INACTIVE A/B bank's rootfs and usrdata under
+$MNT_ROOT, without rebooting. Both read-only unless said otherwise below.
+'umount' undoes it (and detaches the ubi devices this created).
+
+  --rw          Mount usrdata read-write instead of read-only (mount only).
+  --rw-rootfs   Mount rootfs read-write instead of read-only (mount only).
+"
+}
+
+usrdata_opts=ro
+rootfs_opts=ro
+action=$1
+shift 2>/dev/null
+for i in "$@"; do
+	case "$i" in
+		--rw) usrdata_opts=rw ;;
+		--rw-rootfs) rootfs_opts=rw ;;
+		*) echo_c 37 "Unknown option: $i"; print_usage; exit 1 ;;
+	esac
+done
+
+case "$action" in
+	mount) do_mount ;;
+	umount) do_umount ;;
+	*) print_usage; exit 1 ;;
+esac
