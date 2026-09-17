@@ -156,38 +156,6 @@ config BR2_PACKAGE_AR8030_TOOLS
 	  below for this board's actual way to get an IP-routable interface
 	  over the RF link.
 
-config BR2_PACKAGE_AR8030_LIFECYCLED
-	bool "lifecycle supervisor daemon"
-	default n
-	select BR2_PACKAGE_CJSON
-	help
-	  Installs ar8030-lifecycled: a dedicated process that owns the
-	  AR8030 chip's whole lifecycle instead of leaving it to a pile of
-	  independent shell-script watchdogs -- pulses the chip's hardware
-	  reset line at startup, subscribes to the daemon's own link-state/
-	  pair-result events (with a permanent BB_GET_STATUS fallback poll
-	  as a safety net), triggers this project's pairing dispatch only
-	  if this unit has never been paired before, and follows real link
-	  state transitions. See dev_helper/ar8030-lifecycled/main.c for
-	  its full set of CLI flags (reset backend/GPIO, hook directory,
-	  baseband config path, default tuning).
-
-	  Deliberately a separate process from ar8030d, not a thread
-	  inside it -- confirmed live that running this same logic as an
-	  in-daemon pthread wedged the daemon itself under an SDIO
-	  transport fault; a genuinely separate process talking to ar8030d
-	  over loopback, exactly like ar8030-linkctl/ar8030-pair already
-	  do, does not share that risk.
-
-	  Does not yet do tuning persistence (bandwidth/channel surviving
-	  a reconnect) or hook-script dispatch on state transitions (LED
-	  control, ifup/ifdown, starting/stopping a transport binary) --
-	  both deliberately deferred rather than rushed. A board wiring
-	  this into its own boot sequence today still needs its own
-	  shell-script layer for those two things; see
-	  ar8030-transport-tx's own S65 init script for the air-side
-	  worked example of what it does and does not yet replace.
-
 config BR2_PACKAGE_AR8030_TUNTAP
 	bool "TUN bridge over the RF link"
 	default n

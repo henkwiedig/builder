@@ -13,10 +13,11 @@ AR8030_SITE_METHOD = git
 AR8030_LICENSE = PROPRIETARY (host SDK)
 AR8030_INSTALL_STAGING = YES
 
-# bb_pair (0006-*.patch) and ar8030-lifecycled (0023-*.patch, its own pairing
-# dispatch + on-disk config persistence) both link libcjson via pkg-config;
-# nothing else in this package needs it.
-AR8030_DEPENDENCIES = $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL)$(BR2_PACKAGE_AR8030_LIFECYCLED),cjson) \
+# bb_pair (0006-*.patch, its own on-disk config persistence) links
+# libcjson via pkg-config; nothing else in this package needs it.
+# ar8030-lifecycled used to be built here too (its own cjson use) --
+# moved to ar8030-transport/lifecycled/, see that repo's README.
+AR8030_DEPENDENCIES = $(if $(BR2_PACKAGE_AR8030_PAIR_TOOL),cjson) \
 	$(if $(BR2_PACKAGE_AR8030_FIRMWARE),$(call qstrip,$(BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY)))
 
 ifeq ($(BR2_PACKAGE_AR8030_TUNTAP),y)
@@ -134,7 +135,6 @@ AR8030_CONF_OPTS = \
 	-DBUILD_ARTOSYN_EXAMPLE=OFF \
 	-DBUILD_RAM_INIT=OFF \
 	-DBUILD_TUNTAP=$(if $(BR2_PACKAGE_AR8030_TUNTAP),ON,OFF) \
-	-DBUILD_LIFECYCLED=$(if $(BR2_PACKAGE_AR8030_LIFECYCLED),ON,OFF) \
 	-DBUILD_BW_UPDATE_DEMO=OFF \
 	-DBUILD_IMG_UPGRADE=OFF \
 	-DBUILD_XDATA_TEST=OFF \
@@ -184,13 +184,6 @@ define AR8030_INSTALL_USB_LOADER
 	$(INSTALL) -D -m 0755 \
 		$(AR8030_BUILDDIR)/dev_helper/ar8030_usb_test_tool/ar8030_usb_test_tool \
 		$(TARGET_DIR)/usr/bin/ar8030-usb-loader
-endef
-endif
-
-ifeq ($(BR2_PACKAGE_AR8030_LIFECYCLED),y)
-define AR8030_INSTALL_LIFECYCLED
-	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/dev_helper/ar8030-lifecycled/ar8030-lifecycled \
-		$(TARGET_DIR)/usr/bin/ar8030-lifecycled
 endef
 endif
 
@@ -261,7 +254,6 @@ define AR8030_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(AR8030_BUILDDIR)/daemon/daemon \
 		$(TARGET_DIR)/usr/bin/ar8030d
 	$(AR8030_INSTALL_PAIR_TOOL)
-	$(AR8030_INSTALL_LIFECYCLED)
 	$(AR8030_INSTALL_USB_LOADER)
 	$(AR8030_INSTALL_TOOLS)
 	$(AR8030_INSTALL_TUNTAP)

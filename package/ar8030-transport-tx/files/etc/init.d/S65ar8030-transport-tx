@@ -4,9 +4,10 @@
 # repo's own clean-room rewrite of the SDIO chardev -- see kmod/artosyn_drv.c
 # and the README's "Clean-room rewrite" section for the full story), starts
 # ar8030d against it, hands the chip's whole lifecycle (hardware reset,
-# pairing, reconnect-on-drop, link-state tracking) to ar8030-lifecycled, and
-# bridges waybeam's frame-shm:// ring to the AR8030's non-IP baseband data
-# channel (bb_socket).
+# pairing, reconnect-on-drop, link-state tracking, and -- if
+# AR8030_LIFECYCLED_ARGS below passes --bind-gpio -- the physical bind
+# button too) to ar8030-lifecycled, and bridges waybeam's frame-shm://
+# ring to the AR8030's non-IP baseband data channel (bb_socket).
 #
 # This absorbs what used to be the separate ar8030 package's own
 # S60ar8030 init script -- that script is gone now that ar8030 no longer
@@ -14,11 +15,12 @@
 # only" comment), so this is the one script that owns the whole AR8030
 # bring-up sequence end to end: module -> daemon -> lifecycle -> transport.
 #
-# ar8030-lifecycled replaces this script's own former autoreconnect/
-# device_watchdog/apply_link_tuning shell logic (see package/ar8030's own
-# Config.in BR2_PACKAGE_AR8030_LIFECYCLED help, and dev_helper/
-# ar8030-lifecycled/main.c's header comment, for the full story of why a
-# dedicated process rather than more shell watchdogs).
+# ar8030-lifecycled (ar8030-transport/lifecycled/, built by this
+# package -- see AR8030_TRANSPORT_TX_BUILD_CMDS in its own .mk, and that
+# repo's README "ar8030-lifecycled: link supervisor + bind button")
+# replaces this script's own former autoreconnect/device_watchdog/
+# apply_link_tuning shell logic, and (since it moved into this daemon)
+# a board's own separate bind-button poller script too.
 #
 # start() no longer starts the tx binary itself -- that is now fully
 # hook-driven (see the "tx-start"/"tx-stop" actions below), matching the
@@ -84,14 +86,15 @@ INTF=1
 AR8030D="/usr/bin/ar8030d"
 AR8030D_PIDFILE="/var/run/ar8030d.pid"
 
-# Hardware reset line (GPIO7_3) this board wires the AR8030's own reset
-# input to -- ar8030-lifecycled pulses this itself at every startup now
-# (replacing this script's own former reset() devmem pokes), so a normal
-# `start` always begins from a known-good hardware state instead of only
-# a manual `reset` action forcing one.
+# ar8030-lifecycled itself does NOT pulse the hardware reset line
+# (GPIO7_3) here -- see start_lifecycled()'s own comment for why that
+# was tried and reverted (fatal race against load_module()'s own
+# modprobe-time firmware push). A normal `start` already begins from a
+# known-good hardware state via load_module() below; the `reset` action
+# (stop() + start(), i.e. a full rmmod/modprobe cycle) is what actually
+# forces a fresh one, same as before lifecycled existed.
 LIFECYCLED="/usr/bin/ar8030-lifecycled"
 LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
-LIFECYCLED_RESET_DEVMEM_ADDR="0x11097020"
 
 DAEMON="/usr/bin/ar8030-transport-tx"
 RUNDIR="/tmp/ar8030"
@@ -130,12 +133,33 @@ start_lifecycled() {
 	[ -x "$LIFECYCLED" ] || return 0
 	mkdir -p "$RUNDIR"
 	cd "$RUNDIR" || return 1
+	# --reset-method none, NOT devmem: confirmed live (full-restart testing
+	# while moving ar8030-lifecycled into ar8030-transport/lifecycled/)
+	# that lifecycled's own hardware-reset pulse, called synchronously at
+	# its own startup, is fatal (kills the process outright, no crash log
+	# -- consistent with a SIGBUS from a bus fault, print-fatal-signals is
+	# 0 on this board) when it races load_module()'s own modprobe-time
+	# firmware push a few seconds earlier in this exact same start()
+	# sequence -- reproduced repeatedly, process dies 2-3s in every time
+	# (matching lc_gpio_reset_devmem()'s own two sleep(1) calls exactly),
+	# and survives indefinitely with the identical fresh-reload timing
+	# once --reset-method is none instead. start_lifecycled() is only
+	# ever called from start(), always right after load_module() already
+	# ran moments earlier -- whose own modprobe already resets/
+	# initializes the chip (see dmesg's "upgrade spl success"/"upgrade
+	# bb_cfg success"/"exit_usb_boot_in_bl1 bb_cfg success"), so
+	# lifecycled's own pulse here was always redundant on top of that,
+	# not just newly dangerous. This logic in lifecycle_gpio.c is
+	# unchanged from before this move (byte-for-byte, same reset-devmem
+	# poke) -- a pre-existing bug nobody had hit because nobody had
+	# exercised a live S65 restart with this reset backend before.
 	start-stop-daemon -S -q -b -m -p "$LIFECYCLED_PIDFILE" -x "$LIFECYCLED" -- \
 		--role ap \
-		--reset-method devmem --reset-devmem-addr "$LIFECYCLED_RESET_DEVMEM_ADDR" \
+		--reset-method none \
 		--hook-dir /etc/ar8030/hooks.d \
 		--cfg-path "/lib/firmware/$CFG_NAME" \
-		--default-bandwidth 20
+		--default-bandwidth 20 \
+		$AR8030_LIFECYCLED_ARGS
 }
 
 # Confirmed on real hardware (SDIO daemon mode bring-up, see
@@ -260,11 +284,11 @@ stop() {
 }
 
 # Recovers a card left in a bad state (e.g. a stale socket held by a
-# killed daemon) without a full board power-cycle. Used to also pulse the
-# AR8030's hardware reset line here directly (devmem pokes) before
-# start() -- that now happens inside ar8030-lifecycled's own startup
-# instead (see start_lifecycled() above), so a plain stop-then-start
-# already gets a fresh hardware reset every time.
+# killed daemon) without a full board power-cycle. A plain stop-then-
+# start already gets a fresh hardware reset every time via start()'s own
+# load_module() (modprobe re-pushes firmware+config) -- see
+# start_lifecycled()'s own comment for why ar8030-lifecycled itself does
+# not also pulse a reset here.
 reset() {
 	stop
 	start
