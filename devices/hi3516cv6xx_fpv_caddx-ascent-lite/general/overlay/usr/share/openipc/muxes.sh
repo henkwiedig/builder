@@ -34,11 +34,18 @@ echo in > /sys/class/gpio/gpio57/direction
 
 # Status LEDs -- same two pins the vendor's fpv_run_cx482.sh drives
 # (LED_R=gpio7_7/gpio63, LED_G=gpio1_0/gpio8), confirmed by hand on real
-# hardware: value 1 = ON. Direction only, no value -- S67ar8030-led-status
-# owns the actual on/off/blink state from first boot onward, see its own
-# script for the pattern (reverse-engineered from the vendor's
-# ar_ldyhs_sky binary, see ar8030-transport/README.md).
+# hardware: value 1 = ON. ar8030-lifecycled's hooks.d/*/10-led.sh scripts
+# own the on/off/blink state from the first real link-state transition
+# onward (see package/ar8030's hooks.d), but that first transition can be
+# tens of seconds away (module load + daemon start + lifecycled's own
+# reset pulse), and direction=out alone leaves the pin at whatever the
+# SoC's GPIO controller happens to reset to -- not guaranteed off. Set an
+# explicit boot default here instead: red on, green off, matching the
+# hooks.d "idle" state (never paired / no link yet) this board is
+# actually in until a real pairing/connect event fires.
 echo 63 > /sys/class/gpio/export
 echo out > /sys/class/gpio/gpio63/direction
+echo 1 > /sys/class/gpio/gpio63/value
 echo 8 > /sys/class/gpio/export
 echo out > /sys/class/gpio/gpio8/direction
+echo 0 > /sys/class/gpio/gpio8/value

@@ -1,0 +1,14 @@
+# ar8030-transport-tx runtime configuration, sourced by
+# /etc/init.d/S65ar8030-transport-tx. Overrides the package's own default
+# file (package/ar8030-transport-tx/files/etc/default/ar8030-transport-tx)
+# -- see that file for the full set of variables this can set.
+
+# AR8030_TRANSPORT_TX_ENABLED=false
+
+AR8030_TRANSPORT_TX_ARGS=""
+
+# gpio0: this board's physical bind button (idle=1, pressed=0, confirmed
+# by hand on real hardware -- exported as an input by muxes.sh before
+# ar8030-lifecycled ever starts). See ar8030-transport's README
+# "ar8030-lifecycled: link supervisor + bind button".
+AR8030_LIFECYCLED_ARGS="--bind-gpio 0"
