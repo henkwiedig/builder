@@ -32,9 +32,28 @@ BINARIES_DIR="$1"
 BUILDER_DIR=$(cd "${BINARIES_DIR}/../../.." && pwd)
 DEVICE_SCRIPTS="${BUILDER_DIR}/devices/hi3516cv6xx_fpv_caddx-ascent-lite/scripts"
 VENDOR_IMG="${BUILDER_DIR}/cache/vendor-images/Ascent_H_Sky.img"
-OUT="${BINARIES_DIR}/hi3516cv6xx_fpv_caddx-ascent-lite-asw.img"
 
-if "${DEVICE_SCRIPTS}/fetch-vendor-img.sh" "$VENDOR_IMG" && \
+# The device's own upgrade daemon never inspects a transferred file's bytes
+# unless its NAME starts with "Ascent_H_Sky", immediately followed by
+# "_<sdk>_<app>_<qa>" matching the currently-installed firmware's version,
+# then ".img" (see pack-caddx-ascent.py's module docstring --
+# AR_FPV_UPGRADE_SearchImgFile / AR_FPV_UPGARDE_ParseImgNameVersion, found by
+# disassembling ar_fpvhs_upgrade after a wrongly-named image polled at
+# Percent=0,Status=0 for ~5 minutes and was never even looked at). Confirmed
+# on real hardware that anything between the version and ".img" is free-form
+# and ignored by the device, so a build identifier goes there. Read sdk/app/qa
+# from the same cached vendor image pack-caddx-ascent.py slices
+# boot_image.bin/nand_env.bin out of, so this can't drift from what that
+# script embeds in the header.
+VER=$("${DEVICE_SCRIPTS}/fetch-vendor-img.sh" "$VENDOR_IMG" >&2 && python3 -c "
+import struct, sys
+_, _, sdk, app, qa = struct.unpack('<IIIII', open(sys.argv[1], 'rb').read(20))
+print(f'{sdk}_{app}_{qa}')
+" "$VENDOR_IMG" 2>/dev/null)
+BUILD_ID=$(git -C "$BUILDER_DIR" rev-parse --short HEAD 2>/dev/null)
+OUT="${BINARIES_DIR}/Ascent_H_Sky_${VER:-0_0_0}_OpenIPC_${BUILD_ID:-unknown}.img"
+
+if [ -n "$VER" ] && \
    python3 "${DEVICE_SCRIPTS}/pack-caddx-ascent.py" \
        --vendor-img "$VENDOR_IMG" \
        --kernel "${BINARIES_DIR}/fitImage" \
