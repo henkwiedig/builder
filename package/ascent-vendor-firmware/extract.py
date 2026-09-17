@@ -63,7 +63,23 @@ from pathlib import Path
 ASW_MAGIC = 0x575341
 USRDATA_SUB_IMAGE_INDEX = 4
 
-VENDOR_FIRMWARE_IMG = "bb_demo_sky_3v3.img"
+# Stock's own /usrdata/fpv/boot_ar8030/boot_ar8030.sh picks between several
+# fw_name/cfg_name pairs based on a board_type read from an ADC-strapped GPIO
+# (fpv_run_by_type.sh), persisted to /usrdata/fpv/fpv_board_type. Confirmed
+# live on this project's actual air hardware: that file reads "472", and
+# stock's own dmesg firmware-download log shows a 430080-byte transfer --
+# exactly bb_demo_sky_cx472.img's size, not the 428544-byte bb_demo_sky_3v3.img
+# this used to hardcode. Booting stock and OUR firmware side by side at the
+# same channel and physical position (no hardware moved) showed a real gap
+# at the identical reported mcs=12/bandwidth=20M -- stock: snr=1406,
+# throughput=36688 kbps; ours (3v3 firmware+config on cx472 hardware):
+# snr=722, throughput=25933 kbps -- with everything else (RF chip firmware
+# ioctl surface, JSON schema, channel, distance) ruled out first. cx472 also
+# needs bb_config_sky_cx472.json (see package/ar8030/files/.../ar8030.json,
+# a static copy, not fetched here) instead of the generic bb_config_sky.json
+# -- board_ver is hardcoded to 16 (v1.0) in every stock run script that
+# reaches this board type, so it's cx472.json, not the _v11 variant.
+VENDOR_FIRMWARE_IMG = "bb_demo_sky_cx472.img"
 VENDOR_SENSOR_GLOB = "cam_os02k10_*.bin"
 
 
