@@ -11,8 +11,9 @@ AR8030_TRANSPORT_TX_ARGS=""
 
 # Extra flags passed straight to ar8030-lifecycled -- see its --help
 # output (ar8030-transport's README "ar8030-lifecycled: link supervisor
-# + bind button" / lifecycled/main.c usage()) for the full list. Empty
-# by default -- most boards have no physical bind button. A board that
-# does should override this in its own overlay copy of this file, e.g.:
-#   AR8030_LIFECYCLED_ARGS="--bind-gpio 0"
-AR8030_LIFECYCLED_ARGS=""
+# + bind button" / "HTTP control API" / lifecycled/main.c usage()) for
+# the full list. Empty by default -- most boards have no physical bind
+# button and the HTTP control API is opt-in. A board that wants either
+# should override this in its own overlay copy of this file, e.g.:
+#   AR8030_LIFECYCLED_ARGS="--bind-gpio 0 --http-port 8899"
+AR8030_LIFECYCLED_ARGS="--bind-gpio 0 --http-port 8899"
