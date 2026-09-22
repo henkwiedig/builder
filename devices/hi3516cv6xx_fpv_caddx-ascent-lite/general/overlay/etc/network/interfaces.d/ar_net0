@@ -1,28 +1,22 @@
-# Manual interface: brings up the AR8030 TUN bridge over the RF link
-# (dev_helper/tuntap_bb/test_bb_tun.cpp, package/ar8030's own
-# BR2_PACKAGE_AR8030_TUNTAP). ar8030-tun assigns the IP itself (-i,
-# tuntap::tap::ip()) and never returns on its own -- it pumps packets
-# between the TUN device and the bb socket in two threads for as long as
-# it runs -- so it's started detached via start-stop-daemon instead of as
-# a synchronous pre-up command, and torn down the same way in post-down.
-# "manual", not "static", so ifupdown doesn't also try to assign the
-# address itself.
+# ar_net0 is the AR8030's native net_device, registered by artosyn_drv.ko
+# itself (ar8030-transport kmod/artosyn_net.c, module param native_net=1,
+# the default) as soon as the chip is running its RTOS firmware. No
+# userspace bridge is involved any more: `ifup` opens bb socket slot 0
+# port 3 on the chip, `ifdown` closes it. lifecycled's connected/dropped
+# hooks (30-ifup.sh / 30-ifdown.sh) drive that, so nothing brings it up
+# before there is an actual link to carry it.
 #
-# This board used to run the vendor's kernel-netdev demo
-# (ar8030-netdev-demo) here instead -- see git history on this file --
-# but that needed /dev/ar_net<N>, a char device only the old combined
-# kernel driver's net_dev.c ever created, and that driver is gone (see
-# package/ar8030/Config.in's own help). ar8030-tun needs nothing but
-# ar8030d's RPC socket, so it works unchanged on top of the clean-room
-# SDIO-only driver (ar8030-transport-tx's artosyn_drv.ko).
+# The peer still runs ar8030-tun (TAP, datagram mode, -p 3) -- the
+# kernel side uses the same 0xab..0xbc datagram framing and Ethernet
+# frames, so the two interoperate. slot 0 / port 3 has to match the
+# peer's ar8030-tun invocation; see OpenIPC/sbc-groundstations' own
+# package/ar8030/files/etc/network/interfaces.d/ar_net0. Port 3, not 2:
+# port 2 is ar8030-transport-tx/-rx's own video socket.
 #
-# slot 0 / port 3 has to match the peer's ar8030-tun invocation exactly;
-# see OpenIPC/sbc-groundstations' own package/ar8030/files/etc/network/
-# interfaces.d/ar_net0. Port 3, not 2: port 2 is ar8030-transport-tx/-rx's
-# own video socket (see ar8030-transport/tx/main.c's DEFAULT_VIDEO_PORT),
-# which has to coexist with this on the same slot now that both ends
-# actually run a video daemon.
-iface ar_net0 inet manual
-	pre-up modprobe tun
-	pre-up start-stop-daemon -S -b -q -m -p /var/run/ar8030-tun.pid -x /usr/bin/ar8030-tun -- -d ar_net0 -i 192.168.100.1 -u 0 -p 3
-	post-down start-stop-daemon -K -q -p /var/run/ar8030-tun.pid
+# To go back to the userspace bridge instead: load artosyn_drv with
+# native_net=0 and use the previous version of this file from git
+# history (manual iface starting ar8030-tun -d ar_net0 -i 192.168.100.1
+# -u 0 -p 3).
+iface ar_net0 inet static
+	address 192.168.100.1
+	netmask 255.255.255.0
