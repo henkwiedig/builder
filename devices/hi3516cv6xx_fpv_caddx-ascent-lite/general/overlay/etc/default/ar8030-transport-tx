@@ -11,4 +11,8 @@ AR8030_TRANSPORT_TX_ARGS=""
 # by hand on real hardware -- exported as an input by muxes.sh before
 # ar8030-lifecycled ever starts). See ar8030-transport's README
 # "ar8030-lifecycled: link supervisor + bind button".
+# No --rf-temp-adc here: the Lite is stock board type CX482/CX472
+# (ar_ldyhs_sky project type 4/7), which has no RF-board thermistor --
+# only CX4861/CX4862 (type 5/8, separate RF board) read one, on AR8030
+# ADC channel 4. On the Lite that channel floats at ~230 mV.
 AR8030_LIFECYCLED_ARGS="--bind-gpio 0 --http-port 8899"

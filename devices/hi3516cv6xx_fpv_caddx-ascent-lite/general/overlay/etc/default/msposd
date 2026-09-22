@@ -1,0 +1,24 @@
+# msposd runtime configuration, sourced by /etc/init.d/S99msposd.
+
+MSPOSD_ENABLED=true
+
+# Flight controller MSP DisplayPort UART. UART1 is the one muxes.sh pins out
+# (0x11130030/34); not yet confirmed against the FC connector on hardware.
+MSPOSD_MASTER=/dev/ttyAMA1
+MSPOSD_BAUDRATE=115200
+
+# OSD refresh rate (Hz).
+MSPOSD_FPS=20
+
+# Overlay size. Empty = read video0.size from /etc/waybeam.json, so the OSD
+# follows the encoded resolution.
+MSPOSD_SIZE=""
+
+# Seconds to wait before starting, so waybeam has created VENC channel 0 --
+# msposd attaches its region to that channel once, at startup.
+MSPOSD_DELAY=5
+
+# Extra flags passed straight to msposd (see `msposd --help`), e.g.
+# "-c 8" for the RC channel used for OSD page switching, "-o <ip:port>" to
+# also forward MSP to the ground station, "-t" for the air unit temperature.
+MSPOSD_ARGS=""

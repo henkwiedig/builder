@@ -232,7 +232,12 @@ BR2_PACKAGE_YAML_CLI=y
 
 BR2_PACKAGE_AR8030_TRANSPORT_TX=y
 
-# BR2_PACKAGE_MSPOSD=y
+# msposd -- MSP DisplayPort OSD, drawn into the video as a region on
+# waybeam's VENC channel 0. package/msposd overrides firmware's own package
+# to add hi3516cv6xx (openhisilicon headers + libss_mpi from osdrv).
+# Started by general/overlay/etc/init.d/S99msposd, configured via
+# /etc/default/msposd.
+BR2_PACKAGE_MSPOSD=y
 
 BR2_PACKAGE_DROPBEAR_OPENIPC_DISABLE_REVERSEDNS=y
 BR2_PACKAGE_MTD_NANDWRITE=y

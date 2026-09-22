@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# msposd: renders the flight controller's MSP DisplayPort OSD into the
+# encoded video, as a region on waybeam's VENC channel 0 (see msposd's
+# bmp/region.c, __HI3516CV6XX__). Ordered after S95waybeam, which owns the
+# encoder; settings live in /etc/default/msposd.
+
+test -r /etc/default/msposd && . /etc/default/msposd
+
+DAEMON=/usr/bin/msposd
+PIDFILE=/var/run/msposd.pid
+
+if [ "x$MSPOSD_ENABLED" = "xfalse" ]; then
+	echo "Starting msposd... skipped (disabled)"
+	exit 0
+fi
+
+start() {
+	echo "Starting msposd..."
+	size="$MSPOSD_SIZE"
+	[ -z "$size" ] && size=$(jsonfilter -i /etc/waybeam.json -e '@.video0.size' 2>/dev/null)
+	[ -z "$size" ] && size=1920x1080
+	# Backgrounded so the delay doesn't hold up the rest of boot.
+	(
+		sleep "${MSPOSD_DELAY:-0}"
+		exec "$DAEMON" -m "${MSPOSD_MASTER:-/dev/ttyAMA1}" -b "${MSPOSD_BAUDRATE:-115200}" \
+			-r "${MSPOSD_FPS:-20}" -z "$size" $MSPOSD_ARGS
+	) >/dev/null 2>&1 &
+	echo $! > "$PIDFILE"
+}
+
+stop() {
+	echo "Stopping msposd..."
+	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+	rm -f "$PIDFILE"
+	killall -q msposd
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
