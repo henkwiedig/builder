@@ -62,7 +62,7 @@ BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMI
 # below), so it's layered on as a fragment instead of touching the file
 # every hi3516cv6xx device builds against. See that fragment's own
 # comment for why.
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/nand.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/usb-gadget.config"
 # Runs three scripts, space-separated, in order: the shared SoC script
 # (fitImage/firmware.bin), our own that builds the blank usrdata0/usrdata1
 # UBI image (see general/scripts/make-usrdata-image.sh for why that has to
@@ -114,8 +114,14 @@ BR2_TARGET_ROOTFS_SQUASHFS=y
 BR2_TARGET_ROOTFS_SQUASHFS4_XZ=y
 # UBI/UBIFS rootfs image (output/images/rootfs.ubi) for NAND/TFTP flashing
 # during bring-up. Same SUBSIZE/LEBSIZE as every other Hi35xx UBI-enabled
-# config (hi3516ev300_ultimate etc.) — the cv6xx kernel config already
-# carries CONFIG_MTD_UBI/CONFIG_UBIFS_FS and the SPI-NAND FMC100 driver.
+# config (hi3516ev300_ultimate etc.) — NOTE the shared cv6xx kernel config
+# does NOT carry CONFIG_MTD_UBI/CONFIG_UBIFS_FS or any SPI-NAND driver (it's
+# tuned for the common SPI-NOR cv6xx boards); this device is the only
+# NAND-boot cv6xx device in this repo, so fragments/nand.config below adds
+# the missing CONFIG_MTD_RAW_NAND/MTD_SPI_NAND_BSP/MTD_SPI_NAND_FMC100/
+# MTD_SPI_NAND/MTD_UBI/UBIFS_FS set (see that file's own comment for the
+# "VFS: Cannot open root device ubi0:ubifs ... error -19" boot failure it
+# fixes, and the vendor reference defconfig it was cross-checked against).
 # Board-specific ubinize config, NOT the shared scripts/ubifs/ubinize.cfg:
 # that one hardcodes vol_size=32MiB for the rootfs volume, but this board's
 # rootfs0/rootfs1 NAND partitions are only 16MiB — see the .cfg's own header
