@@ -14,7 +14,7 @@
 #       >> $(O)/local.mk
 #
 # or as a plain environment variable to builder.sh/make.
-AR8030_TRANSPORT_TX_VERSION = e7a8a40df0af71cde7a62192bf69503969538918
+AR8030_TRANSPORT_TX_VERSION = f3273434784da3ede891bee65982462fec98ce6d
 AR8030_TRANSPORT_TX_SITE = https://github.com/henkwiedig/ar8030-transport.git
 AR8030_TRANSPORT_TX_SITE_METHOD = git
 AR8030_TRANSPORT_TX_LICENSE = MIT
@@ -86,9 +86,11 @@ endef
 #
 # Kernel module (kmod/, out-of-tree, built by the kernel's own kbuild) --
 # this package's own clean-room replacement for the vendor's closed
-# artosyn_sdio.ko, see kmod/artosyn_drv.c's header comment and this repo's
+# artosyn_sdio.ko, see kmod/artosyn_sdio.c's header comment and this repo's
 # README "Clean-room rewrite" section for the full story of why it exists
-# and what it does/doesn't implement (SDIO-mode chardev only, no DRV-mode).
+# and what it does/doesn't implement (SDIO-mode chardev plus the native
+# ar_net0 net_device, kmod/artosyn_net.c / doc/native-netdev.md; no
+# DRV-mode /dev/ar_mdev).
 #
 # AR8030_SDK_DRIVER_INC reaches directly into the ar8030 package's own
 # extracted+patched source tree for the shared ioctl/protocol header
@@ -106,13 +108,15 @@ AR8030_TRANSPORT_TX_MODULE_MAKE_OPTS = \
 
 # Only the subset of the old ar8030.mk's own AR8030_LINUX_CONFIG_FIXUPS
 # that this module still actually needs: CONFIG_FW_LOADER for
-# request_firmware() (the boot-ROM firmware push) and CONFIG_MMC for the
-# SDIO bus itself. CONFIG_PROC_FS/CONFIG_NET/CONFIG_USB were only ever
-# needed by the old combined driver's proc-file/netdev/USB-bus code, none
-# of which this module has (see kmod/artosyn_drv.c -- SDIO chardev only).
+# request_firmware() (the boot-ROM firmware push), CONFIG_MMC for the
+# SDIO bus itself and CONFIG_NET for the native ar_net0 net_device
+# (kmod/artosyn_net.c). CONFIG_PROC_FS/CONFIG_USB were only ever needed by
+# the old combined driver's proc-file/USB-bus code, which this module
+# doesn't have.
 define AR8030_TRANSPORT_TX_LINUX_CONFIG_FIXUPS
 	$(call KCONFIG_SET_OPT,CONFIG_FW_LOADER,y)
 	$(call KCONFIG_SET_OPT,CONFIG_MMC,y)
+	$(call KCONFIG_SET_OPT,CONFIG_NET,y)
 endef
 
 # kernel-module must be $(eval)'d *before* generic-package: $(eval ...)
