@@ -1,0 +1,15 @@
+config BR2_PACKAGE_MSPOSD
+	bool "msposd"
+	# hi3516cv6xx builds against openhisilicon's headers (see msposd.mk);
+	# selected here so Buildroot's dependency check never sees msposd
+	# depend on a package that isn't enabled.
+	select BR2_PACKAGE_HISILICON_OPENSDK if BR2_OPENIPC_SOC_FAMILY = "hi3516cv6xx" && BR2_LINUX_KERNEL
+	help
+	  OpenIPC implementation of MSP Displayport OSD.
+
+	  Overrides firmware's own general/package/msposd to add the
+	  Hi3516CV6xx (CV610/CV608) family, which uses the V5
+	  ss_mpi_rgn_* region API: headers from hisilicon-opensdk
+	  (openhisilicon), libss_mpi*.so from hisilicon-osdrv-hi3516cv6xx.
+
+	  https://github.com/OpenIPC/msposd
