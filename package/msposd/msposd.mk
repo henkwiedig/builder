@@ -89,4 +89,17 @@ ifeq ($(OPENIPC_SOC_VENDOR),sigmastar)
 MSPOSD_POST_INSTALL_TARGET_HOOKS += MSPOSD_INSTALL_LIBRARIES
 endif
 
+# Status text ("Waiting for data on ...", air unit messages) is rendered
+# from this TrueType font, normally installed by majestic-fonts. Images
+# without majestic (e.g. waybeam boards) need msposd to bring it along,
+# or every text message silently draws nothing.
+define MSPOSD_INSTALL_TRUETYPE_FONT
+	$(INSTALL) -m 755 -d $(TARGET_DIR)/usr/share/fonts/truetype
+	$(INSTALL) -m 644 -t $(TARGET_DIR)/usr/share/fonts/truetype $(@D)/fonts/UbuntuMono-Regular.ttf
+endef
+
+ifneq ($(BR2_PACKAGE_MAJESTIC_FONTS),y)
+MSPOSD_POST_INSTALL_TARGET_HOOKS += MSPOSD_INSTALL_TRUETYPE_FONT
+endif
+
 $(eval $(generic-package))
