@@ -58,6 +58,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 ASW_MAGIC = 0x575341
@@ -82,6 +83,26 @@ USRDATA_SUB_IMAGE_INDEX = 4
 VENDOR_FIRMWARE_IMG = "bb_demo_sky_cx472.img"
 VENDOR_SENSOR_GLOB = "cam_os02k10_*.bin"
 
+# Colortrans variants of the sensor set: every stock .bin also gets a
+# <name>_colortrans.bin whose ISP gamma LUT is squeezed into
+# 0.15 + g(x) / 2.5, the exact inverse of what PixelPilot's live colortrans
+# (--live-colortrans, gain 2.5 / offset -0.15) applies on the ground as a
+# per-channel RGB gamma LUT. Low-contrast video costs the encoder fewer bits,
+# so it holds its bitrate target better on a bad link. Applied on the gamma
+# LUT (RGB) rather than the CSC, the round trip is exact up to quantization.
+#
+# Layout of these HiSilicon PQTools .bin files (all 24 CADDX ones, confirmed
+# against a live ss_mpi_isp_get_gamma_attr() and a waybeam export_bin):
+# three sections, each followed by the CRC32 of its bytes --
+# [4, 131092), [131096, 139304), [139308, 143420) -- and the 1025-node
+# u16 gamma LUT at offset 25880, inside the first.
+COLORTRANS_GAIN = 2.5
+COLORTRANS_OFFSET = 0.15
+PQ_BIN_SIZE = 144774
+PQ_GAMMA_OFFSET = 25880
+PQ_GAMMA_NODES = 1025
+PQ_CRC_SECTIONS = ((4, 131092), (131096, 139304), (139308, 143420))
+
 
 def warn(msg: str) -> None:
     print(f"ascent-vendor-firmware: {msg}", file=sys.stderr)
@@ -101,6 +122,24 @@ def slice_usrdata(vendor_img: Path) -> bytes:
     start = offsets[USRDATA_SUB_IMAGE_INDEX]
     end = len(data)
     return data[start:end]
+
+
+def colortrans_bin(data: bytes) -> bytes:
+    """Stock PQ .bin -> colortrans variant (see COLORTRANS_GAIN above)."""
+    if len(data) != PQ_BIN_SIZE:
+        raise ValueError(f"size {len(data)}, expected {PQ_BIN_SIZE}")
+    for start, end in PQ_CRC_SECTIONS:
+        if zlib.crc32(data[start:end]) != struct.unpack_from("<I", data, end)[0]:
+            raise ValueError(f"CRC mismatch on section [{start}, {end})")
+    lut = struct.unpack_from(f"<{PQ_GAMMA_NODES}H", data, PQ_GAMMA_OFFSET)
+    if lut[0] != 0 or lut[-1] != 4095 or any(a > b for a, b in zip(lut, lut[1:])):
+        raise ValueError("no gamma LUT at the expected offset")
+    out = bytearray(data)
+    squeezed = [min(4095, round((v / 4095 / COLORTRANS_GAIN + COLORTRANS_OFFSET) * 4095)) for v in lut]
+    struct.pack_into(f"<{PQ_GAMMA_NODES}H", out, PQ_GAMMA_OFFSET, *squeezed)
+    start, end = next(s for s in PQ_CRC_SECTIONS if s[0] <= PQ_GAMMA_OFFSET < s[1])
+    struct.pack_into("<I", out, end, zlib.crc32(out[start:end]))
+    return bytes(out)
 
 
 def find_one(root: Path, name: str) -> Path:
@@ -181,9 +220,18 @@ def main() -> int:
             warn(f"no {VENDOR_SENSOR_GLOB} found in the extracted usrdata volume -- no sensor tuning this build")
         else:
             sensors_out.mkdir(parents=True, exist_ok=True)
+            n_ct = 0
             for f in sensor_files:
                 shutil.copyfile(f, sensors_out / f.name)
-            print(f"ascent-vendor-firmware: wrote {len(sensor_files)} sensor tuning file(s) to {sensors_out}")
+                try:
+                    ct = colortrans_bin(f.read_bytes())
+                except ValueError as e:
+                    warn(f"{f.name}: no colortrans variant ({e})")
+                    continue
+                (sensors_out / f"{f.stem}_colortrans.bin").write_bytes(ct)
+                n_ct += 1
+            print(f"ascent-vendor-firmware: wrote {len(sensor_files)} sensor tuning file(s) "
+                  f"+ {n_ct} colortrans variant(s) to {sensors_out}")
 
     return 0
 
