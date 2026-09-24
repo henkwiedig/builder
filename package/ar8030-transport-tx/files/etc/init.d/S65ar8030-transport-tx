@@ -86,13 +86,12 @@ INTF=1
 AR8030D="/usr/bin/ar8030d"
 AR8030D_PIDFILE="/var/run/ar8030d.pid"
 
-# ar8030-lifecycled itself does NOT pulse the hardware reset line
-# (GPIO7_3) here -- see start_lifecycled()'s own comment for why that
-# was tried and reverted (fatal race against load_module()'s own
-# modprobe-time firmware push). A normal `start` already begins from a
-# known-good hardware state via load_module() below; the `reset` action
-# (stop() + start(), i.e. a full rmmod/modprobe cycle) is what actually
-# forces a fresh one, same as before lifecycled existed.
+# ar8030-lifecycled itself does NOT pulse the hardware reset line here --
+# see start_lifecycled()'s own comment for why that was tried and reverted
+# (fatal race against load_module()'s own modprobe-time firmware push).
+# load_module() pulses it instead, right *before* modprobe, so the push
+# always starts from a freshly reset chip; the `reset` action (stop() +
+# start()) therefore forces a full chip reset + rmmod/modprobe cycle.
 LIFECYCLED="/usr/bin/ar8030-lifecycled"
 LIFECYCLED_PIDFILE="/var/run/ar8030-lifecycled.pid"
 
@@ -110,17 +109,75 @@ fi
 # request_firmware() (kmod/artosyn_drv.c's artosyn_download_firmware(),
 # module params fw_name=/cfg_name=) resolves relative to this sysfs path,
 # not a compiled-in default -- has to be set before modprobe.
+# Pulses the AR8030 reset line (AR8030_RESET_GPIO_BANK/_BIT, see
+# /etc/default/ar8030-transport-tx; no-op when unset): low ~3ms, then
+# high. Raw register writes on a PL061-style HiSilicon GPIO bank -- the
+# data register is address-masked (bank + (1 << bit) * 4 touches only that
+# line), direction is bank + 0x400. Same writes the vendor's sys_config.ko
+# made, which is where this reset used to live (see hisilicon-opensdk's
+# 0001-caddx-ascent-lite.patch for why it moved here).
+reset_chip() {
+	[ -n "$AR8030_RESET_GPIO_BANK" ] && [ -n "$AR8030_RESET_GPIO_BIT" ] || return 0
+	mask=$((1 << AR8030_RESET_GPIO_BIT))
+	data=$(printf 0x%x $((AR8030_RESET_GPIO_BANK + (mask << 2))))
+	dir=$(printf 0x%x $((AR8030_RESET_GPIO_BANK + 0x400)))
+	devmem "$dir" 32 $(($(devmem "$dir" 32) | mask))
+	devmem "$data" 32 0
+	usleep 3000 2>/dev/null || sleep 0.01
+	devmem "$data" 32 "$mask"
+}
+
 load_module() {
+	reset_chip
 	echo -n "/lib/firmware" > /sys/module/firmware_class/parameters/path
 	args=""
 	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"
 	[ -f "/lib/firmware/$CFG_NAME" ] && args="$args cfg_name=$CFG_NAME"
 	modprobe "$MODULE" $args || return 1
-	# Settle time for the boot-ROM firmware push + the chip's
-	# re-enumeration from its ROMCODE identity (4152:8030) to its RTOS
-	# identity (4152:8031) to finish before ar8030d tries to open
-	# /dev/artosyn_sdio.
-	sleep 3
+}
+
+# ar8030d must not open /dev/artosyn_sdio until the chip runs its RTOS
+# firmware. The node alone is no signal: artosyn_drv registers it in ROM
+# mode too, before its firmware push, and when the chip then re-enumerates
+# under an ar8030d that already opened it, ar8030d gets EIO ("sdio rd:
+# pollerr!!" / "sdio detach" in its log), never re-attaches, and the link
+# never comes up. rtos_ready() checks for an RTOS SDIO identity (4152:8031
+# or 1d6b:8030, i.e. anything but the ROMCODE 4152:8030) instead.
+#
+# The wait runs in the background (see start()) so it never holds up rcS.
+# That used to be essential: on the caddx-ascent-lite the AR8030 reset was
+# pulsed by open_sys_config (loaded by S95waybeam), so the chip only showed
+# up on SDIO after S95 ran -- a blocking wait here stalled S95 and never
+# finished, while the old fixed "sleep 3" started ar8030d long before the
+# chip existed, leaving it to race the firmware push. reset_chip() owns
+# that reset now, but a board without AR8030_RESET_GPIO_* still depends on
+# whatever else releases the chip.
+RTOS_WAIT_S=120
+
+rtos_ready() {
+	[ -c /dev/artosyn_sdio ] || return 1
+	for d in /sys/bus/sdio/drivers/$MODULE/*:*; do
+		[ -e "$d/vendor" ] || continue
+		[ "$(cat "$d/vendor"):$(cat "$d/device")" = "0x4152:0x8030" ] && continue
+		return 0
+	done
+	return 1
+}
+
+wait_rtos() {
+	i=0
+	while ! rtos_ready; do
+		if [ $i -ge $((RTOS_WAIT_S * 5)) ]; then
+			logger -t ar8030-transport-tx "chip not running RTOS firmware after ${RTOS_WAIT_S}s, starting ar8030d anyway"
+			return 0
+		fi
+		sleep 0.2
+		i=$((i + 1))
+	done
+	# The RTOS probe registers the node before it finishes (netdev setup
+	# follows) -- let it complete.
+	sleep 0.5
+	logger -t ar8030-transport-tx "chip running RTOS firmware after ~$((i / 5))s, starting ar8030d"
 }
 
 start_daemon() {
@@ -269,8 +326,12 @@ start() {
 	echo "Starting ar8030-transport-tx..."
 	mkdir -p "$RUNDIR"
 	load_module || echo "artosyn_drv: modprobe failed, continuing without it"
-	start_daemon
-	start_lifecycled
+	# Backgrounded so rcS never waits on the chip -- see wait_rtos().
+	(
+		wait_rtos
+		start_daemon
+		start_lifecycled
+	) </dev/null >/dev/null 2>&1 &
 }
 
 stop() {
