@@ -7,6 +7,13 @@
 
 AR8030_TRANSPORT_TX_ARGS=""
 
+# GPIO7_3 (bank 7 at 0x11097000, bit 3): this board's ar8030_rst line --
+# the vendor's own sys_config.ko pulsed it (fpv_edu405_gpio_init); here
+# S65ar8030-transport-tx owns it instead, see hisilicon-opensdk's
+# 0001-caddx-ascent-lite.patch for why it moved out of sys_config.
+AR8030_RESET_GPIO_BANK=0x11097000
+AR8030_RESET_GPIO_BIT=3
+
 # gpio0: this board's physical bind button (idle=1, pressed=0, confirmed
 # by hand on real hardware -- exported as an input by muxes.sh before
 # ar8030-lifecycled ever starts). See ar8030-transport's README

@@ -9,6 +9,17 @@
 #   AR8030_TRANSPORT_TX_ARGS="-o 2 -m 0.70 -n 512 -x 20000"
 AR8030_TRANSPORT_TX_ARGS=""
 
+# AR8030 hardware reset, pulsed by S65ar8030-transport-tx right before it
+# loads artosyn_drv: the base address of the HiSilicon-style GPIO bank the
+# chip's reset line sits on, and the line's bit within that bank (driven
+# low ~3ms, then high, via devmem). Empty (the default) = no reset -- the
+# chip is left in whatever state it booted in. Board-specific, so set in a
+# board's own overlay copy of this file, e.g.:
+#   AR8030_RESET_GPIO_BANK=0x11097000
+#   AR8030_RESET_GPIO_BIT=3
+AR8030_RESET_GPIO_BANK=""
+AR8030_RESET_GPIO_BIT=""
+
 # Extra flags passed straight to ar8030-lifecycled -- see its --help
 # output (ar8030-transport's README "ar8030-lifecycled: link supervisor
 # + bind button" / "HTTP control API" / lifecycled/main.c usage()) for
