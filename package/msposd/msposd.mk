@@ -21,8 +21,8 @@
 #
 # or pass MSPOSD_OVERRIDE_SRCDIR in the environment. As with waybeam, the
 # rsync only runs once per .stamp_rsynced; `make msposd-dirclean` to resync.
-MSPOSD_VERSION = hi3516cv6xx
-MSPOSD_SITE = https://github.com/henkwiedig/msposd.git
+MSPOSD_VERSION = 31be54151e859eba9fb4fd66e07887f577965150
+MSPOSD_SITE = https://github.com/OpenIPC/msposd.git
 MSPOSD_SITE_METHOD = git
 MSPOSD_LICENSE = GPL-3.0
 MSPOSD_LICENSE_FILES = LICENSE
