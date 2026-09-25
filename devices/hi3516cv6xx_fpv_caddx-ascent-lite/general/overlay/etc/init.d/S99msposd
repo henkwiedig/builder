@@ -17,14 +17,11 @@ fi
 
 start() {
 	echo "Starting msposd..."
-	size="$MSPOSD_SIZE"
-	[ -z "$size" ] && size=$(jsonfilter -i /etc/waybeam.json -e '@.video0.size' 2>/dev/null)
-	[ -z "$size" ] && size=1920x1080
 	# Backgrounded so the delay doesn't hold up the rest of boot.
 	(
 		sleep "${MSPOSD_DELAY:-0}"
 		exec "$DAEMON" -m "${MSPOSD_MASTER:-/dev/ttyAMA1}" -b "${MSPOSD_BAUDRATE:-115200}" \
-			-r "${MSPOSD_FPS:-20}" -z "$size" $MSPOSD_ARGS
+			-r "${MSPOSD_FPS:-20}" $MSPOSD_ARGS
 	) >/dev/null 2>&1 &
 	echo $! > "$PIDFILE"
 }
