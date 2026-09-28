@@ -1,0 +1,19 @@
+config BR2_PACKAGE_ARTLYNK_P1_VENDOR_FIRMWARE
+	bool "artlynk-p1-vendor-firmware"
+	help
+	  Extracts the proprietary blobs the BetaFPV P1 SKY needs from
+	  BetaFPV's stock P1 SKY OTA image into output/images/artlynk-p1/
+	  and installs the codec/ISP ones:
+	    /lib/firmware/cnm/wave521c_k3_codec_fw.bin   (wave5 codec)
+	    /lib/firmware/artosyn/nt99235-tuning-preview-fpv.bin (ISP)
+	    /lib/firmware/ar8030/bb_config_air.json      (P1 RF config)
+	    /lib/firmware/ar8030/p1_ascent_air.json      (P1 as AP, Ascent
+	                                                  link settings)
+	  The AR8030 baseband image is installed by the ar8030 package
+	  through the device's fetch script. The stock SPL/U-Boot/DDR
+	  firmware are kept in output/images/artlynk-p1/ for USB boot.
+
+	  Nothing is downloaded or committed: put the stock image at
+	  cache/vendor-images/P1_SKY_*.img or point ARTLYNK_P1_VENDOR_IMG
+	  at it. See extract.py for host prerequisites. Missing pieces
+	  are skipped with a warning, never a build failure.

@@ -1,0 +1,9 @@
+# Loaded by /etc/init.d/S35modules (mdev does not autoload by modalias).
+exfat
+# ml-kernel out-of-tree Artosyn drivers: GPIO controller (AR8030 reset, bind
+# button) and the SD/SDIO host glue the AR8030 sits behind.
+artosyn_gpio
+dw_mci-artosyn
+# SoC temperature and SAR ADC (IIO)
+artosyn_adc
+artosyn_protemp

@@ -1,0 +1,114 @@
+# BetaFPV P1 SKY / Artosyn ArtLynk air unit, Artosyn PROXIMA 9311 (AR9311).
+#
+# Quad Cortex-A53, 256 MiB DDR, 128 MiB SPI-NAND, AR8030 baseband on SDIO
+# (mmc0@01b00000, reset on GPIO23), dwc2 OTG USB, NT99235 camera, no PHY.
+#
+# Kernel: mainline 6.18.36 + MissingLynk's open Proxima-9311 BSP
+# (package/ml-kernel, applied by general/linux/linux-ext-ml-kernel.mk; board
+# "betafpv-vr04-air" = P1_SKY). Artosyn has published no kernel source.
+#
+# Userland: the hi3516cv6xx_fpv_caddx-ascent-lite (Ascent) set, minus what is
+# HiSilicon-only (waybeam and msposd drive the HiSilicon MPP; hisilicon-
+# opensdk/osdrv; openipc-bsel, which flips CADDX's fpvboot bank). There is
+# no encoder app yet: the camera and the wave5 codec are V4L2 devices on
+# this kernel.
+
+# OpenIPC
+BR2_OPENIPC_SOC_VENDOR="artosyn"
+BR2_OPENIPC_SOC_MODEL="ar9311"
+BR2_OPENIPC_SOC_FAMILY="ar9311"
+BR2_OPENIPC_VARIANT="fpv"
+BR2_OPENIPC_FLASH_SIZE="16"
+
+# Architecture
+BR2_aarch64=y
+BR2_cortex_a53=y
+
+# Toolchain: built by Buildroot. There is no OpenIPC toolchain tarball for
+# artosyn-ar9311, and the only aarch64 one (hi3519dv500) targets Cortex-A55.
+BR2_TOOLCHAIN_BUILDROOT=y
+BR2_TOOLCHAIN_BUILDROOT_VENDOR="openipc"
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+BR2_KERNEL_HEADERS_6_6=y
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_GCC_VERSION_13_X=y
+
+# Kernel
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.36.tar.xz"
+# arch/arm64/configs/ml_defconfig, written by linux-ext-ml-kernel.mk from
+# ml-kernel's fragments for the board; board/ar9311/openipc.config adds what
+# the OpenIPC userland needs on top.
+BR2_LINUX_KERNEL_USE_DEFCONFIG=y
+BR2_LINUX_KERNEL_DEFCONFIG="ml"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/openipc.config"
+BR2_LINUX_KERNEL_IMAGE=y
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="artosyn/proxima-9311-air"
+BR2_PACKAGE_ML_KERNEL=y
+BR2_PACKAGE_ML_KERNEL_BOARD="betafpv-vr04-air"
+BR2_PACKAGE_ML_KERNEL_MODULES=y
+BR2_PACKAGE_ML_KERNEL_MODULES_PRUNE=y
+# post-image.sh packs the Image into the stock OTRA + LZ4 uImage container
+# the stock U-Boot/SPL boot (see that script); ml-kernel pulls in host-lz4.
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh"
+
+# Stock-image blobs: AR8030 baseband firmware + RF config, Wave521C codec
+# firmware, NT99235 ISP tuning, and the SPL/U-Boot/DDR firmware used to
+# USB-boot a board.
+BR2_PACKAGE_ARTLYNK_P1_VENDOR_FIRMWARE=y
+
+# Filesystem
+BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL)/package/busybox/busybox.config"
+BR2_PACKAGE_EXFATPROGS=y
+BR2_PACKAGE_UBOOT_TOOLS=y
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
+# rootfs.cpio.gz: RAM boot over USB (ROM loader -> U-Boot -> bootm with it
+# as initrd), for boards without flash.
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_GZIP=y
+# Standard OpenIPC NAND layout: UBI with a "rootfs" UBIFS volume and an
+# autoresizing "rootfs_data" overlay volume; the ml-kernel air DTS already
+# boots "ubi.mtd=18 root=ubi:rootfs rootfstype=ubifs" (mtd18 = userapp1).
+# SPI-NAND XT26Q01D: 128 KiB PEB, 2 KiB page and sub-page.
+BR2_TARGET_ROOTFS_UBI=y
+BR2_TARGET_ROOTFS_UBI_PEBSIZE=0x20000
+BR2_TARGET_ROOTFS_UBI_SUBSIZE=2048
+BR2_TARGET_ROOTFS_UBI_USE_CUSTOM_CONFIG=y
+BR2_TARGET_ROOTFS_UBI_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL)/scripts/ubifs/ubinize.cfg"
+BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000
+BR2_TARGET_ROOTFS_UBIFS_MINIOSIZE=0x800
+BR2_TARGET_ROOTFS_UBIFS_MAXLEBCNT=2048
+
+# Packages (the Ascent set, see header)
+BR2_PACKAGE_AR8030=y
+BR2_PACKAGE_AR8030_FIRMWARE=y
+BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT="scripts/fetch-p1-ar8030-firmware.py"
+BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY="artlynk-p1-vendor-firmware"
+BR2_PACKAGE_AR8030_PAIR_TOOL=y
+# BR2_PACKAGE_AR8030_USB_LOADER is not set
+BR2_PACKAGE_AR8030_TOOLS=y
+BR2_PACKAGE_AR8030_TUNTAP=y
+BR2_PACKAGE_AR8030_TRANSPORT_TX=y
+BR2_PACKAGE_DROPBEAR_OPENIPC=y
+BR2_PACKAGE_DROPBEAR_OPENIPC_DISABLE_REVERSEDNS=y
+# Out-of-tree exFAT driver: does not build on 6.18, which has exFAT in-kernel.
+# BR2_PACKAGE_EXFAT_OPENIPC is not set
+BR2_PACKAGE_IPCTOOL=y
+BR2_PACKAGE_JSONFILTER=y
+BR2_PACKAGE_LIBCURL_OPENIPC=y
+BR2_PACKAGE_LIBCURL_OPENIPC_CURL=y
+# BR2_PACKAGE_LIBCURL_OPENIPC_PROXY_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_OPENIPC_COOKIES_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_OPENIPC_EXTRA_PROTOCOLS_FEATURES is not set
+BR2_PACKAGE_MBEDTLS_OPENIPC=y
+# BR2_PACKAGE_MAJESTIC is not set
+# BR2_PACKAGE_MAJESTIC_FONTS is not set
+# BR2_PACKAGE_MAJESTIC_WEBUI is not set
+BR2_PACKAGE_VTUND_OPENIPC=y
+BR2_PACKAGE_YAML_CLI=y
+BR2_PACKAGE_MTD=y
+BR2_PACKAGE_MTD_NANDWRITE=y
+BR2_PACKAGE_MTD_FLASH_ERASE=y
+BR2_PACKAGE_SOCAT=y
