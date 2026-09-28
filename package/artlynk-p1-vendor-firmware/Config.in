@@ -13,7 +13,9 @@ config BR2_PACKAGE_ARTLYNK_P1_VENDOR_FIRMWARE
 	  through the device's fetch script. The stock SPL/U-Boot/DDR
 	  firmware are kept in output/images/artlynk-p1/ for USB boot.
 
-	  Nothing is downloaded or committed: put the stock image at
-	  cache/vendor-images/P1_SKY_*.img or point ARTLYNK_P1_VENDOR_IMG
-	  at it. See extract.py for host prerequisites. Missing pieces
+	  Nothing is committed. A local stock image is used first
+	  (ARTLYNK_P1_VENDOR_IMG, else cache/vendor-images/P1_SKY_*.img);
+	  without one, BetaFPV's v2.0.5 image is downloaded from Google
+	  Drive into cache/vendor-images/ by the device's
+	  scripts/fetch-vendor-img.sh (file id in the .mk). See extract.py for host prerequisites. Missing pieces
 	  are skipped with a warning, never a build failure.
