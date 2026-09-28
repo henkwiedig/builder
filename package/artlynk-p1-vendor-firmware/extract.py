@@ -22,9 +22,11 @@ BINARIES_DIR/artlynk-p1/:
                         stock SPL, U-Boot, DDR training firmware and DT, for
                         booting a board over USB (rev/bootrom/ar9311_usbboot.py)
 
-Nothing is committed and there is no public download URL for the stock
-image, so it is looked up locally: $ARTLYNK_P1_VENDOR_IMG, else
-<builder>/cache/vendor-images/P1_SKY_*.img (newest match).
+Nothing is committed. The stock image is looked up locally first:
+$ARTLYNK_P1_VENDOR_IMG, else <builder>/cache/vendor-images/P1_SKY_*.img
+(newest match); if there is none, devices/ar9311_fpv_artlynk-p1/scripts/
+fetch-vendor-img.sh downloads BetaFPV's Google Drive copy (file id from the
+.mk, passed as argv[3]) to cache/vendor-images/P1_SKY_vendor.img.
 
 Best-effort throughout, same contract as ascent-vendor-firmware: a missing
 image or host tool prints a warning and leaves the artifact out; this script
@@ -58,14 +60,24 @@ def warn(msg):
     print(f"artlynk-p1-vendor-firmware: WARNING: {msg}", file=sys.stderr)
 
 
-def find_image(binaries_dir):
+def find_image(binaries_dir, file_id=None):
     env = os.environ.get("ARTLYNK_P1_VENDOR_IMG")
     if env:
         return Path(env) if Path(env).is_file() else None
     # BINARIES_DIR = <builder>/openipc-<device>/output/images
     builder = Path(binaries_dir).resolve().parents[2]
     hits = sorted(glob.glob(str(builder / "cache/vendor-images/P1_SKY_*.img")), key=os.path.getmtime)
-    return Path(hits[-1]) if hits else None
+    if hits:
+        return Path(hits[-1])
+    fetch = builder / "devices/ar9311_fpv_artlynk-p1/scripts/fetch-vendor-img.sh"
+    dest = builder / "cache/vendor-images/P1_SKY_vendor.img"
+    if not fetch.is_file():
+        return None
+    env = dict(os.environ, **({"FILE_ID": file_id} if file_id else {}))
+    if subprocess.run([str(fetch), str(dest)], env=env).returncode != 0:
+        warn("could not fetch the stock P1 image")
+        return None
+    return dest if dest.is_file() else None
 
 
 def extract_rootfs_files(userapp_img, out, tmp, host_dir):
@@ -130,10 +142,11 @@ def make_ap_config(out):
 def main():
     binaries_dir = sys.argv[1]
     host_dir = sys.argv[2] if len(sys.argv) > 2 else None
+    file_id = sys.argv[3] if len(sys.argv) > 3 else None
     out = Path(binaries_dir, "artlynk-p1")
     out.mkdir(parents=True, exist_ok=True)
 
-    img = find_image(binaries_dir)
+    img = find_image(binaries_dir, file_id)
     if img is None:
         warn("stock P1_SKY_*.img not found (set ARTLYNK_P1_VENDOR_IMG or put it in "
              "cache/vendor-images/) - building without AR8030/codec/ISP firmware")
