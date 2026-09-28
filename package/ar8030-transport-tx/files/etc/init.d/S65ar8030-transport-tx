@@ -76,8 +76,10 @@ trap 'rm -f "$ACTION_LOCKFILE"' EXIT
 test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
 
 MODULE="artosyn_drv"
-FW_NAME="ar8030/ar8030.img"
-CFG_NAME="ar8030/ar8030.json"
+# Relative to /lib/firmware; a board's /etc/default can point these at its
+# own baseband image/RF config (AR8030_FW_NAME/AR8030_CFG_NAME).
+FW_NAME="${AR8030_FW_NAME:-ar8030/ar8030.img}"
+CFG_NAME="${AR8030_CFG_NAME:-ar8030/ar8030.json}"
 # 1 = INTF_TYPE_SDIO (/dev/artosyn_sdio) -- the only interface this
 # module implements. INTF_TYPE_DRV (3, /dev/ar_mdev<N>) has no kernel-side
 # counterpart left to open at all (see package/ar8030/Config.in).
@@ -116,7 +118,24 @@ fi
 # line), direction is bank + 0x400. Same writes the vendor's sys_config.ko
 # made, which is where this reset used to live (see hisilicon-opensdk's
 # 0001-caddx-ascent-lite.patch for why it moved here).
+#
+# Alternatively (AR8030_RESET_GPIO=<global gpio number>), through gpiolib's
+# sysfs interface, for GPIO controllers that must be driven via their kernel
+# driver (e.g. artosyn_gpio on the AR9311, whose direction register is
+# write-only). The line is active-low, same pulse as above.
+reset_chip_gpiolib() {
+	g=/sys/class/gpio/gpio$AR8030_RESET_GPIO
+	[ -d $g ] || echo "$AR8030_RESET_GPIO" > /sys/class/gpio/export
+	echo low > $g/direction
+	usleep 3000 2>/dev/null || sleep 0.01
+	echo 1 > $g/value
+}
+
 reset_chip() {
+	if [ -n "$AR8030_RESET_GPIO" ]; then
+		reset_chip_gpiolib
+		return
+	fi
 	[ -n "$AR8030_RESET_GPIO_BANK" ] && [ -n "$AR8030_RESET_GPIO_BIT" ] || return 0
 	mask=$((1 << AR8030_RESET_GPIO_BIT))
 	data=$(printf 0x%x $((AR8030_RESET_GPIO_BANK + (mask << 2))))
@@ -133,7 +152,9 @@ load_module() {
 	args=""
 	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"
 	[ -f "/lib/firmware/$CFG_NAME" ] && args="$args cfg_name=$CFG_NAME"
-	modprobe "$MODULE" $args || return 1
+	# AR8030_MODULE_ARGS (/etc/default): extra artosyn_drv parameters, e.g.
+	# link_trailer=1 for baseband firmware that frames SDIO transfers.
+	modprobe "$MODULE" $args $AR8030_MODULE_ARGS || return 1
 }
 
 # ar8030d must not open /dev/artosyn_sdio until the chip runs its RTOS

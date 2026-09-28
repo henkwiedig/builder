@@ -1,0 +1,3 @@
+# Hisilicon/Goke-style vendor loader (load_<vendor>): Artosyn modules are
+# loaded by /etc/init.d/S34artosyn instead.
+/etc/init.d/S70vendor

@@ -1,0 +1,100 @@
+From: OpenIPC builder
+Subject: [PATCH] bb_pair: fall back to the standard pair mode
+
+Baseband firmware without the project dispatch layer (e.g. the BetaFPV
+P1's) answers BB_SET_PRJ_DISPATCH with -4, so PRJ_CMD_EVENT_PAIR never
+runs. Pair through the base API instead (BB_SET_PAIR_MODE, poll
+BB_GET_PAIR_RESULT, activate the peer), like the SDK's own bb_pair.cpp,
+then continue with the existing wait/persist flow.
+---
+--- a/dev_helper/bb_pair/txg_bb_pair.cpp	2026-09-28 08:49:51.173226855 +0200
++++ b/dev_helper/bb_pair/txg_bb_pair.cpp	2026-09-28 08:49:51.174195453 +0200
+@@ -125,6 +125,75 @@
+     return bb_ioctl_ex(pdh, request, input, output,1500);
+ }
+ 
++// Pairing through the base API (BB_SET_PAIR_MODE / BB_GET_PAIR_RESULT), for
++// baseband firmware without the project dispatch layer PRJ_CMD_EVENT_PAIR
++// lives in (BB_SET_PRJ_DISPATCH returns -4 there). Same shape as the SDK's
++// own reference (dev_helper/bb_pair/bb_pair.cpp, misc_test's -A): enter pair
++// mode for the slot bitmap, poll the result until the same peer has been
++// reported a few times in a row, activate it (AP: candidate for the slot,
++// DEV: AP MAC), leave pair mode. Returns 0 once a peer was activated.
++static int standard_pair(bb_dev_handle_t* h, bool is_ap, uint8_t slot_bmp, int timeout_s)
++{
++    bb_set_pair_mode_t mode;
++    bb_mac_t last = { 0 };
++    int seen = 0, slot = -1, ret;
++
++    memset(&mode, 0, sizeof(mode));
++    mode.start = 1;
++    mode.slot_bmp = slot_bmp;
++    ret = bb_ioctl(h, BB_SET_PAIR_MODE, &mode, NULL);
++    printf("BB_SET_PAIR_MODE start (bitmap 0x%02x) ret %d.\n", slot_bmp, ret);
++    if (ret)
++        return ret;
++
++    for (int t = 0; t < timeout_s * 5 && seen < 5; t++) {
++        bb_get_pair_out_t out;
++
++        usleep(200 * 1000);
++        memset(&out, 0, sizeof(out));
++        if (bb_ioctl(h, BB_GET_PAIR_RESULT, NULL, &out) || !(out.slot_bmp & slot_bmp))
++            continue;
++        for (int i = 0; i < BB_SLOT_MAX; i++) {
++            if (!(out.slot_bmp & slot_bmp & (1 << i)))
++                continue;
++            if (slot == i && !memcmp(&last, &out.peer_mac[i], sizeof(bb_mac_t))) {
++                seen++;
++            } else {
++                slot = i;
++                last = out.peer_mac[i];
++                seen = 1;
++            }
++            break;
++        }
++    }
++
++    mode.start = 0;
++    bb_ioctl(h, BB_SET_PAIR_MODE, &mode, NULL);
++
++    if (seen < 5) {
++        printf("standard pair: no peer within %d s.\n", timeout_s);
++        return -1;
++    }
++    printf("standard pair: peer %02x%02x%02x%02x in slot %d.\n",
++           last.addr[0], last.addr[1], last.addr[2], last.addr[3], slot);
++
++    if (is_ap) {
++        bb_set_candidate_t candi;
++
++        memset(&candi, 0, sizeof(candi));
++        candi.slot = slot;
++        candi.mac_num = 1;
++        memcpy(candi.mac_tab, &last, sizeof(bb_mac_t));
++        return bb_ioctl(h, BB_SET_CANDIDATES, &candi, NULL);
++    } else {
++        bb_set_ap_mac_t ap;
++
++        memset(&ap, 0, sizeof(ap));
++        ap.mac = last;
++        return bb_ioctl(h, BB_SET_AP_MAC, &ap, NULL);
++    }
++}
++
+ void* _pair_thread_run(void* arg){
+     AR8030Helper* helper = (AR8030Helper*)arg;
+ 
+@@ -164,6 +233,12 @@
+     printf("BB_SET_PRJ_DISPATCH start pair.\n");
+     int ret = bb_ioctl(helper->bb_handle, BB_SET_PRJ_DISPATCH, &set_prj, 0);
+     printf("BB_SET_PRJ_DISPATCH pair ret %d.\n",ret);
++    if (ret == -4) {
++        // No project dispatch layer in this baseband firmware (e.g. the
++        // BetaFPV P1's): pair through the base API instead.
++        ret = standard_pair(helper->bb_handle, helper->is_ap, event_pair->bitmap, event_pair->timeout);
++        printf("standard pair ret %d.\n", ret);
++    }
+     pthread_mutex_lock(&helper->pair_lock);
+     helper->pair_status = 0;
+     pthread_mutex_unlock(&helper->pair_lock);

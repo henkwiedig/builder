@@ -26,23 +26,27 @@ image builds and (ideally) boots on hardware.
 
 What `builder.sh <device>` does, in order:
 1. `git pull` (self-update the builder repo).
-2. `rm -rf openipc` then clone `OpenIPC/firmware` — HEAD by default, or the ref in
-   `$OPENIPC_FW_REV` if set (used for cross-repo bisects; see build-one.yml).
-3. `copy_extra_packages` — copy `package/*` into `openipc/general/package/` and append a
+2. Clone `OpenIPC/firmware` into `openipc-<device>/` if that tree does not exist yet —
+   HEAD by default, or the ref in `$OPENIPC_FW_REV` if set (used for cross-repo bisects;
+   see build-one.yml). Each device gets its own tree, so boards never share overlay or
+   package leftovers; `FIRMWARE_DIR=...` overrides the location (e.g. a legacy `./openipc`).
+   An existing tree is reused as is — delete it for a clean rebuild.
+3. `copy_extra_packages` — copy `package/*` into `openipc-<device>/general/package/` and append a
    `source "...Config.in"` line for each into the external tree's `Config.in`.
 4. Copy `devices/<device>/*` over the firmware tree (defconfig, overlay, excludes, board).
 5. `make BOARD=<device>` then best-effort `make BOARD=<device> size-report`.
 6. `copy_to_archive` → `archive/<device>/<timestamp>/`. For `hi3518ev200_lite` it also runs
    `autoup_rootfs` to wrap the images as `autoupdate-*.img` via `mkimage`.
 
-`openipc/`, `archive/`, `cache/`, `output/` are all gitignored build artifacts.
+`openipc-*/` (and a legacy `openipc/`), `archive/`, `cache/`, `output/` are all gitignored build artifacts.
 
 ### Other scripts
 - `repack.sh [uboot] [firmware] [ssid] [pass]` — does **not** build. Downloads a prebuilt
   release `.tgz` + u-boot from GitHub releases, optionally bakes in WiFi creds via
   `fw_setenv`, and `dd`s a flashable NOR image. Needs `squashfs-tools`.
-- `package.sh [pkg]` — force a full rebuild of one Buildroot package inside an existing
-  `openipc/` tree (`dirclean` + `rebuild`; defaults to `busybox`).
+- `package.sh [pkg] [device]` — force a full rebuild of one Buildroot package inside an
+  existing `openipc-<device>/` tree (`dirclean` + `rebuild`; defaults to `busybox`; the device
+  may be omitted when only one tree exists).
 - `devices/hi3516cv6xx_fpv_caddx-ascent-lite/scripts/pack-caddx-ascent.py` — repacks a finished
   build's `fitImage`/`rootfs.ubi`/`usrdata.ubi` into the vendor's undocumented "ASW" 5-slot
   container format (magic `0x575341`, no signature check — reverse-engineered and

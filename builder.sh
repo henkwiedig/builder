@@ -12,7 +12,6 @@
 
 DEVICE="$1"
 BUILDER_DIR=$(pwd)
-FIRMWARE_DIR="${BUILDER_DIR}/openipc"
 TIMESTAMP=$(date +"%Y%m%d%H%M")
 VERSION=$(stat -c"%Y" $0)
 
@@ -63,6 +62,9 @@ copy_to_archive() {
     # UBI/FIT boards (no SOC suffix on these filenames, unlike rootfs.squashfs.*
     # / uImage.* above) — best-effort, most boards don't produce these.
     cp -a ${FIRMWARE_DIR}/output/images/fitImage \
+        ${FIRMWARE_DIR}/output/images/firmware.bin.* \
+        ${FIRMWARE_DIR}/output/images/*.dtb \
+        ${FIRMWARE_DIR}/output/images/rootfs.cpio.gz \
         ${FIRMWARE_DIR}/output/images/rootfs.ubi \
         ${FIRMWARE_DIR}/output/images/usrdata.ubi \
         ${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP} 2>/dev/null || true
@@ -123,6 +125,13 @@ echo_c 30 "https://openipc.org/"
 echo_c 30 "Version: ${VERSION}"
 
 while [ -z "${DEVICE}" ]; do select_device; done
+
+# One firmware checkout per device (openipc-<device>/), so building one board
+# never reuses another board's overlay/package leftovers and several boards
+# can be worked on side by side. FIRMWARE_DIR=... overrides it, e.g. to keep
+# using a legacy ./openipc tree.
+FIRMWARE_DIR="${FIRMWARE_DIR:-${BUILDER_DIR}/openipc-${DEVICE}}"
+echo_c 30 "Firmware tree: ${FIRMWARE_DIR}"
 
 echo_c 31 "\nStarting a device for ${DEVICE}"
 ITEM=$(find devices -name ${DEVICE}_defconfig | cut -d/ -f1,2)

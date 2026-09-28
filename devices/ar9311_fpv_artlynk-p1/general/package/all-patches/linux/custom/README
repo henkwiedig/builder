@@ -1,0 +1,6 @@
+Shipped by ar9311_fpv_artlynk-p1. For a custom-tarball kernel LINUX_VERSION is
+"custom", and when all-patches/linux/<version>/ exists Buildroot applies only
+that directory instead of all-patches/linux/*.patch. Those shared patches fix
+up the old vendor kernels (mkcompile_h compiler string, compiler-gcc{8,12,13}.h)
+and do not apply to mainline 6.18.36, which needs none of them. No patches here
+on purpose; the board's kernel patches come from ml-kernel.
