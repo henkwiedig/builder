@@ -259,7 +259,70 @@ static int bsel_update(const char *mtddev, int bank_new)
 
 static void usage(void)
 {
-	fprintf(stderr, "usage: openipc-bsel {check_flash | check_cmdline | set 0 | set 1}\n");
+	fprintf(stderr, "usage: openipc-bsel {check_flash | check_cmdline | set 0 | set 1 | switch}\n");
+}
+
+static int parse_bank_arg(const char *arg)
+{
+	if (strcmp(arg, "0") == 0)
+		return 0;
+	if (strcmp(arg, "1") == 0)
+		return 1;
+	return -1;
+}
+
+static int read_current_bank(void)
+{
+	char mtddev[64];
+	int mtdnum;
+	int bank;
+
+	mtdnum = find_sel_mtd_num();
+	if (mtdnum >= 0) {
+		snprintf(mtddev, sizeof(mtddev), "/dev/mtd%d", mtdnum);
+		bank = bsel_check(mtddev);
+		if (bank >= 0)
+			return bank;
+	}
+
+	return find_bsel_from_cmdline();
+}
+
+static int do_set_bank(const char *bank_arg)
+{
+	char mtddev[64];
+	int bank;
+	int mtdnum;
+
+	bank = parse_bank_arg(bank_arg);
+	if (bank < 0) {
+		usage();
+		return 1;
+	}
+
+	mtdnum = find_sel_mtd_num();
+	if (mtdnum < 0) {
+		fprintf(stderr, "openipc-bsel: no \"sel\" partition in /proc/mtd\n");
+		return 1;
+	}
+	snprintf(mtddev, sizeof(mtddev), "/dev/mtd%d", mtdnum);
+	return bsel_update(mtddev, bank) == 0 ? 0 : 1;
+}
+
+static int do_switch_bank(void)
+{
+	int bank = read_current_bank();
+	int target;
+	char arg[2];
+
+	if (bank < 0) {
+		fprintf(stderr, "openipc-bsel: cannot determine current bank to toggle\n");
+		return 1;
+	}
+
+	target = bank == 0 ? 1 : 0;
+	snprintf(arg, sizeof(arg), "%d", target);
+	return do_set_bank(arg);
 }
 
 int main(int argc, char **argv)
@@ -298,28 +361,17 @@ int main(int argc, char **argv)
 		printf("check_cmdline: bank=%d\n", bank);
 		return bank;
 	} else if (strcmp(argv[1], "set") == 0) {
-		int bank;
-
 		if (argc < 3) {
 			usage();
 			return 1;
 		}
-		if (strcmp(argv[2], "0") == 0)
-			bank = 0;
-		else if (strcmp(argv[2], "1") == 0)
-			bank = 1;
-		else {
+		return do_set_bank(argv[2]);
+	} else if (strcmp(argv[1], "switch") == 0) {
+		if (argc != 2) {
 			usage();
 			return 1;
 		}
-
-		mtdnum = find_sel_mtd_num();
-		if (mtdnum < 0) {
-			fprintf(stderr, "openipc-bsel: no \"sel\" partition in /proc/mtd\n");
-			return 1;
-		}
-		snprintf(mtddev, sizeof(mtddev), "/dev/mtd%d", mtdnum);
-		return bsel_update(mtddev, bank) == 0 ? 0 : 1;
+		return do_switch_bank();
 	}
 
 	usage();
