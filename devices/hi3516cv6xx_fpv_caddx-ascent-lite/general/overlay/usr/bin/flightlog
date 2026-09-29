@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# flightlog enable|disable|status -- switch this air unit's flight logging
+# (FLIGHTLOG_ENABLED in /etc/default/ar8030-transport-tx) and apply it right
+# away: restarts syslogd (buffer size, forwarding to the ground) and
+# S99air-telemetry. Restarting syslogd empties its buffer.
+
+CONF=/etc/default/ar8030-transport-tx
+
+set_enabled() {
+	if grep -q '^FLIGHTLOG_ENABLED=' "$CONF"; then
+		sed -i "s/^FLIGHTLOG_ENABLED=.*/FLIGHTLOG_ENABLED=$1/" "$CONF"
+	else
+		echo "FLIGHTLOG_ENABLED=$1" >> "$CONF"
+	fi
+	/etc/init.d/S99air-telemetry stop
+	/etc/init.d/S01syslogd restart
+	/etc/init.d/S99air-telemetry start
+}
+
+case "$1" in
+	enable)  set_enabled true ;;
+	disable) set_enabled false ;;
+	status)
+		. "$CONF"
+		echo "flight logging: ${FLIGHTLOG_ENABLED:-false}"
+		ps w | grep -E "[s]yslogd |[a]ir-telemetry run" | sed 's/^/  /'
+		;;
+	*)
+		echo "Usage: $0 {enable|disable|status}"
+		exit 1
+		;;
+esac
