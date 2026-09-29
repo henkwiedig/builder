@@ -28,3 +28,10 @@ AR8030_RESET_GPIO_BIT=3
 # measured with a lab PSU at 6/9/12 V (see ar8030-transport's
 # common/ar8030_batt.h).
 AR8030_LIFECYCLED_ARGS="--bind-gpio 0 --http-port 8899 --batt-adc 0"
+
+# Flight logging (toggle with `flightlog enable|disable`, or edit here and
+# reboot): S99air-telemetry (SoC temp/load, ar8030d, chip and transport-tx
+# logs into syslog) plus, via /etc/default/syslogd, the 512 KiB syslog
+# buffer and forwarding to the ground station's ar8030-flightlog. false
+# gives back stock syslogd (64 KiB, local only) and no follower processes.
+FLIGHTLOG_ENABLED=false

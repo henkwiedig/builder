@@ -1,0 +1,68 @@
+#!/bin/sh
+#
+# collect_air_logs: snapshot of everything worth keeping from this air
+# unit before it is powered off -- the syslog ring buffer, ar8030d and
+# transport logs from /tmp/ar8030, link state and the relevant configs.
+#
+#   collect_air_logs            write /tmp/air_logs_<date>.tar.gz, print its path
+#   collect_air_logs -          write the tar.gz to stdout, e.g. from the
+#                               ground station or a laptop:
+#       ssh root@192.168.100.1 collect_air_logs - > air.tar.gz
+
+API=http://127.0.0.1:8899/api/v1
+NAME="air_logs_$(date +%Y%m%d-%H%M%S)"
+WORK="/tmp/$NAME"
+
+mkdir -p "$WORK" || exit 1
+cd "$WORK" || exit 1
+
+logread > syslog.log 2>&1
+dmesg > dmesg.log 2>&1
+
+# ar8030d's own logs (daemon_log/, capped at 2 MB each by ar8030d) and
+# the transport's log; tail -c bounds anything unexpectedly large.
+mkdir -p ar8030/daemon_log
+for f in /tmp/ar8030/* /tmp/ar8030/daemon_log/*; do
+	[ -f "$f" ] || continue
+	case "$f" in
+		*/daemon_log/*) dest="ar8030/daemon_log/$(basename "$f")" ;;
+		*) dest="ar8030/$(basename "$f")" ;;
+	esac
+	tail -c 2097152 "$f" > "$dest"
+done
+
+for ep in status link batt rf-temp channel power; do
+	wget -q -T 3 -O "api_$ep.json" "$API/$ep" 2>/dev/null || echo "unreachable" > "api_$ep.json"
+done
+
+{
+	echo "== date";       date
+	echo "== uptime";     cat /proc/uptime
+	echo "== loadavg";    cat /proc/loadavg
+	echo "== soc_temp_raw (caddx-ascent-lite-temp)"; caddx-ascent-lite-temp 2>&1
+	echo "== free";       free
+	echo "== df";         df
+	echo "== ps";         ps w
+	echo "== ip addr";    ip addr
+	echo "== ip route";   ip route
+	echo "== interrupts"; cat /proc/interrupts
+	echo "== modules";    cat /proc/modules
+	echo "== cmdline";    cat /proc/cmdline
+	echo "== os-release"; cat /etc/os-release
+} > system.txt 2>&1
+
+mkdir -p config
+for f in /etc/default/ar8030-transport-tx /etc/default/syslogd /etc/default/msposd \
+	/etc/waybeam.json /lib/firmware/ar8030/*.json; do
+	[ -f "$f" ] && cp "$f" config/
+done
+
+# busybox tar here has no -z (FEATURE_SEAMLESS_GZ off).
+cd /tmp || exit 1
+if [ "$1" = "-" ]; then
+	tar -cf - "$NAME" | gzip
+	rm -rf "$WORK"
+else
+	tar -cf - "$NAME" | gzip > "$WORK.tar.gz" && rm -rf "$WORK"
+	echo "$WORK.tar.gz"
+fi

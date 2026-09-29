@@ -1,0 +1,123 @@
+#!/bin/sh
+#
+# air-telemetry: one syslog line every $INTERVAL seconds with the SoC
+# temperature, load and free memory, tag "air-telemetry". Goes to the
+# ring buffer and, via SYSLOG_REMOTE (/etc/default/syslogd), to the
+# ground station's flight log -- so heat and load can be lined up with
+# link drops and video glitches after a flight.
+#
+# SoC temperature: same register and conversion as
+# /usr/bin/caddx-ascent-lite-temp (which prints only the raw value).
+#
+# Also follows ar8030d's own log (/tmp/ar8030/daemon_log/<date>.log, a new
+# file per ar8030d start) into syslog as tag "ar8030d". ar8030d truncates
+# that file to zero at 2 MB (8030_sdk com_log.c), which at the air unit's
+# per-packet DBG rate is every ~8 minutes -- after a flight only its last
+# minutes would be left. Dropped: the per-packet lines ([DBG] [sock-com]:
+# dev_dat_so_write_proc/_sock_dev_pack_make/add_new_wr_node, and
+# sock_rpc_push_read_data -- ~99% of the volume) and the three lines every
+# RPC client connect/disconnect logs (nod_read_thread, rpc_recv_chk_init,
+# normal_dev_deinit -- about one connect per second in normal operation,
+# with or without ar8030-flightlog polling). Everything else, including
+# all WRN/ERR, reaches the ring buffer and the ground station.
+#
+# And follows the AR8030 chip's own RTOS console log, which ar8030d writes
+# to daemon_log/<chip MAC in hex>.log (8030_sdk rpc_cmdline.c): MCS/channel
+# changes, retx, SDIO errors. Unfiltered as tag "ar8030-chip" -- it is
+# small, but ar8030d reopens it with "w" every time the chip registers, so
+# a chip reset wipes exactly the part worth keeping.
+#
+# And follows ar8030-transport-tx's log (/tmp/ar8030/ar8030-transport-tx.log,
+# emptied by S65 on every start) as tag "ar8030-tx": every bitrate_ctl
+# decision, IDR request and watchdog restart, but only every 5th of the
+# ~1/s "tx stats" lines (~300 bytes each). The file itself has no
+# timestamps; syslog adds them.
+
+# Off unless FLIGHTLOG_ENABLED=true in /etc/default/ar8030-transport-tx
+# (see `flightlog`).
+test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
+
+PIDFILE="/var/run/air-telemetry.pid"
+INTERVAL=5
+DAEMON_LOG_DIR=/tmp/ar8030/daemon_log
+
+# Newest ar8030d log ("daemon": <date>.log, the only names with a "-") or
+# chip console log ("chip": <mac>.log).
+newest_log() {
+	if [ "$1" = daemon ]; then
+		ls -1t "$DAEMON_LOG_DIR"/*.log 2>/dev/null | grep -- - | head -n 1
+	else
+		ls -1t "$DAEMON_LOG_DIR"/*.log 2>/dev/null | grep -v -- - | head -n 1
+	fi
+}
+
+# Follows the newest log of kind $1, switching when ar8030d restarts and
+# creates a new one. busybox tail -F rereads from the start when the file
+# is truncated.
+follow_log() {
+	while :; do
+		f=$(newest_log "$1")
+		if [ -z "$f" ]; then
+			sleep 5
+			continue
+		fi
+		tail -n +1 -F "$f" 2>/dev/null &
+		tp=$!
+		while [ "$(newest_log "$1")" = "$f" ]; do
+			sleep 5
+		done
+		kill "$tp" 2>/dev/null
+	done
+}
+
+run() {
+	# start-stop-daemon -b puts us in our own session: take the follower
+	# pipeline (tail/awk/logger) down with us.
+	trap 'trap - TERM INT; kill 0' TERM INT
+
+	follow_log daemon |
+		awk '!/\[DBG\] \[sock-com\]|sock_rpc_push_read_data|nod_read_thread:|rpc_recv_chk_init:|normal_dev_deinit:/ { print; fflush() }' |
+		logger -t ar8030d &
+	follow_log chip | logger -t ar8030-chip &
+	tail -n +1 -F /tmp/ar8030/ar8030-transport-tx.log 2>/dev/null |
+		awk '!/^tx stats:/ || n++ % 5 == 0 { print; fflush() }' |
+		logger -t ar8030-tx &
+
+	while :; do
+		raw=$(( $(devmem 0x1102a008) & 0x3ff ))
+		temp_c=$(( (raw - 127) * 165 / 784 - 40 ))
+		read -r l1 l5 l15 _ < /proc/loadavg
+		mem=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+		read -r up _ < /proc/uptime
+		logger -t air-telemetry "up=$up soc_temp_c=$temp_c soc_temp_raw=$raw load=$l1,$l5,$l15 mem_avail_kb=$mem"
+		sleep "$INTERVAL"
+	done
+}
+
+case "$1" in
+	start)
+		if [ "x$FLIGHTLOG_ENABLED" != "xtrue" ]; then
+			echo "Starting air-telemetry... skipped (disabled)"
+			exit 0
+		fi
+		echo "Starting air-telemetry..."
+		start-stop-daemon -S -q -b -m -p "$PIDFILE" -x /bin/sh -- "$0" run
+		;;
+	stop)
+		echo "Stopping air-telemetry..."
+		[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+		rm -f "$PIDFILE"
+		;;
+	restart)
+		"$0" stop
+		sleep 1
+		"$0" start
+		;;
+	run)
+		run
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

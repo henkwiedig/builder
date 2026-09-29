@@ -1,0 +1,20 @@
+# Settings for /etc/init.d/S01syslogd -- see the generic OpenIPC copy of
+# this file for what each knob does and its caveats.
+#
+# Only while flight logging is on (FLIGHTLOG_ENABLED in
+# /etc/default/ar8030-transport-tx, toggled by `flightlog`); otherwise the
+# stock defaults (64 KiB, local only) apply.
+FLIGHTLOG_ENABLED=
+[ -r /etc/default/ar8030-transport-tx ] && . /etc/default/ar8030-transport-tx
+if [ "x$FLIGHTLOG_ENABLED" = "xtrue" ]; then
+	# 512 KiB instead of 64: enough ring buffer to still hold a whole
+	# flight for collect_air_logs, including the lines logged while the
+	# link was down and the forwarding below had nowhere to go.
+	SYSLOG_SIZE=512
+
+	# Forward every line to the ground station over ar_net0, where
+	# ar8030-flightlog (sbc-groundstations) writes it to the DVR medium as
+	# air_syslog.log. Lines logged before ar_net0 is up, or while the link
+	# is down, are dropped here but stay in the ring buffer above.
+	SYSLOG_REMOTE=192.168.100.2:514
+fi
