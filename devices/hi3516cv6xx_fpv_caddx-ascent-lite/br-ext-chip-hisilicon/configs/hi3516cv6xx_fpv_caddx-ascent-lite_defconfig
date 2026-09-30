@@ -62,7 +62,7 @@ BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMI
 # below), so it's layered on as a fragment instead of touching the file
 # every hi3516cv6xx device builds against. See that fragment's own
 # comment for why.
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/nand.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/usb-gadget.config"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/nand.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/usb-gadget.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/hrtimers.config"
 # Runs three scripts, space-separated, in order: the shared SoC script
 # (fitImage/firmware.bin), our own that builds the blank usrdata0/usrdata1
 # UBI image (see general/scripts/make-usrdata-image.sh for why that has to
