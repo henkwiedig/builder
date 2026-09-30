@@ -3,17 +3,18 @@
 RAM-boot a BetaFPV P1 / Artosyn PROXIMA 9311 (AR9311) over USB -- no flash
 needed. Nothing is written to the board's NAND.
 
-  ar9311-usbboot.py linux  [--images DIR] [--root-password PW]
+  ar9311-usbboot.py linux  [--images DIR] [--serial TTY [--root-password PW]]
       patched stock SPL + U-Boot, then the ar9311_fpv_artlynk-p1 build's
-      kernel/initramfs/dtb, booted over the serial console
+      kernel/initramfs/dtb; U-Boot autoboots them (no UART needed), --serial
+      shows the boot log
   ar9311-usbboot.py uboot  [--images DIR]      stop at the stock U-Boot
   ar9311-usbboot.py spl    <loader.bin>        just run an IMGI loader
 
 The board has to be in its mask-ROM USB mode (enumerates as 5343:0200
 "SCA200 usb gadget"): with no bootable flash it lands there on power-up.
-Host needs pyusb + pyserial, access to the USB device (udev rule for
-5343:0200, e.g. MODE="0660", GROUP="plugdev") and the serial console
-(/dev/ttyUSB0, 1152000 baud; nothing else may hold the port).
+Host needs pyusb (+ pyserial for --serial / the uboot command) and access to
+the USB device (udev rule for 5343:0200, e.g. MODE="0660", GROUP="plugdev").
+The serial console is /dev/ttyUSB0 at 1152000 baud; nothing else may hold it.
 
 The stock blobs (loader.bin, vendor.img, uboot0.img) come from the build's
 output/images/artlynk-p1/, extracted from the stock P1 image by
@@ -55,6 +56,18 @@ boots with `bootm kernel initrd:size dtb`. Load map (MissingLynk's air unit
 device.mk): kernel 0x21800000, initrd 0x23000000, dtb 0x24800000, all below
 U-Boot's HID upgrade buffer at 0x24900000; initrd_high/fdt_high keep U-Boot
 from moving them into the kernel's isp-cma region.
+
+Autoboot without a console
+--------------------------
+For `linux` the U-Boot image is patched before it is sent (the SPL's USB path
+checks no CRC; the uImage CRCs and the OTRA sum are fixed up anyway):
+
+  0x2001a790  nop     booted from USB (0x100056 == 0x40) U-Boot calls
+                      usb_booting() (HID upgrade loop) -- skip it, as a
+                      Ctrl-C on the console would
+  default env         bootcmd = setenv initrd_high/fdt_high; bootm ...,
+                      bootargs, bootdelay=0 -- rewritten in place (no flash:
+                      U-Boot runs on its default env)
 """
 import argparse
 import os
@@ -64,7 +77,6 @@ import time
 import uuid
 import zlib
 
-import serial
 import usb.core
 import usb.util
 
@@ -250,6 +262,7 @@ class UBoot:
     PROMPT = b"=> "
 
     def __init__(self, port, baud=1152000):
+        import serial
         self.ser = serial.Serial(port, baud, timeout=0.05)
 
     def read_until(self, token, timeout):
@@ -288,6 +301,45 @@ class UBoot:
 
 KADDR, RDADDR, DTADDR = 0x21800000, 0x23000000, 0x24800000
 
+# ---------------------------------------------------------------- U-Boot autoboot patch
+
+UBOOT_TEXT = 0x20001000       # uboot0.img: OTRA 0x40 + uImage header 0x40, payload linked here
+UBOOT_PAYLOAD = 0x80
+UBOOT_PATCHES = {  # addr: (original, patched)
+    0x2001a790: ("eaad0094", "1f2003d5"),   # bl usb_booting -> nop
+}
+ENV_FIRST = b"bootargs=console=ttyS0,115200"
+
+
+def patch_uboot(img, env):
+    """Skip the HID upgrade trap and replace entries of the built-in default env."""
+    u = bytearray(img)
+    for addr, (orig, new) in UBOOT_PATCHES.items():
+        o, orig, new = addr - UBOOT_TEXT + UBOOT_PAYLOAD, bytes.fromhex(orig), bytes.fromhex(new)
+        if u[o:o + len(orig)] != orig:
+            sys.exit(f"U-Boot bytes at {addr:#x} differ: not the P1 v2.0.5 U-Boot")
+        u[o:o + len(new)] = new
+    start = u.find(ENV_FIRST)
+    end = u.find(b"\0\0", start)
+    if start < 0 or end < 0:
+        sys.exit("U-Boot default environment not found")
+    old = [e.split(b"=", 1) for e in bytes(u[start:end]).split(b"\0")]
+    new = dict(old)
+    new.update({k.encode(): v.encode() for k, v in env.items()})
+    blob = b"\0".join(k + b"=" + v for k, v in new.items())
+    if len(blob) > end - start:
+        sys.exit(f"patched U-Boot env too long ({len(blob)} > {end - start} B)")
+    u[start:end] = blob.ljust(end - start, b"\0")
+    # legacy uImage header at 0x40: data CRC over the payload, then header CRC
+    size = struct.unpack_from(">I", u, 0x40 + 12)[0]
+    struct.pack_into(">I", u, 0x40 + 24, zlib.crc32(u[UBOOT_PAYLOAD:UBOOT_PAYLOAD + size]))
+    struct.pack_into(">I", u, 0x40 + 4, 0)
+    struct.pack_into(">I", u, 0x40 + 4, zlib.crc32(u[0x40:0x80]))
+    # OTRA header: +0x10 uImage size, +0x20 byte sum over it
+    n = struct.unpack_from("<I", u, 0x10)[0]
+    struct.pack_into("<I", u, 0x20, sum(u[0x40:0x40 + n]) & 0xFFFFFFFF)
+    return bytes(u)
+
 
 def read(path):
     try:
@@ -303,13 +355,15 @@ def cmd_spl(a):
     print("started - watch the serial console")
 
 
-def boot_uboot(a, extra=()):
+def boot_uboot(a, extra=(), env=None):
     """Session 1: patched SPL + virtual flash; session 2: U-Boot (+ extra) into DDR."""
     blobs = os.path.join(a.images, "artlynk-p1")
     _, payload, load = parse_loader(os.path.join(blobs, "loader.bin"))
     hdr, spl = imgi_header(load, patch_spl(payload))
     vflash = build_vflash(read(os.path.join(blobs, "vendor.img")))
     uboot = read(os.path.join(blobs, "uboot0.img"))
+    if env:
+        uboot = patch_uboot(uboot, env)
 
     print("session 1: patched SPL + virtual flash")
     old = run_session([(VFLASH_BASE, vflash, "vflash"), (FAKE_DEV, fake_dev(), "fake dev"),
@@ -333,16 +387,15 @@ def cmd_linux(a):
         sys.exit("uImage.ar9311: not the OTRA kernel container")
     assert KADDR + len(kernel) < RDADDR and RDADDR + len(initrd) < DTADDR
 
-    boot_uboot(a, extra=[(KADDR, kernel, "kernel"), (RDADDR, initrd, "initrd"), (DTADDR, dtb, "dtb")])
+    bootcmd = ("setenv initrd_high 0xffffffffffffffff; setenv fdt_high 0xffffffffffffffff; "
+               f"bootm {KADDR:#x} {RDADDR:#x}:{len(initrd):#x} {DTADDR:#x}")
+    boot_uboot(a, extra=[(KADDR, kernel, "kernel"), (RDADDR, initrd, "initrd"), (DTADDR, dtb, "dtb")],
+               env={"bootcmd": bootcmd, "bootargs": a.bootargs, "bootdelay": "0"})
+    if not a.serial:
+        print("started - U-Boot autoboots the kernel (--serial TTY to watch)")
+        return
     # Opened only now: opening the serial port toggles DTR/RTS.
     console = UBoot(a.serial)
-    print("breaking into U-Boot on", a.serial)
-    if not console.break_in():
-        sys.exit("no U-Boot prompt on the serial console (port held by another program?)")
-    console.cmd("setenv initrd_high 0xffffffffffffffff")
-    console.cmd("setenv fdt_high 0xffffffffffffffff")
-    console.cmd(f"setenv bootargs {a.bootargs}")
-    console.ser.write(f"bootm {KADDR:#x} {RDADDR:#x}:{len(initrd):#x} {DTADDR:#x}\r".encode())
     if not a.root_password:
         console.stream(a.follow)
         return
@@ -375,7 +428,8 @@ def main():
         p = sub.add_parser(name, help=help_)
         p.add_argument("--images", default=DEFAULT_IMAGES, help=f"build output/images (default {DEFAULT_IMAGES})")
         p.add_argument("--uboot-addr", type=lambda v: int(v, 0), default=0x21000000)
-        p.add_argument("--serial", default="/dev/ttyUSB0")
+        p.add_argument("--serial", default="/dev/ttyUSB0" if name == "uboot" else None,
+                       help="serial console" + (" (optional: boot log, --root-password)" if name == "linux" else ""))
         p.set_defaults(fn=fn)
         if name == "linux":
             p.add_argument("--dtb", default="proxima-9311-air.dtb")
@@ -385,6 +439,8 @@ def main():
             p.add_argument("--root-password", help="claim the booted system with this root password")
 
     a = ap.parse_args()
+    if getattr(a, "root_password", None) and not a.serial:
+        ap.error("--root-password needs --serial")
     a.fn(a)
 
 
