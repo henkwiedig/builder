@@ -23,7 +23,7 @@
 # first sync are invisible to subsequent builds until you force a fresh
 # sync with `make waybeam-dirclean` (or `make waybeam-rsync`) first.
 #
-WAYBEAM_VERSION = e15d6c191bb2c8001991dc92536d17bbf5ef3316
+WAYBEAM_VERSION = 7b884414a8bbd903db96c2950c21264b2fa68cbd
 WAYBEAM_SITE = https://github.com/henkwiedig/waybeam_venc.git
 WAYBEAM_SITE_METHOD = git
 # libbin.so (fetched at build time on Hisilicon boards, see near the end
