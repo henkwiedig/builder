@@ -6,9 +6,9 @@ Extracts the proprietary blobs ar9311_fpv_artlynk-p1 needs from BetaFPV's
 stock P1 SKY OTA image (P1_SKY_*.img, Artosyn "ARTO" container) into
 BINARIES_DIR/artlynk-p1/:
 
-  ar8030.img            AR8030 baseband firmware (stock ar813x/bb_demo_air.img);
-                        ar8030's fetch script (BR2_PACKAGE_AR8030_FIRMWARE_
-                        FETCH_SCRIPT) installs it
+  ar8030.img            the stock P1 AR8030 baseband firmware (bb_demo_air.img),
+                        for reference only: the target runs the Ascent air
+                        firmware (package/ascent-vendor-firmware)
   bb_config_air.json    the stock P1 AR8030 RF config (air unit as DEV)
   p1_ascent_air.json    the P1 as AP with the Ascent link settings, built from
                         the ar8030 package's config (see make_ap_config())
@@ -20,7 +20,8 @@ BINARIES_DIR/artlynk-p1/:
                         requested by the Artosyn ISP drivers as artosyn/...
   loader.bin, uboot0.img, vendor.img, p1.dtb
                         stock SPL, U-Boot, DDR training firmware and DT, for
-                        booting a board over USB (rev/bootrom/ar9311_usbboot.py)
+                        booting a board over USB (devices/ar9311_fpv_artlynk-p1/
+                        scripts/ar9311-usbboot.py)
 
 Nothing is committed. The stock image is looked up locally first:
 $ARTLYNK_P1_VENDOR_IMG, else <builder>/cache/vendor-images/P1_SKY_*.img
@@ -111,16 +112,17 @@ def extract_rootfs_files(userapp_img, out, tmp, host_dir):
 
 
 def make_ap_config(out):
-    """p1_ascent_air.json: the P1 as AP with the Ascent link settings.
+    """p1_ascent_air.json: the Ascent air config with the P1's own power setup.
 
-    Stock P1 air units are DEVs (the goggle is the AP); this target runs the
-    Ascent userland, where the air unit is the AP. So: the ar8030 package's
-    (Ascent) air config, keeping from the stock P1 config what describes the
-    P1's own radio -- board "fpv_air_1t", power section and PA calibration --
-    with single-TX broadcast (no second TX chain for 2TX_STBC) and the
-    channel table cut to 32 entries (the P1 firmware drops the rest).
-    Status: runs and answers the API, but has not linked with an Ascent
-    ground unit yet (see devices/ar9311_fpv_artlynk-p1/README.md).
+    The P1 runs the Ascent air firmware (as AP, like an Ascent air unit), so
+    the ar8030 package's (Ascent) air config is the base: link parameters,
+    the full 42-entry channel table (a shorter table shifts the channel
+    indices against the ground's) and 2TX_STBC broadcast. Only the P1's
+    own PA setup comes from the stock P1 config: the power section and the
+    PA calibration. Keep 2TX_STBC even though the P1 has one TX chain: the
+    P1 only has RF port A fitted, and under the Ascent firmware 1TX goes
+    out on port B. The stock "board" key is not carried over; the Ascent
+    firmware has no board profiles.
     """
     import json
 
@@ -130,12 +132,8 @@ def make_ap_config(out):
         warn("no Ascent ar8030.json or stock bb_config_air.json - no p1_ascent_air.json")
         return
     p1, cfg = json.loads(stock.read_text()), json.loads(ascent.read_text())
-    cfg["board"] = p1["board"]
     cfg["baseband"]["power_calibration"] = p1["baseband"]["power_calibration"]
-    basic = cfg["baseband"]["basic"]
-    basic["power"] = p1["baseband"]["basic"]["power"]
-    basic["para"]["br"]["tx"]["tx_mode"] = "1TX"
-    basic["channel"]["freq"] = basic["channel"]["freq"][:32]
+    cfg["baseband"]["basic"]["power"] = p1["baseband"]["basic"]["power"]
     (out / "p1_ascent_air.json").write_text(json.dumps(cfg, indent=1))
 
 
