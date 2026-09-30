@@ -13,6 +13,7 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Userland | the Ascent (`hi3516cv6xx_fpv_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
 | Rootfs | `rootfs.ubi` (standard OpenIPC `rootfs` + `rootfs_data` UBI, also as `firmware.bin`), `rootfs.cpio.gz` for RAM boot |
 | AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
+| Video | waybeam's `ar9311` backend (NT99235 camera through the MissingLynk V4L2 chain, H.265 on wave5, into `frame-shm://venc_frames` for `ar8030-transport-tx`); the waybeam pin predates it, so build with `WAYBEAM_OVERRIDE_SRCDIR=/path/to/waybeam_venc` (branch `ar9311`) |
 | Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
 
 ## RAM boot (no flash needed)
@@ -70,7 +71,10 @@ table) plus the P1's power section and PA calibration. Things that matter:
 Not working yet:
 
 - `S65ar8030-transport-tx stop` leaves `ar8030-lifecycled` running.
-- No encoder app: camera (NT99235 -> ISP) and codec (wave5) are V4L2 devices
-  on this kernel.
+- Video: waybeam encodes 1080p60 H.265 (bench-tested over RTP); not yet
+  tested end to end over the radio. No auto-exposure yet (fixed sensor
+  exposure/gain). Restarting waybeam without a reboot can leave the wave5
+  encoder emitting noise (firmware state survives the encoder instance;
+  waybeam_venc `docs/AR9311_BACKEND.md`).
 - NAND install not done (MissingLynk writes slot B: `kernel1`, `dtb1`,
   `userapp1` = mtd18).
