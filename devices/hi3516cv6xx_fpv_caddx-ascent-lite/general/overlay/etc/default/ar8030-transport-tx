@@ -5,7 +5,11 @@
 
 # AR8030_TRANSPORT_TX_ENABLED=false
 
-AR8030_TRANSPORT_TX_ARGS=""
+# -S 5602: forward waybeam's RTP timing sidecar (outgoing.sidecarPort,
+# waybeam's own default 5602) to the ground, where ar8030-transport-rx serves
+# it on 127.0.0.1:5602 and uses it for the encode-time part of the per-frame
+# latency figures.
+AR8030_TRANSPORT_TX_ARGS="-S 5602"
 
 # GPIO7_3 (bank 7 at 0x11097000, bit 3): this board's ar8030_rst line --
 # the vendor's own sys_config.ko pulsed it (fpv_edu405_gpio_init); here
