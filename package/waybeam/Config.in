@@ -1,6 +1,6 @@
 config BR2_PACKAGE_WAYBEAM
 	bool "waybeam"
-	depends on BR2_arm
+	depends on BR2_arm || BR2_aarch64
 	depends on BR2_TOOLCHAIN_HAS_THREADS
 	help
 	  Waybeam — standalone H.265/H.264 encoder and RTP streamer for
@@ -13,10 +13,11 @@ config BR2_PACKAGE_WAYBEAM
 	  it — both want exclusive ownership of VI/VPSS/VENC. Do not
 	  enable majestic (or divinus) alongside it.
 
-	  Built here with SOC_BUILD=hi3516cv610, the Hi3516CV610 (Caddx
-	  Ascent) backend. The vendor MPP libraries it needs are dlopen'd
-	  at runtime and come from hisilicon-osdrv-hi3516cv6xx /
-	  hisilicon-opensdk, so there is no link-time dependency on them.
+	  Built with the backend chosen below: cv610 (Hi3516CV610, Caddx
+	  Ascent; the vendor MPP libraries it needs are dlopen'd at runtime
+	  and come from hisilicon-osdrv-hi3516cv6xx / hisilicon-opensdk) or
+	  ar9311 (Artosyn PROXIMA 9311, BetaFPV P1; plain V4L2 on the
+	  MissingLynk kernel, no vendor libraries).
 
 	  Installs /usr/bin/waybeam, /etc/init.d/S95waybeam and the
 	  default /etc/waybeam.json. Runtime config lives in that JSON
@@ -25,10 +26,30 @@ config BR2_PACKAGE_WAYBEAM
 	  https://github.com/OpenIPC/waybeam_venc
 
 comment "waybeam needs a toolchain w/ threads"
-	depends on BR2_arm
+	depends on BR2_arm || BR2_aarch64
 	depends on !BR2_TOOLCHAIN_HAS_THREADS
 
 if BR2_PACKAGE_WAYBEAM
+
+choice
+	prompt "backend"
+	default BR2_PACKAGE_WAYBEAM_BACKEND_AR9311 if BR2_aarch64
+	default BR2_PACKAGE_WAYBEAM_BACKEND_CV610
+
+config BR2_PACKAGE_WAYBEAM_BACKEND_CV610
+	bool "cv610 (HiSilicon Hi3516CV610)"
+	depends on BR2_arm
+
+config BR2_PACKAGE_WAYBEAM_BACKEND_AR9311
+	bool "ar9311 (Artosyn PROXIMA 9311)"
+	depends on BR2_aarch64
+	help
+	  SOC_BUILD=ar9311: NT99235 camera through the MissingLynk
+	  V4L2 camera chain, H.265 on the wave5 encoder. Needs the
+	  waybeam_venc ar9311 branch (docs/AR9311_BACKEND.md) -- build
+	  with WAYBEAM_OVERRIDE_SRCDIR pointing at it until it is pinned.
+
+endchoice
 
 config BR2_PACKAGE_WAYBEAM_JSON_CLI
 	bool "json_cli"

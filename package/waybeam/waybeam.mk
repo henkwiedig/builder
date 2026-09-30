@@ -56,7 +56,11 @@ WAYBEAM_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
 	--exclude toolchain --exclude out \
 	--exclude 'sensors/*/*/*.o' --exclude 'sensors/*/*/*.d' --exclude 'sensors/*/*/*.so'
 
+ifeq ($(BR2_PACKAGE_WAYBEAM_BACKEND_AR9311),y)
+WAYBEAM_SOC_BUILD = ar9311
+else
 WAYBEAM_SOC_BUILD = cv610
+endif
 
 # waybeam's own Makefile defaults CV610_SDK_INC/CV610_SDK_LIB to a sibling
 # `../openhisilicon` checkout and `../firmware/output/target/usr/lib`, neither
@@ -68,8 +72,10 @@ WAYBEAM_SOC_BUILD = cv610
 # runs. Confirmed on the bench: without this, every cv610_*.c TU fails at
 # `#include "ot_common.h"` — waybeam falls back to its own default, which
 # 404s to a directory that was never created in this tree.
+ifeq ($(WAYBEAM_SOC_BUILD),cv610)
 WAYBEAM_DEPENDENCIES = hisilicon-opensdk hisilicon-osdrv-hi3516cv6xx \
 	$(call qstrip,$(BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_DEPENDENCY))
+endif
 
 WAYBEAM_SENSOR_FETCH_SCRIPT = $(call qstrip,$(BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT))
 ifneq ($(WAYBEAM_SENSOR_FETCH_SCRIPT),)
@@ -116,6 +122,7 @@ WAYBEAM_MAKE_ENV = \
 # probes with `test -x` before wget'ing OpenIPC's toolchain tarball. Point both
 # at buildroot's cross gcc so nothing is downloaded and the build uses the same
 # toolchain as the rest of the image.
+ifeq ($(WAYBEAM_SOC_BUILD),cv610)
 WAYBEAM_MAKE_OPTS = \
 	SOC_BUILD=$(WAYBEAM_SOC_BUILD) \
 	HI3516CV610_CC=$(TARGET_CC) \
@@ -123,6 +130,23 @@ WAYBEAM_MAKE_OPTS = \
 	CV610_SENSOR_PLUGIN=os02k10 \
 	CV610_SDK_INC=$(HISILICON_OPENSDK_DIR) \
 	CV610_SDK_LIB=$(TARGET_DIR)/usr/lib
+else
+# AR9311: plain V4L2 on the kernel's own headers, nothing but the compiler.
+WAYBEAM_MAKE_OPTS = \
+	SOC_BUILD=$(WAYBEAM_SOC_BUILD) \
+	AR9311_CC=$(TARGET_CC)
+
+# WAYBEAM_VERSION above predates the ar9311 backend; until a commit carrying
+# it is pinned, the build has to come from WAYBEAM_OVERRIDE_SRCDIR (see the
+# top of this file). Fail with that, not with a missing-target error.
+define WAYBEAM_CHECK_AR9311_SOURCE
+	@test -f $(@D)/src/ar9311_runtime.c || { \
+		echo "waybeam: this source has no ar9311 backend -- build with"; \
+		echo "  WAYBEAM_OVERRIDE_SRCDIR=/path/to/waybeam_venc (branch ar9311)"; \
+		exit 1; }
+endef
+WAYBEAM_PRE_BUILD_HOOKS += WAYBEAM_CHECK_AR9311_SOURCE
+endif
 
 ifeq ($(BR2_PACKAGE_WAYBEAM_JSON_CLI),y)
 define WAYBEAM_BUILD_JSON_CLI
@@ -167,6 +191,24 @@ endef
 # up before the daemon starts) and PLATFORM_CONFIG=/etc/waybeam-cv610.conf
 # (sourced for the sensor profile / audio knobs). Neither was installed by
 # any prior version of this .mk; the service would have failed at boot.
+ifeq ($(WAYBEAM_SOC_BUILD),ar9311)
+# Everything comes from out/ar9311/ as `stage` leaves it: the init script is
+# init.d/S95waybeam.ar9311 (loads the camera + wave5 modules through
+# load-ar9311-camera, then starts the daemon) and waybeam.json is
+# config/waybeam.default.ar9311.json (1080p60 into frame-shm://venc_frames,
+# the ring ar8030-transport-tx reads).
+define WAYBEAM_INSTALL_TARGET_CMDS
+	$(INSTALL) -D -m 0755 $(@D)/out/ar9311/waybeam $(TARGET_DIR)/usr/bin/waybeam
+	$(INSTALL) -D -m 0755 $(@D)/out/ar9311/qr_decode $(TARGET_DIR)/usr/bin/qr_decode
+	$(INSTALL) -D -m 0755 $(@D)/out/ar9311/load-ar9311-camera \
+		$(TARGET_DIR)/usr/bin/load-ar9311-camera
+	$(INSTALL) -D -m 0755 $(@D)/out/ar9311/S95waybeam \
+		$(TARGET_DIR)/etc/init.d/S95waybeam
+	$(INSTALL) -D -m 0644 $(@D)/out/ar9311/waybeam.json \
+		$(TARGET_DIR)/etc/waybeam.json
+	$(WAYBEAM_INSTALL_JSON_CLI)
+endef
+else
 define WAYBEAM_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/out/$(WAYBEAM_SOC_BUILD)/waybeam \
 		$(TARGET_DIR)/usr/bin/waybeam
@@ -191,6 +233,7 @@ define WAYBEAM_INSTALL_TARGET_CMDS
 	fi
 	$(WAYBEAM_INSTALL_JSON_CLI)
 endef
+endif
 
 ifeq ($(OPENIPC_SOC_VENDOR),hisilicon)
 # libbin.so: Hisilicon's proprietary PQ (picture-quality) ISP tuning bin
