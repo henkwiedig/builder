@@ -12,21 +12,25 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Modules | ml-kernel's out-of-tree Artosyn drivers (`package/ml-kernel-modules`) + `artosyn_drv` (ar8030-transport-tx); in-tree modules pruned to ml-kernel's own set |
 | Userland | the Ascent (`hi3516cv6xx_fpv_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
 | Rootfs | `rootfs.ubi` (standard OpenIPC `rootfs` + `rootfs_data` UBI, also as `firmware.bin`), `rootfs.cpio.gz` for RAM boot |
-| Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): AR8030 firmware, Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
+| AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
+| Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
 
 ## RAM boot (no flash needed)
 
 ```sh
-devices/ar9311_fpv_artlynk-p1/scripts/ar9311-usbboot.py linux --root-password <pw>
+devices/ar9311_fpv_artlynk-p1/scripts/ar9311-usbboot.py linux
+devices/ar9311_fpv_artlynk-p1/scripts/ar9311-usbboot.py linux --serial /dev/ttyUSB0 --root-password <pw>
 ```
 
-Board in mask-ROM USB mode (`5343:0200`, e.g. with no bootable NAND),
-serial console on `/dev/ttyUSB0` (1152000 baud, nothing else holding it).
-The script patches the stock SPL to train DDR from a virtual flash in SRAM,
-re-enters the ROM's USB loader for a second session into DDR, loads U-Boot,
-kernel, initramfs and DTB, and boots them from the U-Boot prompt. How and
-why: see the script's docstring. Networking: RNDIS gadget, board at
-192.168.3.104.
+Board in mask-ROM USB mode (`5343:0200`, e.g. with no bootable NAND); start
+the script within ~10 s of power-on. The script patches the stock SPL to
+train DDR from a virtual flash in SRAM, re-enters the ROM's USB loader for a
+second session into DDR, loads U-Boot, kernel, initramfs and DTB, and
+patches U-Boot (skip its USB-upgrade loop, default env with a `bootm` of the
+loaded images) so it autoboots -- no UART needed. `--serial` (1152000 baud,
+nothing else holding the port) shows the boot log and, with
+`--root-password`, claims the fresh system. How and why: see the script's
+docstring. Networking: RNDIS gadget, board at 192.168.3.104.
 
 ## Status
 
@@ -35,32 +39,38 @@ Working (hardware-tested, RAM boot):
 - boot to OpenIPC login, SSH over the USB RNDIS gadget
 - AR8030 bring-up: reset via gpiolib, firmware upload, RTOS (`4152:8031`),
   `ar8030d` + `ar8030-lifecycled` with events, ioctls answered, `ar_net0`
-- the P1 baseband frames every SDIO transfer with a
-  `{ flags, type, len }` link trailer; `artosyn_drv link_trailer=1`
-  (package/ar8030-transport-tx `0002-*.patch`, set via
-  `AR8030_MODULE_ARGS` in `/etc/default/ar8030-transport-tx`)
+- **pairing and link with a Caddx Ascent ground unit** (`ar8030-pair` on
+  both, slot 0 `CONNECT`); video over the link not tested yet (no encoder
+  app, see below)
+
+### Radio link
+
+The stock P1 baseband firmware (2026-03, unchanged up to P1 v2.1.2) cannot
+link with Ascent ground units: its MAC frame header is an older format
+(`0x58`, 8-bit checksum, ...) that the Ascent firmware rejects as
+`bb_mac_rx_proc: version <n>`. It also frames SDIO transfers with a
+`{ flags, type, len }` trailer (`artosyn_drv link_trailer=1`, package/
+ar8030-transport-tx `0002-*.patch`) and has no project dispatch layer
+(`BB_SET_PRJ_DISPATCH` -> -4; package/ar8030 `0036-*.patch` falls back to
+the standard pair API).
+
+The Ascent air firmware runs on the P1 radio as is, so this target uses it,
+with `p1_ascent_air.json`: the Ascent air config (AP, full 42-entry channel
+table) plus the P1's power section and PA calibration. Things that matter:
+
+- broadcast `tx_mode` must stay `2TX_STBC`: the P1 has only RF port A
+  fitted (FEM GSR5755, port B unpopulated) and under the Ascent firmware
+  `1TX` transmits on port B
+- the channel table must match the ground's (42 entries), or the ground
+  logs `chan tab: X not match Y` and never pairs
+- the stock P1 `bb_config_air.json` does not boot the Ascent firmware
+- startup power is capped to 200 mW (22 dBm) via `--default-power`, the
+  stock P1 configs top out at 22-23 dBm
 
 Not working yet:
 
-- **No RF link with an Ascent ground unit.** Stock P1 air units are DEVs
-  (the goggle is the AP); this target runs the P1 as AP with the Ascent link
-  settings (`p1_ascent_air.json`, generated at build time). With both units
-  forced onto one common channel and each other's hardware MACs (the chips
-  use their own, e.g. P1 `e51153e2`; the `mac` fields in the JSON are not
-  used) no link came up. The Ascent ground logged `bb_mac_rx_proc: version
-  31/27` rejections once: the P1 baseband (2026-03) may speak an older link
-  protocol than the Ascent one (2026-08). The Caddx baseband image does not
-  boot on the P1 radio board.
-- **Pairing**: the P1 firmware has no project dispatch layer
-  (`BB_SET_PRJ_DISPATCH` → -4). `ar8030-pair` falls back to the standard
-  `BB_SET_PAIR_MODE` (package/ar8030 `0036-*.patch`); accepted by the chip,
-  no peer found yet (see above).
-- `ar8030-lifecycled` asks for 26 dBm; the P1 PA is calibrated to 22 dBm
-  (`BB_SET_POWER` → -4).
-- An `EIO` from `/dev/artosyn_sdio` (no TX grant within 2 s) makes `ar8030d`
-  drop the device until the stack is restarted.
 - `S65ar8030-transport-tx stop` leaves `ar8030-lifecycled` running.
-- No encoder app: camera (NT99235 → ISP) and codec (wave5) are V4L2 devices
+- No encoder app: camera (NT99235 -> ISP) and codec (wave5) are V4L2 devices
   on this kernel.
 - NAND install not done (MissingLynk writes slot B: `kernel1`, `dtb1`,
   `userapp1` = mtd18).
