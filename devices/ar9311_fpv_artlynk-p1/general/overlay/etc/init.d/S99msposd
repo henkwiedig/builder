@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# msposd: forwards the flight controller's MSP DisplayPort OSD to the
+# ground station, which draws it (msposd's headless target, no on-board
+# rendering); settings live in /etc/default/msposd.
+
+test -r /etc/default/msposd && . /etc/default/msposd
+
+DAEMON=/usr/bin/msposd
+PIDFILE=/var/run/msposd.pid
+
+if [ "x$MSPOSD_ENABLED" = "xfalse" ]; then
+	echo "Starting msposd... skipped (disabled)"
+	exit 0
+fi
+
+start() {
+	echo "Starting msposd..."
+	# Backgrounded so the delay doesn't hold up the rest of boot.
+	(
+		sleep "${MSPOSD_DELAY:-0}"
+		exec "$DAEMON" -m "${MSPOSD_MASTER:-/dev/ttyS1}" -b "${MSPOSD_BAUDRATE:-115200}" \
+			-r "${MSPOSD_FPS:-20}" $MSPOSD_ARGS
+	) >/dev/null 2>&1 &
+	echo $! > "$PIDFILE"
+}
+
+stop() {
+	echo "Stopping msposd..."
+	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+	rm -f "$PIDFILE"
+	killall -q msposd
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		sleep 1
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
