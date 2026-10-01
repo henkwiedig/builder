@@ -1,0 +1,22 @@
+# msposd runtime configuration, sourced by /etc/init.d/S99msposd.
+#
+# The P1 build is msposd's headless target: it reads MSP DisplayPort from
+# the flight controller and forwards it to the ground, which draws the OSD.
+# It never draws on the air unit (-d/-z are refused).
+
+MSPOSD_ENABLED=true
+
+# Flight controller UART: /dev/ttyS1 (0x1504000, the stock firmware's
+# /dev/ttyS2), 3.3 V. Pin muxing comes from the bootloader.
+MSPOSD_MASTER=/dev/ttyS1
+MSPOSD_BAUDRATE=115200
+
+# MSP poll rate (Hz). INAV only sends DisplayPort while it is being polled.
+MSPOSD_FPS=20
+
+# Nothing to wait for: there is no video region to attach to.
+MSPOSD_DELAY=0
+
+# Forward to the ground station over the AR8030 link; -t adds the SoC
+# temperature (shown where the OSD carries "!TMP!").
+MSPOSD_ARGS="-o 192.168.100.2:14551 -t"

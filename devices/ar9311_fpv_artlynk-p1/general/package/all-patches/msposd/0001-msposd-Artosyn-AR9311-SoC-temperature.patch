@@ -1,0 +1,85 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] msposd: Artosyn AR9311 SoC temperature (-t)
+
+On the AR9311 the SoC temperature sensor is the artosyn,protemp IIO
+device, named "temperature", whose in_temp_scale holds the temperature
+in whole degrees C. With -t, find it before falling back to the
+Hisilicon/Goke /dev/mem read (which on this SoC would read unrelated
+memory) and refresh last_board_temp from it once a second, which feeds
+the !TMP! OSD substitution in the forwarded MSP stream.
+
+Kept as a builder patch until upstream decides how board-specific
+sensors should plug in.
+
+---
+--- a/msposd.c	2026-10-01 21:21:31.000000000 +0200
++++ b/msposd.c	2026-10-01 21:26:58.785042431 +0200
+@@ -1001,6 +1001,51 @@
+ 	return mapped_area;
+ }
+ 
++/* Artosyn AR9311: the SoC sensor is the artosyn,protemp IIO device, named
++ * "temperature". Its in_temp_scale carries the temperature itself in whole
++ * degrees C (a non-standard use of SCALE, see the driver). Returns the path
++ * of that attribute, or NULL if this is not such a board. */
++static const char *find_artosyn_temp(void) {
++	static char path[96];
++	glob_t g;
++	const char *found = NULL;
++
++	if (glob("/sys/bus/iio/devices/iio:device*/name", 0, NULL, &g) != 0)
++		return NULL;
++	for (size_t i = 0; i < g.gl_pathc && !found; i++) {
++		char name[32] = {0};
++		FILE *f = fopen(g.gl_pathv[i], "r");
++
++		if (!f)
++			continue;
++		if (fgets(name, sizeof(name), f) && strncmp(name, "temperature", 11) == 0) {
++			snprintf(path, sizeof(path), "%.*s/in_temp_scale",
++				(int)(strlen(g.gl_pathv[i]) - strlen("/name")), g.gl_pathv[i]);
++			if (access(path, R_OK) == 0)
++				found = path;
++		}
++		fclose(f);
++	}
++	globfree(&g);
++	return found;
++}
++
++static void artosyn_temp_read(evutil_socket_t sock, short event, void *arg) {
++	(void)sock;
++	(void)event;
++	FILE *f = fopen((const char *)arg, "r");
++	int t;
++
++	if (!f)
++		return;
++	if (fscanf(f, "%d", &t) == 1) {
++		if (last_board_temp == -100) // only once
++			printf("Temp read %d C\n", t);
++		last_board_temp = t;
++	}
++	fclose(f);
++}
++
+ static void temp_read(evutil_socket_t sock, short event, void *arg) {
+ 	(void)sock;
+ 	(void)event;
+@@ -1371,9 +1416,16 @@
+ 	}	
+ 
+ 	if (temp) {
++		const char *artosyn_temp = find_artosyn_temp();
++
+ 		if (GetTempSigmaStar() > -90) {
+ 			temp = 2; // SigmaStar
+ 			printf("Found SigmaStart temp sensor\n");
++		} else if (artosyn_temp) { // before the Hisilicon /dev/mem read below
++			printf("Found Artosyn temp sensor %s\n", artosyn_temp);
++			artosyn_temp_read(-1, 0, (void *)artosyn_temp);
++			temp_tmr = event_new(base, -1, EV_PERSIST, artosyn_temp_read, (void *)artosyn_temp);
++			evtimer_add(temp_tmr, &(struct timeval){.tv_sec = 1});
+ 		} else { // Goke/Hisilicon method
+ 			void *mem = setup_temp_mem(0x12028000, 0xFFFF);
+ 			temp_tmr = event_new(base, -1, EV_PERSIST, temp_read, mem);
