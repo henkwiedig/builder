@@ -1,0 +1,53 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: wave5: expose cyclic intra refresh
+
+The Wave5 firmware can refresh a picture in bands of intra-coded CTU rows
+(gradual decoder refresh), and wave5_set_enc_openparam already turns an
+intra_refresh_mode/arg pair into the firmware's rows-per-picture setting.
+Nothing sets that pair, so the feature is unreachable from V4L2.
+
+Register the standard V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD (cyclic
+only) and map a non-zero period, in pictures, onto REFRESH_MODE_CTU_ROWS.
+Combined with GOP_SIZE 0 this gives an encode with no periodic IDR, whose
+cost is spread evenly over the pictures instead of one large keyframe.
+
+Applied on top of the MissingLynk ml-kernel wave5 patches.
+
+---
+--- a/drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c	2026-10-01 10:25:05.790285620 +0200
++++ b/drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c	2026-10-01 10:25:05.807495273 +0200
+@@ -1178,6 +1178,19 @@
+ 	case V4L2_CID_MPEG_VIDEO_HEVC_REFRESH_PERIOD:
+ 		inst->enc_param.intra_period = ctrl->val;
+ 		break;
++	case V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD_TYPE:
++		/* Only cyclic is registered: the firmware sweeps CTU rows. */
++		break;
++	case V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD:
++		/*
++		 * Cyclic intra refresh (GDR): the firmware codes a band of CTU rows
++		 * as intra in every picture, so the whole picture is refreshed over
++		 * this many pictures without an IDR. wave5_set_enc_openparam turns
++		 * the period into rows per picture. 0 turns it off.
++		 */
++		inst->enc_param.intra_refresh_mode = ctrl->val ? REFRESH_MODE_CTU_ROWS : 0;
++		inst->enc_param.intra_refresh_arg = ctrl->val;
++		break;
+ 	case V4L2_CID_MPEG_VIDEO_HEVC_LOSSLESS_CU:
+ 		inst->enc_param.lossless_enable = ctrl->val;
+ 		break;
+@@ -2005,6 +2018,14 @@
+ 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
+ 			  V4L2_CID_MPEG_VIDEO_HEVC_REFRESH_PERIOD,
+ 			  0, 2047, 1, 0);
++	v4l2_ctrl_new_std_menu(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
++			       V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD_TYPE,
++			       V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD_TYPE_CYCLIC,
++			       ~(1 << V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD_TYPE_CYCLIC),
++			       V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD_TYPE_CYCLIC);
++	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
++			  V4L2_CID_MPEG_VIDEO_INTRA_REFRESH_PERIOD,
++			  0, 2047, 1, 0);
+ 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
+ 			  V4L2_CID_MPEG_VIDEO_HEVC_LOSSLESS_CU,
+ 			  0, 1, 1, 0);

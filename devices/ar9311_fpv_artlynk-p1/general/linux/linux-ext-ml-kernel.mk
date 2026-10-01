@@ -43,6 +43,7 @@ define ML_KERNEL_PREPARE_KERNEL
 		echo "obj-y += spi-ar9301.o" >> $(@D)/drivers/spi/Makefile
 
 	$(APPLY_PATCHES) $(@D) $(ML_KERNEL_DIR)/patches \*.patch
+	$(APPLY_PATCHES) $(@D) $(BR2_EXTERNAL_GENERAL_PATH)/linux/ml-kernel-patches \*.patch
 
 	cat $(@D)/arch/arm64/configs/defconfig \
 		$(ML_KERNEL_DIR)/configs/artosyn.config \
