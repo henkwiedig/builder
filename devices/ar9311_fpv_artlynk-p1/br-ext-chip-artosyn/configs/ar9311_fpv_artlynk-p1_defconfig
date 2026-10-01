@@ -103,6 +103,12 @@ BR2_PACKAGE_AR8030_TRANSPORT_TX=y
 BR2_PACKAGE_WAYBEAM=y
 BR2_PACKAGE_WAYBEAM_BACKEND_AR9311=y
 BR2_PACKAGE_WAYBEAM_JSON_CLI=y
+# OSD: msposd's headless target reads MSP DisplayPort from the flight
+# controller (UART /dev/ttyS1) and forwards it to the ground, which draws it.
+# package/msposd maps ar9311 to it; P1 SoC temperature for -t is a patch in
+# general/package/all-patches/msposd. Started by S99msposd, configured via
+# /etc/default/msposd.
+BR2_PACKAGE_MSPOSD=y
 BR2_PACKAGE_DROPBEAR_OPENIPC=y
 BR2_PACKAGE_DROPBEAR_OPENIPC_DISABLE_REVERSEDNS=y
 # Out-of-tree exFAT driver: does not build on 6.18, which has exFAT in-kernel.
