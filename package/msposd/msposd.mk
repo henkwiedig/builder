@@ -47,6 +47,15 @@ else ifeq ($(OPENIPC_SOC_FAMILY),hi3516cv6xx)
 	MSPOSD_OSDRV = $(HISILICON_OSDRV_HI3516CV6XX_PKGDIR)
 	MSPOSD_DEPENDENCIES += hisilicon-opensdk hisilicon-osdrv-hi3516cv6xx
 	MSPOSD_MAKE_OPTS += OPENHISILICON=$(HISILICON_OPENSDK_DIR)
+else ifeq ($(OPENIPC_SOC_FAMILY),ar9311)
+	# No vendor region API on this SoC (open kernel, no MPP): msposd's
+	# headless target only forwards MSP to the ground, where the OSD is
+	# drawn. No OSDRV, no vendor libraries, no fonts. The target lives on
+	# the fork's `headless` branch (upstream main + the target), which does
+	# not carry the hi3516cv6xx support the shared pin above needs.
+	MSPOSD_FAMILY = headless
+	MSPOSD_VERSION = db1f68ead14c299e205557227b9fa67d7d7e8ebb
+	MSPOSD_SITE = https://github.com/henkwiedig/msposd.git
 else ifeq ($(OPENIPC_SOC_FAMILY),infinity6b0)
 	MSPOSD_FAMILY = star6b0
 	MSPOSD_OSDRV = $(SIGMASTAR_OSDRV_INFINITY6B0_PKGDIR)
@@ -63,10 +72,19 @@ define MSPOSD_BUILD_CMDS
 		$(MSPOSD_MAKE_OPTS) $(MSPOSD_FAMILY) OUTPUT=$(@D)/msposd -C $(@D)
 endef
 
-define MSPOSD_INSTALL_TARGET_CMDS
+define MSPOSD_INSTALL_BINARY
 	$(INSTALL) -m 755 -d $(TARGET_DIR)/usr/bin
 	$(INSTALL) -m 755 -t $(TARGET_DIR)/usr/bin $(@D)/msposd
 	$(INSTALL) -m 755 -t $(TARGET_DIR)/usr/bin $(@D)/safeboot.sh
+endef
+
+ifeq ($(MSPOSD_FAMILY),headless)
+define MSPOSD_INSTALL_TARGET_CMDS
+	$(MSPOSD_INSTALL_BINARY)
+endef
+else
+define MSPOSD_INSTALL_TARGET_CMDS
+	$(MSPOSD_INSTALL_BINARY)
 
 	$(INSTALL) -m 755 -d $(TARGET_DIR)/usr/share/fonts
 	$(INSTALL) -m 644 -t $(TARGET_DIR)/usr/share/fonts $(@D)/fonts/font_inav.png
@@ -77,6 +95,7 @@ define MSPOSD_INSTALL_TARGET_CMDS
 	$(INSTALL) -m 644 -t $(TARGET_DIR)/usr/share/fonts $(@D)/fonts/font_ardu_hd.png
 	$(INSTALL) -m 644 -t $(TARGET_DIR)/etc $(@D)/vtxmenu.ini
 endef
+endif
 
 define MSPOSD_INSTALL_LIBRARIES
 	$(INSTALL) -m 755 -d $(TARGET_DIR)/usr/lib
@@ -99,7 +118,9 @@ define MSPOSD_INSTALL_TRUETYPE_FONT
 endef
 
 ifneq ($(BR2_PACKAGE_MAJESTIC_FONTS),y)
+ifneq ($(MSPOSD_FAMILY),headless)
 MSPOSD_POST_INSTALL_TARGET_HOOKS += MSPOSD_INSTALL_TRUETYPE_FONT
+endif
 endif
 
 $(eval $(generic-package))
