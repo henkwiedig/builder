@@ -1,0 +1,356 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: isp: saturation, contrast and sharpness
+
+Three picture controls for the encoder-side camera daemon, as module
+parameters in percent with 100 the picture the driver produced before:
+
+- saturation scales the six sign-magnitude Q10 chroma coefficients of
+  the rgb2yuv bank and leaves the Cb/Cr offsets (the high halves of words
+  3 and 5, per the vendor's matrix writer) alone.  Luma is untouched.
+  Re-latched live by the debugfs ladders write, which the userspace AE
+  already issues.
+- contrast scales the gamma curve's output about mid-grey, after the
+  blend and before the monotonic clamp, tail included.  Re-latched live
+  by writing 2 to the debugfs tone file.
+- sharpness scales lnr register 19 (0x3d14), the two nine-bit fields the
+  vendor's acutance command rescales (CAM_PRA_SET_IMG_ACUTANCE in the
+  v2.0.5 libmpp_service.so), with the vendor's curve: linearly to zero
+  below 100, linearly towards 0x1ff above.  The base is the register as
+  replayed, captured once per configure: the vendor runs below the
+  ladder's tuned value, so 100 keeps the existing picture.  Re-latched by
+  the debugfs ladders write.
+
+Applied on top of the MissingLynk ml-kernel overlay.
+
+---
+diff -ru a/drivers/media/artosyn/ar-isp-codec.h b/drivers/media/artosyn/ar-isp-codec.h
+--- a/drivers/media/artosyn/ar-isp-codec.h	2026-10-01 17:40:48.117506277 +0200
++++ b/drivers/media/artosyn/ar-isp-codec.h	2026-10-01 18:21:30.829025017 +0200
+@@ -165,6 +165,77 @@
+ }
+ 
+ /*
++ * Contrast on one twelve-bit gamma sample: its distance from mid-grey scaled
++ * by pct/100, clamped to the sample range. 100 returns the sample unchanged.
++ * A lowered contrast lifts black off zero, which is what the control means.
++ */
++#define AR_ISP_GAMMA_MID		0x800
++#define AR_ISP_GAMMA_MAX		0xfff
++
++static inline u16 ar_isp_gamma_contrast(u32 sample, u32 pct)
++{
++	int v;
++
++	if (pct == 100)
++		return sample;
++
++	v = AR_ISP_GAMMA_MID +
++	    ((int)sample - AR_ISP_GAMMA_MID) * (int)pct / 100;
++	if (v < 0)
++		v = 0;
++	if (v > AR_ISP_GAMMA_MAX)
++		v = AR_ISP_GAMMA_MAX;
++
++	return v;
++}
++
++/*
++ * Scale the sign-magnitude Q10 chroma coefficients of one rgb2yuv word by
++ * pct/100, for saturation.
++ *
++ * The vendor's matrix writer (libmpp_service.so v2.0.5 at 0x183680) packs
++ * the 3x3 matrix and three offsets as
++ *
++ *	word 0  Y.R  | Y.G  << 16	word 3  Cb.B | Cb.off << 16
++ *	word 1  Y.B  | Y.off << 16	word 4  Cr.R | Cr.G << 16
++ *	word 2  Cb.R | Cb.G << 16	word 5  Cr.B | Cr.off << 16
++ *
++ * The offsets are not coefficients: 0x200 on the chroma rows is the 128
++ * mid-point (ten bits), with the sign at bit 11 rather than 15. Scaling them
++ * as well pulls a desaturated picture to U = V = 0, which is green. So words 2
++ * and 4 scale both halves and words 3 and 5 only their low half.
++ * (kernel/scripts/isp/gen-rgb2yuv.py reads those high halves as Cb.B; for the
++ * measured bt601_full bank the value is the same 0x200 either way.)
++ */
++#define AR_ISP_RGB2YUV_CHROMA_FIRST	2
++#define AR_ISP_CSC_SIGN			0x8000
++#define AR_ISP_CSC_MAG			0x7fff
++
++static inline u32 ar_isp_csc_scale_half(u32 h, u32 pct)
++{
++	u32 mag = (h & AR_ISP_CSC_MAG) * pct / 100;
++
++	if (mag > AR_ISP_CSC_MAG)
++		mag = AR_ISP_CSC_MAG;
++
++	return (h & AR_ISP_CSC_SIGN) | mag;
++}
++
++static inline u32 ar_isp_csc_scale(unsigned int index, u32 word, u32 pct)
++{
++	u32 hi = word >> 16;
++
++	if (pct == 100)
++		return word;
++
++	/* Odd chroma words carry an offset in the high half: keep it. */
++	if (!(index & 1))
++		hi = ar_isp_csc_scale_half(hi, pct);
++
++	return ar_isp_csc_scale_half(word & 0xffff, pct) | hi << 16;
++}
++
++/*
+  * Build one gamma page from the tuning file.
+  *
+  * The decimation rounds down systematically, by at most 5 counts in 4090 and
+@@ -176,7 +247,7 @@
+  */
+ static inline void ar_isp_gamma_from_blob(u8 *dst, const u8 *blob,
+ 					  unsigned int low, unsigned int high,
+-					  u32 t_q12)
++					  u32 t_q12, u32 contrast_pct)
+ {
+ 	const u8 *curve = blob + AR_ISP_GAMMA_BLOB_OFFSET + low * AR_ISP_GAMMA_BLOB_STRIDE;
+ 	const u8 *other = blob + AR_ISP_GAMMA_BLOB_OFFSET + high * AR_ISP_GAMMA_BLOB_STRIDE;
+@@ -192,9 +263,11 @@
+ 	for (i = 0; i < AR_ISP_GAMMA_SAMPLES; i++) {
+ 		unsigned int at = i * AR_ISP_GAMMA_DECIMATE * 4;
+ 
+-		samples[i] = ar_isp_tone_blend(ar_isp_get_le32(curve + at),
+-					       ar_isp_get_le32(other + at),
+-					       t_q12) & 0xfff;
++		samples[i] = ar_isp_gamma_contrast(
++				ar_isp_tone_blend(ar_isp_get_le32(curve + at),
++						  ar_isp_get_le32(other + at),
++						  t_q12) & 0xfff,
++				contrast_pct);
+ 	}
+ 
+ 	for (i = 1; i < AR_ISP_GAMMA_SAMPLES; i++)
+@@ -208,10 +281,10 @@
+ 	 * captured curves. Clamped after the loop above, so it cannot sit below
+ 	 * the last sample the clamp raised.
+ 	 */
+-	u16 tail = ar_isp_tone_blend(
++	u16 tail = ar_isp_gamma_contrast(ar_isp_tone_blend(
+ 			ar_isp_get_le32(curve + (AR_ISP_GAMMA_BLOB_ENTRIES - 1) * 4),
+ 			ar_isp_get_le32(other + (AR_ISP_GAMMA_BLOB_ENTRIES - 1) * 4),
+-			t_q12) & 0xfff;
++			t_q12) & 0xfff, contrast_pct);
+ 
+ 	if (tail < samples[AR_ISP_GAMMA_SAMPLES - 1])
+ 		tail = samples[AR_ISP_GAMMA_SAMPLES - 1];
+diff -ru a/drivers/media/artosyn/ar-isp-lnr.h b/drivers/media/artosyn/ar-isp-lnr.h
+--- a/drivers/media/artosyn/ar-isp-lnr.h	2026-10-01 17:51:19.647858441 +0200
++++ b/drivers/media/artosyn/ar-isp-lnr.h	2026-10-01 17:58:52.882543842 +0200
+@@ -203,4 +203,50 @@
+ 	}
+ }
+ 
++/*
++ * Sharpness: the two nine-bit fields of register 19 (0x3d14), bits 8:0 and
++ * 24:16, which the table above leaves out. They are what the vendor's
++ * acutance command rescales (the lnr driver's CAM_PRA_SET_IMG_ACUTANCE case,
++ * 0x712, in the v2.0.5 libmpp_service.so; apply path at 0x1a2d70, packer
++ * store at 0x1a0f90): acutance runs 0 to 100 with 50 neutral, below it a
++ * field scales linearly to zero, above it the field moves linearly towards
++ * 0x1ff. The vendor computes in double and truncates; the same rationals in
++ * integers give the same result.
++ *
++ * The vendor scales the ladder's tuned value, but runs below it: the
++ * streaming capture holds 0x000c000a where the ladder gives 0x00190019 at
++ * unity gain. So the base here is the register as replayed, the picture the
++ * driver has always produced, and the scale is a percentage of it (pct =
++ * 2 * acutance).
++ */
++#define AR_ISP_LNR_SHARP_REG		19
++#define AR_ISP_LNR_SHARP_SHIFT_B	16
++#define AR_ISP_LNR_SHARP_MAX		0x1ff
++
++static inline u32 ar_isp_lnr_sharp_scale(u32 field, u32 pct)
++{
++	if (field > AR_ISP_LNR_SHARP_MAX)
++		field = AR_ISP_LNR_SHARP_MAX;
++	if (pct > 200)
++		pct = 200;
++
++	if (pct <= 100)
++		return field * pct / 100;
++
++	return (AR_ISP_LNR_SHARP_MAX * 100 -
++		(200 - pct) * (AR_ISP_LNR_SHARP_MAX - field)) / 100;
++}
++
++static inline u32 ar_isp_lnr_sharp_reg(u32 base, u32 pct)
++{
++	u32 a = base & AR_ISP_LNR_SHARP_MAX;
++	u32 b = (base >> AR_ISP_LNR_SHARP_SHIFT_B) & AR_ISP_LNR_SHARP_MAX;
++
++	base &= ~(AR_ISP_LNR_SHARP_MAX |
++		  AR_ISP_LNR_SHARP_MAX << AR_ISP_LNR_SHARP_SHIFT_B);
++
++	return base | ar_isp_lnr_sharp_scale(a, pct) |
++	       ar_isp_lnr_sharp_scale(b, pct) << AR_ISP_LNR_SHARP_SHIFT_B;
++}
++
+ #endif /* AR_ISP_LNR_H */
+diff -ru a/drivers/media/artosyn/ar-isp-main.c b/drivers/media/artosyn/ar-isp-main.c
+--- a/drivers/media/artosyn/ar-isp-main.c	2026-10-01 17:40:48.117439553 +0200
++++ b/drivers/media/artosyn/ar-isp-main.c	2026-10-01 17:58:52.883288612 +0200
+@@ -438,6 +438,7 @@
+ 	 * stages derive. See ar_isp_ladders_apply.
+ 	 */
+ 	ar_isp_rgb2yuv_apply(isp);
++	ar_isp_lnr_sharp_capture(isp);
+ 	ar_isp_ladders_apply(isp, false);
+ 	ar_isp_de3d_geom_apply(isp, false);
+ 	ar_isp_gates_veto(isp, gates);
+@@ -655,6 +656,7 @@
+ 	ar_isp_apply(isp, ar_isp_lnr_fix, ARRAY_SIZE(ar_isp_lnr_fix));
+ 	ar_isp_tables_apply(isp);
+ 	ar_isp_rgb2yuv_apply(isp);
++	ar_isp_lnr_sharp_capture(isp);
+ 	ar_isp_ladders_apply(isp, false);
+ 	ar_isp_de3d_geom_apply(isp, false);
+ 	ar_isp_gates_veto(isp, gates);
+@@ -706,6 +708,8 @@
+ 	if (val) {
+ 		ar_isp_ladders_apply(isp, false);
+ 		ar_isp_de3d_geom_apply(isp, false);
++		/* Six register writes; carries the saturation parameter. */
++		ar_isp_rgb2yuv_apply(isp);
+ 	}
+ 
+ 	return 0;
+diff -ru a/drivers/media/artosyn/ar-isp-priv.h b/drivers/media/artosyn/ar-isp-priv.h
+--- a/drivers/media/artosyn/ar-isp-priv.h	2026-10-01 17:58:52.863730764 +0200
++++ b/drivers/media/artosyn/ar-isp-priv.h	2026-10-01 17:58:52.883213512 +0200
+@@ -42,6 +42,10 @@
+ 	struct dentry *debugfs;
+ 	bool configured;
+ 
++	/* lnr register 19 as replayed: the base the sharpness control scales. */
++	u32 lnr_sharp_base;
++	bool lnr_sharp_valid;
++
+ 	int irq;
+ 	bool irq_requested;
+ 	u32 irq_events;
+@@ -200,6 +204,7 @@
+ void ar_isp_cm2_apply(struct ar_isp *isp, bool verbose);
+ void ar_isp_tone_apply(struct ar_isp *isp, bool force, bool verbose);
+ void ar_isp_rgb2yuv_apply(struct ar_isp *isp);
++void ar_isp_lnr_sharp_capture(struct ar_isp *isp);
+ void ar_isp_ladders_apply(struct ar_isp *isp, bool verbose);
+ int ar_isp_ladders_show(struct seq_file *s, struct ar_isp *isp);
+ void ar_isp_tables_apply(struct ar_isp *isp);
+diff -ru a/drivers/media/artosyn/ar-isp-tables.c b/drivers/media/artosyn/ar-isp-tables.c
+--- a/drivers/media/artosyn/ar-isp-tables.c	2026-10-01 17:40:48.117329126 +0200
++++ b/drivers/media/artosyn/ar-isp-tables.c	2026-10-01 18:21:30.832203529 +0200
+@@ -161,6 +161,39 @@
+ 		 "colour-space matrix index: 0 bt601_full (the vendor's), 1 bt709_full, 2 bt601_limited, 3 bt709_limited; -1 leaves the replayed bank alone");
+ 
+ /*
++ * Picture controls, in percent with 100 the tuning's own picture.
++ *
++ * saturation scales the two chroma rows of the colour-space matrix, so it acts
++ * on Cb and Cr together and leaves luma alone. contrast scales the gamma
++ * curve's output about mid-grey, after the blend and before the monotonic
++ * clamp. Both are re-latched live: saturation by a write to the debugfs
++ * ladders file, contrast by writing 2 to the debugfs tone file.
++ */
++static int saturation = 100;
++module_param(saturation, int, 0644);
++MODULE_PARM_DESC(saturation,
++		 "chroma gain in percent, 0 (grey) to 200; 100 leaves the matrix as selected");
++
++static int contrast = 100;
++module_param(contrast, int, 0644);
++MODULE_PARM_DESC(contrast,
++		 "gamma output contrast about mid-grey in percent, 0 to 200; 100 leaves the curve as tuned");
++
++/*
++ * Edge sharpening, lnr register 19 scaled from its replayed value the way the
++ * vendor's acutance control scales it. See ar-isp-lnr.h.
++ */
++static int sharpness = 100;
++module_param(sharpness, int, 0644);
++MODULE_PARM_DESC(sharpness,
++		 "edge sharpening in percent of the replayed setting, 0 to 200 (above 100 towards the field maximum)");
++
++static u32 ar_isp_pct(int v)
++{
++	return clamp(v, 0, 200);
++}
++
++/*
+  * The ladder abscissa is 3A state the vendor computes per frame: the commanded
+  * gain, the Q8 exposure-table value of the AE's selected entry divided by 256.
+  * The loop drives these parameters at frame rate through the ladders hook; the
+@@ -597,6 +630,18 @@
+  * on the same gain moves as rnr. Register 0x3d10 stays with the replay because
+  * the vendor packer never writes it.
+  */
++/*
++ * Keep lnr register 19 as the replay left it, the base sharpness scales from.
++ * Called once per configure, after the replay and before any ladder apply has
++ * written a scaled value over it.
++ */
++void ar_isp_lnr_sharp_capture(struct ar_isp *isp)
++{
++	isp->lnr_sharp_base = readl(isp->base + AR_ISP_LNR_BANK +
++				    AR_ISP_LNR_SHARP_REG * 4);
++	isp->lnr_sharp_valid = true;
++}
++
+ void ar_isp_lnr_apply(struct ar_isp *isp, bool verbose)
+ {
+ 	u32 regs[AR_ISP_LNR_REGS];
+@@ -627,6 +672,10 @@
+ 		regs[i] = readl(isp->base + AR_ISP_LNR_BANK + i * 4);
+ 
+ 	ar_isp_lnr_from_blob(regs, blob, (u32)lnr_gain << 8);
++	if (isp->lnr_sharp_valid)
++		regs[AR_ISP_LNR_SHARP_REG] =
++			ar_isp_lnr_sharp_reg(isp->lnr_sharp_base,
++					     ar_isp_pct(sharpness));
+ 
+ 	for (i = 0; i < AR_ISP_LNR_REGS; i++) {
+ 		if (i == AR_ISP_LNR_SKIP_NEVER_WRITTEN)
+@@ -930,8 +979,14 @@
+ 
+ 	m = &ar_isp_csc_matrices[csc];
+ 
+-	for (unsigned int i = 0; i < AR_ISP_RGB2YUV_REGS; i++)
+-		writel(m->regs[i], isp->base + AR_ISP_RGB2YUV_BANK + i * 4);
++	for (unsigned int i = 0; i < AR_ISP_RGB2YUV_REGS; i++) {
++		u32 v = m->regs[i];
++
++		if (i >= AR_ISP_RGB2YUV_CHROMA_FIRST)
++			v = ar_isp_csc_scale(i, v, ar_isp_pct(saturation));
++
++		writel(v, isp->base + AR_ISP_RGB2YUV_BANK + i * 4);
++	}
+ }
+ 
+ /*
+@@ -1308,7 +1363,7 @@
+ 
+ 	if (want_gamma) {
+ 		ar_isp_gamma_from_blob(isp->gamma, blob, gamma.low, gamma.high,
+-				       gamma.t_q12);
++				       gamma.t_q12, ar_isp_pct(contrast));
+ 		ar_isp_gamma_pack_page(isp->gamma + AR_ISP_GAMMA_PAGE,
+ 				       ar_isp_gamma_page1,
+ 				       AR_ISP_GAMMA_PAGE1_TAIL);
+@@ -1404,7 +1459,8 @@
+ 		return;
+ 
+ 	page = isp->gamma;
+-	ar_isp_gamma_from_blob(page, blob, pick.low, pick.high, pick.t_q12);
++	ar_isp_gamma_from_blob(page, blob, pick.low, pick.high, pick.t_q12,
++			       ar_isp_pct(contrast));
+ 
+ 	/*
+ 	 * Page 1 is not an AE selection and is not in the tuning file: it is a
