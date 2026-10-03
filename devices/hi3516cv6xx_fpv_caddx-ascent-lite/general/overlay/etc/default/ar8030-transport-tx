@@ -9,7 +9,9 @@
 # waybeam's own default 5602) to the ground, where ar8030-transport-rx serves
 # it on 127.0.0.1:5602 and uses it for the encode-time part of the per-frame
 # latency figures.
-AR8030_TRANSPORT_TX_ARGS="-S 5602"
+# -C pi: bitrate controller = link capacity feedforward + PI on the
+# link-side queueing delay (ar8030-transport tx/bitrate_ctl.c).
+AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi"
 
 # GPIO7_3 (bank 7 at 0x11097000, bit 3): this board's ar8030_rst line --
 # the vendor's own sys_config.ko pulsed it (fpv_edu405_gpio_init); here
@@ -35,7 +37,12 @@ AR8030_RESET_GPIO_BIT=3
 # comes up with RF path B transmitting and receiving too. Stock switches
 # path B off at startup on the Lite (ar_ldyhs_sky fpv_bb_init():
 # fpv_bb_set_rf_path_b(0) for project type 7); lifecycled does the same.
-AR8030_LIFECYCLED_ARGS="--bind-gpio 0 --http-port 8899 --batt-adc 0 --rf-path-b-off"
+# --link-policy 2: stock's runtime MCS policy for video_strategy 2 (what
+# the Lite ships): uplink MCS table + range 1-2 and rfo_kikp; the goggles
+# push the matching downlink table. --fem-ctrl: stock's power extras on
+# the Lite (chip closed-loop power, FEM bit at >= 24 dBm). See
+# ar8030-transport common/ar8030_link_policy.h.
+AR8030_LIFECYCLED_ARGS="--bind-gpio 0 --http-port 8899 --batt-adc 0 --rf-path-b-off --link-policy 2 --fem-ctrl"
 
 # Flight logging (toggle with `flightlog enable|disable`, or edit here and
 # reboot): S99air-telemetry (SoC temp/load, ar8030d, chip and transport-tx
