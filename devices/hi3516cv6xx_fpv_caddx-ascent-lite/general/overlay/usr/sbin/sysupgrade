@@ -85,8 +85,18 @@ echo_c() {
 # it started -- see the header comment.
 die() {
 	echo_c 31 "$1 Aborting."
+	progress failed
 	cleanup
 	exit 1
+}
+
+# Machine-readable stage log for a caller that reports progress elsewhere
+# (pctoold, the CADDX PC tool bridge): one word per line, appended as each
+# step starts -- kernel, rootfs, verify, usrdata, bsel, done, or failed.
+# Off unless SYSUPGRADE_PROGRESS names a file.
+progress() {
+	[ -n "$SYSUPGRADE_PROGRESS" ] && echo "$1" >>"$SYSUPGRADE_PROGRESS"
+	return 0
 }
 
 cleanup() {
@@ -159,7 +169,7 @@ find_ubifs_vol_id() {
 # chpasswd -R against it -- same technique otherbank uses to inspect a
 # bank, scoped to this one write and torn down immediately after. Runs
 # right after rootfs is flashed, against the mtd this script just wrote, so
-# the volume is always exactly what flash_part put there.
+# the volume is always exactly what flash_stream put there.
 set_root_password() {
 	echo_c 33 "\nPassword"
 	ubinum=$(next_free_ubi)
@@ -187,7 +197,7 @@ set_root_password() {
 
 # Last gate before openipc-bsel points the bootloader at the target bank:
 # attach its rootfs, mount it read-only and read every regular file back.
-# flashcp -v only proves the flash matches the FILE it was given; this proves
+# flash_stream's read-back only proves the flash holds the image bytes; this proves
 # the result is a filesystem the next boot can mount and run -- UBIFS
 # CRC-checks every node it reads. Matters because a bad bank has no way back
 # on its own: the BSEL record has no boot counter and the bootargs no panic=,
@@ -260,9 +270,8 @@ free_kb() {
 # Best-effort: refuse to spend time/bandwidth downloading an ASW that plainly
 # will not fit in /tmp, using Content-Length from a HEAD request. Never
 # fatal on its own uncertainty -- a server with no Content-Length (chunked
-# encoding) or a blocked HEAD just skips this; the real, load-bearing check
-# is check_extract_space below, once the file (or its header) actually
-# exists.
+# encoding) or a blocked HEAD just skips this, and curl then fails on its
+# own once /tmp fills.
 check_download_fits() {
 	len=$(curl --connect-timeout 30 -s -I -L $curl_insecure "$1" 2>/dev/null |
 		tr -d '\r' | awk 'tolower($0) ~ /^content-length:/ {v=$2} END{print v}')
@@ -295,15 +304,11 @@ fetch_if_url() {
 	esac
 }
 
-# Reads and validates the ASW header ONLY -- no sub-image is extracted here.
-# /tmp is tmpfs (RAM), and the container itself already runs ~18MB on this
-# device (fitImage + rootfs.ubi + usrdata.ubi); extracting all three
-# sub-images up front, on top of the still-resident container, would peak
-# near 36MB just in temp files. Sizes/offsets from the header are enough to
-# print the Plan and size-check partitions -- actual slicing happens lazily,
-# one sub-image at a time, in the flashing phase below, each one flashed and
-# deleted before the next is cut. Sets asw_off2/3/4, asw_fsize, asw_klen,
-# asw_rlen, asw_ulen.
+# Reads and validates the ASW header ONLY. No sub-image is ever copied out:
+# the flashing phase below streams each one straight from the container into
+# its partition (flash_stream), so an ASW sitting in /tmp (tmpfs, ~29MB free,
+# container ~16-19MB) costs no further RAM. Sets asw_off2/3/4, asw_fsize,
+# asw_klen, asw_rlen, asw_ulen.
 asw_read_header() {
 	f=$1
 
@@ -325,38 +330,32 @@ asw_read_header() {
 	echo_c 32 "ASW: kernel ${asw_klen}B, rootfs ${asw_rlen}B, usrdata ${asw_ulen}B"
 }
 
-# Cuts one sub-image out of the ASW container into a fresh temp file.
+# Writes $len bytes of file $1 starting at byte $2 to stdout.
 #
 # tail streams from the offset to EOF; head -c takes only $len bytes and
 # exits once it has them, which is every slice but the last (usrdata, which
 # runs to EOF anyway). tail then hits a SIGPIPE writing further bytes nobody
 # is reading and reports it -- "tail: write error: Broken pipe" -- which is
-# harmless noise, not a real failure: $out still gets exactly $len bytes
-# (head's own exit status is what `|| die` below checks), so it's silenced
-# here rather than left to alarm whoever is watching the log.
+# harmless noise, so it's silenced.
 #
-# That same silencing hides tail's REAL failures too, and head's exit status
-# can't see them: busybox `tail -c +N` reads (not seeks) from byte 0, so an
-# I/O error anywhere before the slice's end kills tail mid-stream, and head
-# just sees an early EOF and exits 0 with a short file. That happened on
-# hardware (unreadable page ~12.4MB into an ASW on /root): rootfs got flashed
-# truncated, usrdata as 0 bytes, flashcp -v happily verified both against the
-# short files, and bank 1 panicked on mount. So check the slice's size.
-asw_extract_slice() {
-	f=$1
-	off=$2
-	len=$3
-	out=$4
-	tail -c +$((off + 1)) "$f" 2>/dev/null | head -c "$len" >"$out" || die "Cannot slice $out from $f"
-	extracted_files="$extracted_files $out"
-	got=$(wc -c <"$out" | tr -d ' ')
-	[ "$got" = "$len" ] ||
-		die "Short slice $out: got ${got}B of ${len}B from $f -- the file is truncated or unreadable (check dmesg for UBIFS/NAND read errors; md5sum it against the build). Bank select NOT changed."
+# That same silencing hides tail's REAL failures too, and nothing downstream
+# can see them: busybox `tail -c +N` reads (not seeks) from byte 0, so an I/O
+# error anywhere before the slice's end kills tail mid-stream, and head just
+# sees an early EOF and exits 0 with short output. That happened on hardware
+# (unreadable page ~12.4MB into an ASW on /root): rootfs got flashed
+# truncated, usrdata as 0 bytes, and bank 1 panicked on mount. flash_stream
+# therefore counts the bytes before it erases anything.
+slice() {
+	if [ "$2" -eq 0 ]; then
+		head -c "$3" "$1" 2>/dev/null
+	else
+		tail -c +$(($2 + 1)) "$1" 2>/dev/null | head -c "$3"
+	fi
 }
 
-# Frees the downloaded ASW container as soon as nothing is left to slice out
+# Frees the downloaded ASW container as soon as nothing is left to stream out
 # of it -- asw_pending tracks how many of kernel/rootfs/usrdata are still
-# going to be extracted from it. Only ever deletes OUR OWN fetched copy
+# going to be read from it. Only ever deletes OUR OWN fetched copy
 # (asw_is_temp); a local --asw=PATH the operator supplied is theirs to keep
 # or remove.
 asw_consume() {
@@ -375,35 +374,10 @@ check_fit_magic() {
 	[ "$m" = "d00dfeed" ] || echo_c 33 "Warning: $1 does not look like a FIT image (no d00dfeed magic)."
 }
 
-# The real, load-bearing space check: once the ASW container (or its header)
-# actually exists, is there room in /tmp for the single largest sub-image
-# still pending extraction? asw_consume already frees the container itself
-# the moment it's no longer needed, so the only additional tmpfs cost at any
-# point is one slice at a time -- checking against the largest one covers
-# every step. Fatal, unlike check_download_fits: nothing has touched flash
-# yet at the point this runs, so refusing here costs nothing but a retry.
-check_extract_space() {
-	need=0
-	[ "$1" -gt "$need" ] && need=$1
-	[ "$2" -gt "$need" ] && need=$2
-	[ "$3" -gt "$need" ] && need=$3
-	[ "$need" -eq 0 ] && return 0
-	kb=$(free_kb /tmp) || {
-		echo_c 33 "Warning: could not determine free /tmp space; proceeding anyway."
-		return 0
-	}
-	margin_kb=1024
-	need_kb=$((need / 1024 + margin_kb))
-	if [ "$kb" -lt "$need_kb" ]; then
-		die "Only ${kb}KB free in /tmp, need ~${need_kb}KB for the largest pending ASW slice (${need}B). Free up /tmp, or pass --kernel=/--rootfs=/--usrdata= to skip extraction for that part."
-	fi
-	echo_c 33 "tmpfs check: ${kb}KB free, largest pending slice $((need / 1024))KB -- OK"
-}
-
-# flashcp only erases+writes the eraseblocks the file's length actually
-# spans -- it never touches anything past that. On a UBI-formatted
+# nandwrite only writes the eraseblocks the data actually spans -- it never
+# touches anything past that. On a UBI-formatted
 # partition (kernel is not, but rootfs and a flashed usrdata are) that is
-# genuinely dangerous, not just untidy: a PEB flashcp left alone keeps
+# genuinely dangerous, not just untidy: a PEB the write left alone keeps
 # whatever valid-looking UBI erase-counter header it already had, stamped
 # with WHATEVER image's sequence number wrote it last (a previous, bigger
 # build; a vendor ASW; original factory provisioning) -- and UBI's own
@@ -413,20 +387,36 @@ check_extract_space() {
 # that will not attach again -- on the NEXT bank-N boot, not just for a
 # tool like otherbank -- whenever the new image needs fewer eraseblocks
 # than whatever occupied that partition before, which is the common case,
-# not the exception. flash_eraseall first makes every PEB flashcp doesn't
+# not the exception. flash_eraseall first makes every PEB the write doesn't
 # reach genuinely blank (no EC header at all), which UBI always treats as
 # free space rather than a competing image.
-flash_part() {
+#
+# Streams $len bytes at offset $off of $file (an ASW container, or a plain
+# image with off=0) into $dev without a temp copy. nandwrite rather than
+# flashcp: it reads stdin, and it skips bad blocks the way a raw UBI image
+# has to be written (flashcp writes straight through them). The source is
+# read three times -- count, md5, write -- all before or during the write,
+# never after, so a short or unreadable source fails before flash_eraseall.
+# Verified by md5 of the flash read back (skipping the same bad blocks).
+flash_stream() {
 	file=$1
-	dev=$2
-	label=$3
-	fsize=$(wc -c <"$file" | tr -d ' ')
+	off=$2
+	len=$3
+	dev=$4
+	label=$5
 	psize=$(mtd_size "$dev")
-	[ -n "$psize" ] && [ "$fsize" -gt "$psize" ] &&
-		die "$label ($fsize bytes) is larger than $dev ($psize bytes)"
+	[ -n "$psize" ] && [ "$len" -gt "$psize" ] &&
+		die "$label ($len bytes) is larger than $dev ($psize bytes)"
 	echo_c 33 "\n$label -> $dev"
+	got=$(slice "$file" "$off" "$len" | wc -c | tr -d ' ')
+	[ "$got" = "$len" ] ||
+		die "Short read of $label: got ${got}B of ${len}B from $file -- the file is truncated or unreadable (check dmesg for UBIFS/NAND read errors; md5sum it against the build). Bank select NOT changed."
+	want=$(slice "$file" "$off" "$len" | md5sum | cut -d' ' -f1)
 	flash_eraseall "$dev" || die "Erasing $dev before $label failed"
-	flashcp -v "$file" "$dev" || die "Flashing $label to $dev failed"
+	slice "$file" "$off" "$len" | nandwrite -p "$dev" || die "Flashing $label to $dev failed"
+	have=$(nanddump --bb=skipbad -l "$len" "$dev" 2>/dev/null | head -c "$len" | md5sum | cut -d' ' -f1)
+	[ "$have" = "$want" ] || die "$label read back from $dev does not match the image (md5 $have, expected $want)"
+	echo "Verified ${len}B (md5 $want)"
 }
 
 print_usage() {
@@ -578,19 +568,15 @@ else
 	usrdata_action=keep
 fi
 
-# How many of kernel/rootfs/usrdata still need slicing out of the ASW
+# How many of kernel/rootfs/usrdata still need streaming out of the ASW
 # (nothing, for any of them already satisfied by an explicit file) -- feeds
 # asw_consume's "is this the last read?" check in the flashing phase below.
 asw_pending=0
-pending_klen=0
-pending_rlen=0
-pending_ulen=0
 if [ "1" = "$have_asw" ]; then
-	[ -z "$kernel_file" ] && { asw_pending=$((asw_pending + 1)); pending_klen=$asw_klen; }
-	[ -z "$rootfs_file" ] && { asw_pending=$((asw_pending + 1)); pending_rlen=$asw_rlen; }
-	[ "flash" = "$usrdata_action" ] && [ -z "$usrdata_file" ] && { asw_pending=$((asw_pending + 1)); pending_ulen=$asw_ulen; }
+	[ -z "$kernel_file" ] && asw_pending=$((asw_pending + 1))
+	[ -z "$rootfs_file" ] && asw_pending=$((asw_pending + 1))
+	[ "flash" = "$usrdata_action" ] && [ -z "$usrdata_file" ] && asw_pending=$((asw_pending + 1))
 fi
-check_extract_space "$pending_klen" "$pending_rlen" "$pending_ulen"
 
 kernel_dev=$(get_mtd_device "kernel${target_bank}")
 rootfs_dev=$(get_mtd_device "rootfs${target_bank}")
@@ -618,7 +604,7 @@ case "$usrdata_action" in
 	wipe) echo "  usrdata${target_bank} <- ERASED (self-heals to blank on next boot of bank $target_bank)" ;;
 	keep) echo "  usrdata${target_bank} left untouched" ;;
 esac
-[ "1" = "$have_asw" ] && echo "  (ASW sub-images are cut out and flashed one at a time, to keep tmpfs usage down)"
+[ "1" = "$have_asw" ] && echo "  (ASW sub-images are streamed straight into flash, no temp copies)"
 [ -n "$explicit_password" ] && echo "  Root password will be set on bank $target_bank"
 echo "  Then: mount rootfs${target_bank} read-only and read every file back"
 echo "  Then: openipc-bsel set $target_bank"
@@ -631,65 +617,62 @@ fi
 echo_c 37 "\nStarting in 5 seconds. Ctrl-C to abort -- nothing has been touched yet."
 sleep 5
 
-# Past this point we erase flash. A dropped SSH session must not kill flashcp
+# Past this point we erase flash. A dropped SSH session must not kill nandwrite
 # mid-write. SIG_IGN is inherited across fork+exec, so this also shields the
-# busybox flashcp child (same reasoning as the shared script's #2024 fix) --
+# busybox nandwrite child (same reasoning as the shared script's #2024 fix) --
 # though unlike that script, an interrupted write here only ever costs the
 # INACTIVE bank; "sel" is not touched until both writes below succeed.
 trap '' HUP INT TERM PIPE
 echo_c 37 "Protected: flashing continues even if this terminal disconnects."
 
-# Each ASW-sourced part is cut, flashed, and deleted before the next one is
-# cut -- see asw_read_header's header comment for why. asw_consume frees the
-# whole container the moment nothing further will be read from it, which may
-# happen here (before the LAST part's flash_part call) rather than waiting
-# for exit-time cleanup.
-kernel_extracted=
-if [ -z "$kernel_file" ]; then
-	kernel_file="/tmp/sysupgrade-kernel.$$"
-	asw_extract_slice "$resolved_asw" "$asw_off2" "$asw_klen" "$kernel_file"
-	kernel_extracted=1
+# Each part comes either from an explicit file (whole file, offset 0) or
+# straight out of the ASW. asw_consume frees a downloaded container once
+# nothing further will be read from it, rather than waiting for exit-time
+# cleanup.
+progress kernel
+if [ -n "$kernel_file" ]; then
+	flash_stream "$kernel_file" 0 "$kernel_size" "$kernel_dev" "Kernel"
+else
+	flash_stream "$resolved_asw" "$asw_off2" "$asw_klen" "$kernel_dev" "Kernel"
 	asw_consume
 fi
-flash_part "$kernel_file" "$kernel_dev" "Kernel"
-[ "1" = "$kernel_extracted" ] && rm -f "$kernel_file"
 
-rootfs_extracted=
-if [ -z "$rootfs_file" ]; then
-	rootfs_file="/tmp/sysupgrade-rootfs.$$"
-	asw_extract_slice "$resolved_asw" "$asw_off3" "$asw_rlen" "$rootfs_file"
-	rootfs_extracted=1
+progress rootfs
+if [ -n "$rootfs_file" ]; then
+	flash_stream "$rootfs_file" 0 "$rootfs_size" "$rootfs_dev" "RootFS"
+else
+	flash_stream "$resolved_asw" "$asw_off3" "$asw_rlen" "$rootfs_dev" "RootFS"
 	asw_consume
 fi
-flash_part "$rootfs_file" "$rootfs_dev" "RootFS"
-[ "1" = "$rootfs_extracted" ] && rm -f "$rootfs_file"
 
 [ -n "$explicit_password" ] && set_root_password
+progress verify
 verify_rootfs
 
 case "$usrdata_action" in
 	flash)
-		usrdata_extracted=
-		if [ -z "$usrdata_file" ]; then
-			usrdata_file="/tmp/sysupgrade-usrdata.$$"
-			asw_extract_slice "$resolved_asw" "$asw_off4" "$asw_ulen" "$usrdata_file"
-			usrdata_extracted=1
+		progress usrdata
+		if [ -n "$usrdata_file" ]; then
+			flash_stream "$usrdata_file" 0 "$usrdata_size" "$usrdata_dev" "UserData"
+		else
+			flash_stream "$resolved_asw" "$asw_off4" "$asw_ulen" "$usrdata_dev" "UserData"
 			asw_consume
 		fi
-		flash_part "$usrdata_file" "$usrdata_dev" "UserData"
-		[ "1" = "$usrdata_extracted" ] && rm -f "$usrdata_file"
 		;;
 	wipe)
+		progress usrdata
 		echo_c 33 "\nOverlay"
 		echo "Erasing $usrdata_dev (bank $target_bank self-heals it to blank on next boot)"
 		flash_eraseall "$usrdata_dev" || die "Erasing $usrdata_dev failed"
 		;;
 esac
 
+progress bsel
 echo_c 33 "\nBank select"
 openipc-bsel set "$target_bank" || die "openipc-bsel set $target_bank failed"
 
 echo_c 32 "\nBank $target_bank is now flashed and selected."
+progress done
 
 if [ "1" = "$no_reboot" ]; then
 	echo_c 33 "Not rebooting (per -x). Reboot manually to boot bank $target_bank."
