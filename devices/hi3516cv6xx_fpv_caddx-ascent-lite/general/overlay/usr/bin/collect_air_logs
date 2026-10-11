@@ -39,7 +39,7 @@ done
 	echo "== date";       date
 	echo "== uptime";     cat /proc/uptime
 	echo "== loadavg";    cat /proc/loadavg
-	echo "== soc_temp_raw (caddx-ascent-lite-temp)"; caddx-ascent-lite-temp 2>&1
+	echo "== soc_temp_c (caddx-ascent-lite-temp)"; caddx-ascent-lite-temp 2>&1
 	echo "== free";       free
 	echo "== df";         df
 	echo "== ps";         ps w
