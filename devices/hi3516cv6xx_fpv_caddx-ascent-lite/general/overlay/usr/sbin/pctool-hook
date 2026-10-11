@@ -1,0 +1,88 @@
+#!/bin/sh
+#
+# Board policy for the CADDX PC tool bridge (package/caddx-pctool) on the
+# Ascent Lite. Called by pctoold:
+#
+#   clean    The PC tool asks for a "reboot to clean system" before every
+#            upgrade; stock reboots into a mode that runs nothing but its
+#            updater. Here the video/OSD stack is stopped instead (CPU and RAM
+#            for the upload and the flash), and the USB gadget drops off the
+#            bus for a second -- the disconnect the PC tool's reconnect logic
+#            waits for. The AR8030 link is left alone: restarting it is the
+#            one thing on this board known to wedge.
+#   restore  The upgrade failed and the running bank stays: start again what
+#            clean stopped.
+#   reboot   Boot the freshly selected bank.
+#   rndis    The PC tool asked for RNDIS (cmd 0x3a): leave updater mode.
+#            Backgrounded, because pctool-mode stops pctoold, which is
+#            waiting for this hook.
+#
+# and by pctool-mode:
+#
+#   enter    Updater mode on: red and green alternating, distinct from every
+#            link state (hooks.d/*/10-led.sh). It shares their blink pidfile,
+#            so a link event replaces it.
+#   leave    Back to RNDIS: put the link state's LED back, asked from
+#            ar8030-lifecycled.
+
+STOP_ORDER="S99msposd S95waybeam"
+START_ORDER="S95waybeam S99msposd"
+
+GPIO_RED=63
+GPIO_GREEN=8
+BLINK_PIDFILE=/tmp/ar8030-led-blink.pid
+HOOKS=/etc/ar8030/hooks.d
+
+stop_blink() {
+	if [ -f "$BLINK_PIDFILE" ]; then
+		kill "$(cat "$BLINK_PIDFILE")" 2>/dev/null
+		rm -f "$BLINK_PIDFILE"
+	fi
+}
+
+case "$1" in
+	clean)
+		for s in $STOP_ORDER; do
+			[ -x "/etc/init.d/$s" ] && "/etc/init.d/$s" stop
+		done
+		/usr/bin/usb-gadget reconnect
+		;;
+	restore)
+		for s in $START_ORDER; do
+			[ -x "/etc/init.d/$s" ] && "/etc/init.d/$s" start
+		done
+		;;
+	reboot)
+		sync
+		reboot
+		;;
+	rndis)
+		/usr/sbin/pctool-mode off </dev/null >/dev/null 2>&1 &
+		;;
+	enter)
+		stop_blink
+		(
+			v=1
+			while true; do
+				echo "$v" >"/sys/class/gpio/gpio$GPIO_RED/value" 2>/dev/null
+				echo "$((1 - v))" >"/sys/class/gpio/gpio$GPIO_GREEN/value" 2>/dev/null
+				v=$((1 - v))
+				sleep 0.5
+			done
+		) </dev/null >/dev/null 2>&1 &
+		echo $! >"$BLINK_PIDFILE"
+		;;
+	leave)
+		stop_blink
+		if wget -q -T 2 -O - http://127.0.0.1:8899/api/v1/status 2>/dev/null | grep -q '"state":"connected"'; then
+			sh "$HOOKS/connected/10-led.sh"
+		else
+			sh "$HOOKS/idle/10-led.sh"
+		fi
+		;;
+	*)
+		echo "Usage: $0 {clean|restore|reboot|rndis|enter|leave}" >&2
+		exit 1
+		;;
+esac
+exit 0

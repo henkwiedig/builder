@@ -1,0 +1,86 @@
+#!/bin/sh
+#
+# Switch the USB port between the board's normal gadget (RNDIS) and the CADDX
+# PC tool updater mode: the stock serial gadget plus pctoold
+# (package/caddx-pctool). The only way into updater mode, and the only thing
+# that starts pctoold -- nothing runs at boot.
+#
+#   pctool-mode on|off|toggle|status
+#
+# Needs from the board: /usr/bin/usb-gadget with `mode rndis|pctool` (and
+# `mode` alone printing the current one), and its hook (PCTOOL_HOOK in
+# /etc/default/pctoold) for `enter`/`leave`, e.g. LEDs. Not persistent: a
+# reboot comes back in RNDIS, which is also how a successful PC tool flash
+# ends. pctoold itself runs this (via the hook) when the PC tool asks for
+# RNDIS (cmd 0x3a).
+#
+# Board identity for the PC tool's device info: /etc/default/pctoold (a
+# device overlay's copy replaces the package's); per unit, fw_setenv
+# pctool_fw / pctool_hw / pctool_sn.
+
+DAEMON=/usr/bin/pctoold
+PIDFILE=/var/run/pctoold.pid
+
+PCTOOL_TTY=/dev/ttyGS0
+PCTOOL_HOOK=/usr/sbin/pctool-hook
+PCTOOL_NAME=OpenIPC
+PCTOOL_HW=OpenIPC
+PCTOOL_FW_PREFIX=OpenIPC
+[ -r /etc/default/pctoold ] && . /etc/default/pctoold
+
+env_get() { fw_printenv -n "$1" 2>/dev/null; }
+
+hook() {
+	[ -x "$PCTOOL_HOOK" ] && "$PCTOOL_HOOK" "$1"
+	return 0
+}
+
+start_daemon() {
+	fw=$(env_get pctool_fw)
+	if [ -z "$fw" ]; then
+		ver=$(grep '^OPENIPC_VERSION=' /etc/os-release 2>/dev/null | cut -d= -f2)
+		sha=$(grep '^BUILD_SHA=' /etc/os-release 2>/dev/null | cut -d= -f2)
+		fw=${PCTOOL_FW_PREFIX}_${ver:-0}_${sha:-local}
+	fi
+	hw=$(env_get pctool_hw)
+	sn=$(env_get pctool_sn)
+	start-stop-daemon -S -b -m -q -p "$PIDFILE" -x "$DAEMON" -- \
+		-d "$PCTOOL_TTY" -k "$PCTOOL_HOOK" -N "$PCTOOL_NAME" \
+		-F "$fw" -H "${hw:-$PCTOOL_HW}" -S "${sn:-$(hostname)}"
+}
+
+stop_daemon() {
+	start-stop-daemon -K -q -p "$PIDFILE" -x "$DAEMON"
+	rm -f "$PIDFILE"
+}
+
+on() {
+	/usr/bin/usb-gadget mode pctool || return 1
+	start_daemon
+	hook enter
+	logger -t pctool-mode "USB in PC tool updater mode"
+}
+
+off() {
+	stop_daemon
+	/usr/bin/usb-gadget mode rndis || return 1
+	hook leave
+	logger -t pctool-mode "USB back to RNDIS"
+}
+
+case "$1" in
+	on) on ;;
+	off) off ;;
+	toggle)
+		if [ "$(/usr/bin/usb-gadget mode)" = "pctool" ]; then
+			off
+		else
+			on
+		fi
+		;;
+	status) /usr/bin/usb-gadget mode ;;
+	*)
+		echo "Usage: $0 {on|off|toggle|status}" >&2
+		exit 1
+		;;
+esac

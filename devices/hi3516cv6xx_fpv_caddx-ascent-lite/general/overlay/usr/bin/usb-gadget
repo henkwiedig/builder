@@ -18,12 +18,28 @@
 # dr_mode = "otg" *together with* usb-role-switch and an extcon, so dwc3
 # registers a role switch and performs the host-stop / gadget-start transition
 # itself. Writing "device" to the role attribute is the whole dance.
+#
+# Two modes, one at a time:
+#   rndis   (default) the network adapter above.
+#   pctool  a CDC-ACM serial port (/dev/ttyGS0) for pctoold, so CADDX's
+#           Windows PC tool can flash the air while it runs OpenIPC. A copy
+#           of the stock firmware's serial gadget (/usrdata/fpv/
+#           config_serial.sh): ids 1D76:0101, which is what the PC tool
+#           looks for, "Vendor"/"SerialGadget", serial "CX24" (board 472).
+# Not both at once: this DWC3 has 3 IN endpoints besides ep0 (GHWPARAMS3
+# 0x04108084), RNDIS and ACM need 2 each (notification + bulk), and a
+# composite fails to bind as a whole ("acm: can't bind, err -19"). Stock
+# has the same limit, which is why it runs serial or RNDIS, never both.
+# Boot is always RNDIS (or off). PC tool mode is only entered at runtime, by
+# /usr/sbin/pctool-mode (bind button long press), which runs `usb-gadget mode
+# pctool|rndis` and starts/stops pctoold around it.
 
 set -e
 
 GADGET_NAME=openipc
 GADGET=/sys/kernel/config/usb_gadget/${GADGET_NAME}
 FUNC=rndis.usb0
+ACM=acm.GS0
 
 # U-Boot env knobs, all optional:
 #   usbnet        rndis | off      (default rndis)
@@ -93,13 +109,36 @@ compose() {
 
 	modprobe libcomposite 2>/dev/null || true
 	mkdir -p "$GADGET"
+	echo 0x0100 > "$GADGET/bcdDevice"
+	echo 0x0200 > "$GADGET/bcdUSB"
+	mkdir -p "$GADGET/strings/0x409"
+	mkdir -p "$GADGET/configs/c.1/strings/0x409"
+	echo 250 > "$GADGET/configs/c.1/MaxPower"
 
+	if [ "$MODE" = "pctool" ]; then
+		compose_pctool
+	else
+		compose_rndis
+	fi
+}
+
+compose_pctool() {
+	echo 0x1d76 > "$GADGET/idVendor"
+	echo 0x0101 > "$GADGET/idProduct"
+	echo 0x02   > "$GADGET/bDeviceClass"
+	echo "Vendor"       > "$GADGET/strings/0x409/manufacturer"
+	echo "SerialGadget" > "$GADGET/strings/0x409/product"
+	echo "CX24"         > "$GADGET/strings/0x409/serialnumber"
+	echo "CDC ACM config" > "$GADGET/configs/c.1/strings/0x409/configuration"
+	mkdir -p "$GADGET/functions/$ACM"
+	ln -s "$GADGET/functions/$ACM" "$GADGET/configs/c.1/" 2>/dev/null || true
+}
+
+compose_rndis() {
 	# Linux Foundation "Multifunction Composite Gadget" ids. Fine for a
 	# device that is never going to ship a vendor driver.
 	echo 0x1d6b > "$GADGET/idVendor"
 	echo 0x0104 > "$GADGET/idProduct"
-	echo 0x0100 > "$GADGET/bcdDevice"
-	echo 0x0200 > "$GADGET/bcdUSB"
 
 	# Interface Association Descriptor device class. Windows needs the device
 	# advertised as a composite/IAD device before it will look at the per
@@ -108,7 +147,6 @@ compose() {
 	echo 0x02 > "$GADGET/bDeviceSubClass"
 	echo 0x01 > "$GADGET/bDeviceProtocol"
 
-	mkdir -p "$GADGET/strings/0x409"
 	echo "OpenIPC"                       > "$GADGET/strings/0x409/manufacturer"
 	echo "Caddx Ascent Lite"             > "$GADGET/strings/0x409/product"
 	echo "$(cat /proc/sys/kernel/hostname 2>/dev/null || echo openipc)" \
@@ -131,15 +169,24 @@ compose() {
 		echo 5162001 > "$GADGET/functions/$FUNC/os_desc/interface.rndis/sub_compatible_id"
 	fi
 
-	mkdir -p "$GADGET/configs/c.1/strings/0x409"
 	echo "RNDIS" > "$GADGET/configs/c.1/strings/0x409/configuration"
-	echo 250     > "$GADGET/configs/c.1/MaxPower"
 
 	ln -s "$GADGET/functions/$FUNC" "$GADGET/configs/c.1/" 2>/dev/null || true
 	# The OS descriptors are per-configuration, so os_desc has to point at the
 	# config that carries the function.
 	[ -d "$GADGET/os_desc" ] &&
 		ln -s "$GADGET/configs/c.1" "$GADGET/os_desc/" 2>/dev/null || true
+}
+
+# What is composed right now: rndis, pctool, or none.
+current_mode() {
+	if [ -d "$GADGET/functions/$ACM" ]; then
+		echo pctool
+	elif [ -d "$GADGET/functions/$FUNC" ]; then
+		echo rndis
+	else
+		echo none
+	fi
 }
 
 # Never fails: callers run under `set -e` and assign this with IF=$(iface),
@@ -179,6 +226,7 @@ up() {
 	case "$MODE" in
 		off) echo "usb-gadget: disabled (usbnet=off)"; return 0 ;;
 		rndis) ;;
+		pctool) [ -n "$SWITCHING" ] || die "pctool is not a boot mode; use pctool-mode on" ;;
 		*) die "unknown usbnet mode '$MODE' (expected rndis or off)" ;;
 	esac
 
@@ -194,6 +242,11 @@ up() {
 
 	UDC=$(udc_name) || die "no UDC registered (dr_mode should be \"otg\" or \"peripheral\")"
 	echo "$UDC" > "$GADGET/UDC"
+
+	if [ "$MODE" = "pctool" ]; then
+		echo "usb-gadget: PC tool serial port /dev/ttyGS$(cat "$GADGET/functions/$ACM/port_num" 2>/dev/null) up (UDC $UDC)"
+		return 0
+	fi
 
 	IF=$(iface)
 	[ -n "$IF" ] || die "gadget bound but no netdev appeared"
@@ -219,18 +272,46 @@ down() {
 	# below was missed.
 	[ -e "$GADGET/UDC" ] && echo "" > "$GADGET/UDC" 2>/dev/null || true
 
+	# Removing the ACM function blocks in the kernel (gserial_free_port, D
+	# state, Ctrl-C can't help) until every open of /dev/ttyGS0 is closed,
+	# and pctoold keeps it open for as long as it runs. Stop it first.
+	if [ -d "$GADGET/functions/$ACM" ]; then
+		killall pctoold 2>/dev/null || true
+		i=0
+		while pidof pctoold >/dev/null && [ "$i" -lt 50 ]; do
+			sleep 0.1
+			i=$((i + 1))
+		done
+		pidof pctoold >/dev/null && die "pctoold still holds /dev/ttyGS0; not removing the serial port"
+	fi
+
 	rm -f "$GADGET/os_desc/c.1"
 	rm -f "$GADGET/configs/c.1/$FUNC"
+	rm -f "$GADGET/configs/c.1/$ACM"
 	rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
 	rmdir "$GADGET/configs/c.1"               2>/dev/null || true
 	rmdir "$GADGET/functions/$FUNC"           2>/dev/null || true
+	rmdir "$GADGET/functions/$ACM"            2>/dev/null || true
 	rmdir "$GADGET/strings/0x409"             2>/dev/null || true
 	rmdir "$GADGET"                           2>/dev/null || true
 	echo "usb-gadget: down"
 }
 
+# Drop off the bus and come back, keeping the function: the host sees an
+# unplug/replug, but /dev/ttyGS0 (or the RNDIS netdev, with its address)
+# survives. pctoold uses this for the PC tool's "reboot to clean system"
+# request, whose reconnect logic expects the device to go away.
+reconnect() {
+	UDC=$(cat "$GADGET/UDC" 2>/dev/null)
+	[ -n "$UDC" ] || die "gadget not bound"
+	echo "" > "$GADGET/UDC"
+	sleep 1
+	echo "$UDC" > "$GADGET/UDC"
+	echo "usb-gadget: reconnected on $UDC"
+}
+
 status() {
-	echo "mode      : $MODE"
+	echo "mode      : $(current_mode) (boot default: $(env_get usbnet | grep . || echo rndis))"
 	echo "role      : $(R=$(role_file) && cat "$R" 2>/dev/null || echo '(no role switch)')"
 	echo "udc       : $(udc_name || echo '(none)')"
 	if [ -d "$GADGET" ]; then
@@ -246,9 +327,21 @@ case "$1" in
 	up|start)   up ;;
 	down|stop)  down ;;
 	restart)    down; up ;;
+	reconnect)  reconnect ;;
+	mode)
+		case "$2" in
+			rndis|pctool) ;;
+			"") current_mode; exit 0 ;;
+			*) die "mode must be rndis or pctool" ;;
+		esac
+		down
+		MODE=$2
+		SWITCHING=1
+		up
+		;;
 	status)     status ;;
 	*)
-		echo "Usage: $0 {up|down|restart|status}"
+		echo "Usage: $0 {up|down|restart|reconnect|status|mode [rndis|pctool]}"
 		exit 1
 		;;
 esac

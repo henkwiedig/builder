@@ -1,0 +1,8 @@
+# pctoold (package/caddx-pctool) on the Ascent Lite: what the stock firmware
+# reports to the PC tool (board type 472). The hardware revision part of
+# PCTOOL_HW differs per unit on stock; fw_setenv pctool_hw overrides it.
+PCTOOL_TTY=/dev/ttyGS0
+PCTOOL_HOOK=/usr/sbin/pctool-hook
+PCTOOL_NAME=Ascent_lite_plus
+PCTOOL_HW=FPV-Ascent-Sky-472-V1.3-1.0
+PCTOOL_FW_PREFIX=Ascent_H_Sky_OpenIPC

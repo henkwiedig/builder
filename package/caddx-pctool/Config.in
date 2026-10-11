@@ -1,0 +1,21 @@
+config BR2_PACKAGE_CADDX_PCTOOL
+	bool "caddx-pctool"
+	help
+	  pctoold: lets CADDX's Windows PC tool (CADDX_PCTool) flash an
+	  Ascent air unit while it runs OpenIPC, the same way it flashes
+	  one running the stock firmware.
+
+	  Speaks the stock updater's protocol (decoded from a USB capture,
+	  see README.md) on the USB gadget's CDC-ACM port, receives the ASW
+	  image into /tmp, checks the md5 the PC tool sent, and hands it to
+	  sysupgrade --asw=, which flashes the inactive bank and only then
+	  switches the boot bank.
+
+	  Installs /usr/bin/pctoold, /etc/default/pctoold and
+	  /usr/sbin/pctool-mode, which switches the USB port into and out of
+	  updater mode and is the only thing that starts pctoold (nothing
+	  runs at boot). The board provides the USB
+	  gadget (/usr/bin/usb-gadget with "mode rndis|pctool", stock ids
+	  1D76:0101 in pctool mode), the hook (/usr/sbin/pctool-hook) and
+	  its identity (its own /etc/default/pctoold); currently
+	  hi3516cv6xx_fpv_caddx-ascent-lite. See README.md.
