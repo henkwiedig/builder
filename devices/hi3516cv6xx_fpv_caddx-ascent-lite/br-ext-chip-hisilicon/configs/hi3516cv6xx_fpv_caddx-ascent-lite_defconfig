@@ -131,6 +131,11 @@ BR2_TARGET_ROOTFS_UBI_SUBSIZE=2048
 BR2_TARGET_ROOTFS_UBI_USE_CUSTOM_CONFIG=y
 BR2_TARGET_ROOTFS_UBI_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL)/scripts/ubifs/ubinize-hi3516cv6xx.cfg"
 BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000
+# Space fixup, same reason as general/scripts/make-usrdata-image.sh: the rootfs
+# is flashed raw with flashcp, so its free-space pages are programmed and must
+# be re-erased before UBIFS writes into them. Only a rw mount triggers the
+# fixup (sysupgrade --set-password, a remount); the normal ro boot never does.
+BR2_TARGET_ROOTFS_UBIFS_OPTS="-F"
 
 # Packages
 # Artosyn AR8030 baseband — the downlink. On this board it hangs off SDIO.
