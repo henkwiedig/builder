@@ -169,6 +169,11 @@ BR2_PACKAGE_AR8030_TUNTAP=y
 # Dropped: browser-facing WebRTC streaming is majestic-side plumbing and
 # waybeam does its own RTP.
 # BR2_PACKAGE_AWS_WEBRTC is not set
+# pctoold: CADDX's Windows PC tool can flash this unit while it runs OpenIPC
+# (bind button held 5 s switches the USB port to updater mode). The gadget,
+# the board hook and the board's identity are in the device overlay; see
+# package/caddx-pctool/README.md.
+BR2_PACKAGE_CADDX_PCTOOL=y
 # Dropped: divinus is the *other* majestic-alternative encoder and claims the
 # same VI/VPSS/VENC channels waybeam does. One encoder owns the pipeline.
 # BR2_PACKAGE_DIVINUS is not set

@@ -1,0 +1,17 @@
+# pctoold (package/caddx-pctool). A board's device overlay replaces this file
+# with its own values; per-unit overrides are fw_setenv pctool_fw / pctool_hw /
+# pctool_sn.
+
+# Serial port of the board's USB gadget in PC tool mode.
+PCTOOL_TTY=/dev/ttyGS0
+
+# Board policy, called as HOOK clean|restore|reboot|rndis by pctoold and
+# HOOK enter|leave by pctool-mode. Provided by the board.
+PCTOOL_HOOK=/usr/sbin/pctool-hook
+
+# What the PC tool shows in its device info (stock values for the board).
+PCTOOL_NAME=OpenIPC
+PCTOOL_HW=OpenIPC
+
+# Firmware version shown: <prefix>_<OPENIPC_VERSION>_<BUILD_SHA>.
+PCTOOL_FW_PREFIX=OpenIPC
