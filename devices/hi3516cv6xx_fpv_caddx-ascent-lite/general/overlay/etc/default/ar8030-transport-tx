@@ -44,9 +44,9 @@ AR8030_RESET_GPIO_BIT=3
 # ar8030-transport common/ar8030_link_policy.h.
 # --standby-dbm 10: stock's low-power mode against overheating on the
 # ground -- 10 dBm, chip power control and FEM bit off while the FC is
-# disarmed (POST /api/v1/armed), configured power again on arm. Nothing
-# reports the arm state yet, and lifecycled assumes armed until told
-# otherwise, so for now it only switches by hand.
+# disarmed, configured power again on arm. msposd reports the FC's arm
+# state (MSP_STATUS) through /usr/bin/armed.sh -> POST /api/v1/armed;
+# lifecycled assumes armed until it does.
 # --soc-temp-cmd/--overheat-c 105: while disarmed at >= 105 degC SoC (stock
 # reboots at 110), hooks.d/overheat stops the camera stack -- the encoder is
 # the main heat source -- and shows a still "VTX OVERHEAT" frame
