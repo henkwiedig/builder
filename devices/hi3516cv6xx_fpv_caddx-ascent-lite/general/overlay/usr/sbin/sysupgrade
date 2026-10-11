@@ -185,6 +185,43 @@ set_root_password() {
 	echo_c 32 "Root password set on bank $target_bank"
 }
 
+# Last gate before openipc-bsel points the bootloader at the target bank:
+# attach its rootfs, mount it read-only and read every regular file back.
+# flashcp -v only proves the flash matches the FILE it was given; this proves
+# the result is a filesystem the next boot can mount and run -- UBIFS
+# CRC-checks every node it reads. Matters because a bad bank has no way back
+# on its own: the BSEL record has no boot counter and the bootargs no panic=,
+# so a rootfs that won't mount hangs at the kernel panic until someone
+# recovers it over serial (2026-10-11, truncated rootfs1). Read-only, so it
+# never starts a UBIFS space fixup or any other write.
+verify_rootfs() {
+	echo_c 33 "\nVerify"
+	ubinum=$(next_free_ubi)
+	ubiattach -m "${rootfs_dev#/dev/mtd}" -d "$ubinum" /dev/ubi_ctrl ||
+		die "Cannot attach $rootfs_dev to verify it; bank $target_bank NOT selected."
+	volid=$(find_ubifs_vol_id "$ubinum") || {
+		ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+		die "No rootfs volume found on $rootfs_dev; bank $target_bank NOT selected."
+	}
+	mnt="/tmp/sysupgrade-verify.$$"
+	mkdir -p "$mnt"
+	if ! mount -t ubifs -o ro "ubi${ubinum}_${volid}" "$mnt"; then
+		rmdir "$mnt" 2>/dev/null
+		ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+		die "Cannot mount $rootfs_dev; bank $target_bank NOT selected."
+	fi
+	echo "Reading back every file on $rootfs_dev"
+	# busybox xargs exits 123 if any cat failed, and the pipeline's status is
+	# xargs's.
+	find "$mnt" -type f -print0 | xargs -0 cat >/dev/null
+	rc=$?
+	umount "$mnt"
+	rmdir "$mnt" 2>/dev/null
+	ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+	[ "$rc" -eq 0 ] || die "Reading back $rootfs_dev failed; bank $target_bank NOT selected."
+	echo_c 32 "Rootfs on bank $target_bank mounts and reads back cleanly"
+}
+
 # Which bank (0/1) is currently running, by asking which mtd backs the
 # already-attached ubi0 -- the same method general/overlay/init's
 # mount_usrdata_overlay() uses, and for the same reason: the fpvbsel=N
@@ -297,6 +334,14 @@ asw_read_header() {
 # harmless noise, not a real failure: $out still gets exactly $len bytes
 # (head's own exit status is what `|| die` below checks), so it's silenced
 # here rather than left to alarm whoever is watching the log.
+#
+# That same silencing hides tail's REAL failures too, and head's exit status
+# can't see them: busybox `tail -c +N` reads (not seeks) from byte 0, so an
+# I/O error anywhere before the slice's end kills tail mid-stream, and head
+# just sees an early EOF and exits 0 with a short file. That happened on
+# hardware (unreadable page ~12.4MB into an ASW on /root): rootfs got flashed
+# truncated, usrdata as 0 bytes, flashcp -v happily verified both against the
+# short files, and bank 1 panicked on mount. So check the slice's size.
 asw_extract_slice() {
 	f=$1
 	off=$2
@@ -304,6 +349,9 @@ asw_extract_slice() {
 	out=$4
 	tail -c +$((off + 1)) "$f" 2>/dev/null | head -c "$len" >"$out" || die "Cannot slice $out from $f"
 	extracted_files="$extracted_files $out"
+	got=$(wc -c <"$out" | tr -d ' ')
+	[ "$got" = "$len" ] ||
+		die "Short slice $out: got ${got}B of ${len}B from $f -- the file is truncated or unreadable (check dmesg for UBIFS/NAND read errors; md5sum it against the build). Bank select NOT changed."
 }
 
 # Frees the downloaded ASW container as soon as nothing is left to slice out
@@ -572,6 +620,7 @@ case "$usrdata_action" in
 esac
 [ "1" = "$have_asw" ] && echo "  (ASW sub-images are cut out and flashed one at a time, to keep tmpfs usage down)"
 [ -n "$explicit_password" ] && echo "  Root password will be set on bank $target_bank"
+echo "  Then: mount rootfs${target_bank} read-only and read every file back"
 echo "  Then: openipc-bsel set $target_bank"
 if [ "1" = "$no_reboot" ]; then
 	echo "  No reboot (per -x); reboot manually to boot bank $target_bank."
@@ -616,6 +665,7 @@ flash_part "$rootfs_file" "$rootfs_dev" "RootFS"
 [ "1" = "$rootfs_extracted" ] && rm -f "$rootfs_file"
 
 [ -n "$explicit_password" ] && set_root_password
+verify_rootfs
 
 case "$usrdata_action" in
 	flash)

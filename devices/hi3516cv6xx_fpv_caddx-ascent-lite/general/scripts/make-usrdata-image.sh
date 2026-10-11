@@ -46,7 +46,15 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/empty"
 
-"$MKFS_UBIFS" -d "$WORK/empty" -e 0x1f000 -c 2048 -m 0x800 -x lzo -o "$WORK/data.ubifs"
+# -F (space fixup): sysupgrade writes this image raw with flashcp, which
+# programs the all-0xFF free-space pages too -- the fmc100 driver clears the
+# empty-page marker on every program, so they stop counting as erased. UBIFS
+# still reads them as free, writes into them, and the overlapping ECC makes
+# those pages unreadable later (2026-10-11: an 18MB file on usrdata0 came
+# back with an I/O error mid-file). -F makes the first rw mount re-erase
+# every LEB with free space before using it. CADDX's stock rootfs and
+# usrdata images both carry this flag.
+"$MKFS_UBIFS" -F -d "$WORK/empty" -e 0x1f000 -c 2048 -m 0x800 -x lzo -o "$WORK/data.ubifs"
 
 cat > "$WORK/usrdata.cfg" <<EOF
 [data]
