@@ -7,7 +7,7 @@
 # link drops and video glitches after a flight.
 #
 # SoC temperature: same register and conversion as
-# /usr/bin/caddx-ascent-lite-temp (which prints only the raw value).
+# /usr/bin/caddx-ascent-lite-temp.
 #
 # Also follows ar8030d's own log (/tmp/ar8030/daemon_log/<date>.log, a new
 # file per ar8030d start) into syslog as tag "ar8030d". ar8030d truncates

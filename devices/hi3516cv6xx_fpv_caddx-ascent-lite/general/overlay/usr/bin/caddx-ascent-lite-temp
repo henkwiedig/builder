@@ -1,10 +1,19 @@
 #!/bin/sh
+#
+# SoC temperature in degC from the CV610 T-sensor (10-bit code at
+# 0x1102a008), with the vendor's conversion (SDK svb.h, stock
+# ar_ldyhs_sky): (code - 127) * 165 / 784 - 40. Same as ipcinfo -t.
+#
+#   caddx-ascent-lite-temp      e.g. 109.9
+#   caddx-ascent-lite-temp -r   the raw code instead, e.g. 839
+#
+# Stock's temp_measure.sh, which this started from, prints the raw code
+# while looking like a temperature (839 is ~110 degC, not 83.9).
 
-temp0=$(devmem 0x1102a008)
-mask=0x3ff
-temp1=$((temp0 & mask))
-temp=$((temp1 - 127))
-temp2=$((temp * 165))
-temp3=$(expr $temp2 / 784)
-val=$((temp3 - 40))
-echo $temp1
+raw=$(( $(devmem 0x1102a008) & 0x3ff ))
+
+if [ "$1" = "-r" ]; then
+	echo "$raw"
+else
+	awk -v r="$raw" 'BEGIN { printf "%.1f\n", (r - 127) * 165 / 784 - 40 }'
+fi
