@@ -14,7 +14,7 @@
 #       >> $(O)/local.mk
 #
 # or as a plain environment variable to builder.sh/make.
-AR8030_TRANSPORT_TX_VERSION = dda5167479ab998ae2cb0195f989954380fcf1bf
+AR8030_TRANSPORT_TX_VERSION = 0e949e7d8612aa0b6ab459af86692c8f08059f23
 AR8030_TRANSPORT_TX_SITE = https://github.com/henkwiedig/ar8030-transport.git
 AR8030_TRANSPORT_TX_SITE_METHOD = git
 AR8030_TRANSPORT_TX_LICENSE = MIT
@@ -68,6 +68,10 @@ define AR8030_TRANSPORT_TX_BUILD_CMDS
 		CFLAGS="$(TARGET_CFLAGS)" \
 		AR8030_SDK_INC=$(STAGING_DIR)/usr/include/ar8030 \
 		AR8030_SDK_LIB=$(STAGING_DIR)/usr/lib
+	$(MAKE) -C $(@D)/still clean
+	$(MAKE) -C $(@D)/still \
+		CC="$(TARGET_CC)" \
+		CFLAGS="$(TARGET_CFLAGS)"
 endef
 
 define AR8030_TRANSPORT_TX_INSTALL_TARGET_CMDS
@@ -77,6 +81,10 @@ define AR8030_TRANSPORT_TX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/ar8030-linkctl
 	$(INSTALL) -D -m 0755 $(@D)/lifecycled/ar8030-lifecycled \
 		$(TARGET_DIR)/usr/bin/ar8030-lifecycled
+	$(INSTALL) -D -m 0755 $(@D)/still/ar8030-still \
+		$(TARGET_DIR)/usr/bin/ar8030-still
+	$(INSTALL) -D -m 0644 $(@D)/still/overheat.h265 \
+		$(TARGET_DIR)/usr/share/ar8030/overheat.h265
 	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_TX_PKGDIR)/files/etc/init.d/S65ar8030-transport-tx \
 		$(TARGET_DIR)/etc/init.d/S65ar8030-transport-tx
 	$(INSTALL) -D -m 0644 $(AR8030_TRANSPORT_TX_PKGDIR)/files/etc/default/ar8030-transport-tx \
