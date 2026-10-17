@@ -14,7 +14,7 @@
 #       >> $(O)/local.mk
 #
 # or as a plain environment variable to builder.sh/make.
-AR8030_TRANSPORT_TX_VERSION = bc44adc35a4044a6b53369f3eb23e8726bdbae82
+AR8030_TRANSPORT_TX_VERSION = 850229cc5741bc350af0be7fbeb736f456bc0db1
 AR8030_TRANSPORT_TX_SITE = https://github.com/henkwiedig/ar8030-transport.git
 AR8030_TRANSPORT_TX_SITE_METHOD = git
 AR8030_TRANSPORT_TX_LICENSE = MIT
