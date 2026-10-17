@@ -4,7 +4,8 @@
 # FC's own arm flag (MSP_STATUS) on the first reply, on every change and
 # every 10 s. Hands the state to ar8030-lifecycled, whose low-power mode
 # (--standby-dbm) follows it -- see /etc/default/ar8030-transport-tx. The
-# overheat pause (--overheat-c) goes by temperature alone.
+# overheat pause (--overheat-c) goes by temperature alone and holds the
+# low-power mode even when armed.
 #
 # "lost" (the FC stopped answering): keep the last state. After a crash
 # the FC has usually reported disarmed before it went quiet; a UART glitch
