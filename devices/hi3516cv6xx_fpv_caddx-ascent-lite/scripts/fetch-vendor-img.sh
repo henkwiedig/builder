@@ -67,7 +67,11 @@ curl -sL --cookie "$COOKIES" \
 
 unzip -l "$ZIP" >/dev/null 2>&1 || fail "Downloaded file isn't a valid zip."
 
-IMG_ENTRY=$(unzip -Z1 "$ZIP" | grep -m1 '/Ascent_H_Sky_.*\.img$') \
+# List first, then grep: piped straight into grep -m1, unzip can still be
+# writing when grep exits, and pipefail turns its SIGPIPE into a spurious
+# "no image" (seen in CI, under the build's parallel compile load).
+LISTING=$(unzip -Z1 "$ZIP")
+IMG_ENTRY=$(grep -m1 '/Ascent_H_Sky_.*\.img$' <<<"$LISTING") \
     || fail "No Ascent_H_Sky_*.img found inside the downloaded zip."
 
 mkdir -p "$WORK/extracted" "$(dirname "$OUT")"
