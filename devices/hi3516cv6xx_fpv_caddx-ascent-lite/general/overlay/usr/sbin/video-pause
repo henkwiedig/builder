@@ -11,7 +11,7 @@
 # exits and ar8030-still creates one under the same name, so the still
 # starts only once waybeam is gone. ar8030-transport-tx only looks for a
 # replaced ring after a 200 ms gap in frames, so the still stops before
-# waybeam starts. The lock keeps an arm during a slow stop in order --
+# waybeam starts. The lock keeps a resume during a slow stop in order --
 # lifecycled starts hooks without waiting for them. Nothing started from
 # here may inherit the lock's fd 9: ar8030-still and waybeam would hold
 # the lock for as long as they run (flock locks follow the open file), and
