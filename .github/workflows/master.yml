@@ -72,6 +72,7 @@ jobs:
           - gk7205v300_lite_vixand-ivg-g6s
           - gk7205v300_lite_vixand-ivg-g6s-w
           - hi3516cv200_lite_trassir-tr-d4121ir1-v2
+          - hi3516cv6xx_fpv_caddx-ascent-lite
           - hi3516ev300_ultimate_rostelecom-ipc8232swc-we
           - hi3516ev300_ultimate_rvi-1ncmw2028
           - hi3518ev200_lite_smartwares-cip-37210
@@ -260,6 +261,13 @@ jobs:
           export BR2_DL_DIR=/tmp/builder-dl
 
           NAME=${{matrix.platform}}
+          # Caddx Ascent Lite: package/ascent-vendor-firmware extracts the AR8030
+          # firmware and sensor tuning from CADDX's stock image with
+          # ubireader_extract_files, a host prerequisite.
+          if [ "${NAME}" = hi3516cv6xx_fpv_caddx-ascent-lite ]; then
+            pipx install ubi_reader
+          fi
+
           # Retry budget for transient upstream toolchain/CDN flakes
           # (matches OpenIPC/firmware/.github/workflows/build.yml).
           backoffs="30 60 120 300 600 1200"
@@ -298,6 +306,17 @@ jobs:
               mv ${NANDFW} ../${NAME}-nand.tgz
               echo NANDFW=${NAME}-nand.tgz >> ${GITHUB_ENV}
             fi
+          fi
+
+          # Caddx Ascent Lite image for the stock CADDX_PCTool flasher. Fixed
+          # name, so the rolling releases replace it instead of collecting one
+          # per builder commit; the device reads only the version tokens after
+          # "Ascent_H_Sky", the rest is free-form.
+          ASWFW=$(find output/images -name 'Ascent_H_Sky_*_OpenIPC_*.img' | head -1)
+          if [ ! -z ${ASWFW} ]; then
+            ASWIMG=$(basename ${ASWFW} | sed 's/_OpenIPC_[^_]*\.img$/_OpenIPC.img/')
+            mv ${ASWFW} ../${ASWIMG}
+            echo ASWIMG=${ASWIMG} >> ${GITHUB_ENV}
           fi
 
           if [ -z ${NORFW} ] && [ -z ${NANDFW} ]; then
@@ -341,6 +360,7 @@ jobs:
           files: |
             ${{env.NORFW}}
             ${{env.NANDFW}}
+            ${{env.ASWIMG}}
             ${{env.SIZES}}
 
       - name: Upload firmware (rolling nightly)
@@ -355,6 +375,7 @@ jobs:
           files: |
             ${{env.NORFW}}
             ${{env.NANDFW}}
+            ${{env.ASWIMG}}
             ${{env.SIZES}}
 
       - name: Upload firmware (latest — legacy alias)
@@ -365,6 +386,7 @@ jobs:
           files: |
             ${{env.NORFW}}
             ${{env.NANDFW}}
+            ${{env.ASWIMG}}
             ${{env.SIZES}}
 
       - name: Send binary
