@@ -3,12 +3,12 @@
 # msposd's FC arm-state hook: armed.sh 1|0|lost. msposd runs it with the
 # FC's own arm flag (MSP_STATUS) on the first reply, on every change and
 # every 10 s. Hands the state to ar8030-lifecycled, whose low-power mode
-# (--standby-dbm) and overheat pause (--overheat-c) follow it -- see
-# /etc/default/ar8030-transport-tx.
+# (--standby-dbm) follows it -- see /etc/default/ar8030-transport-tx. The
+# overheat pause (--overheat-c) goes by temperature alone.
 #
 # "lost" (the FC stopped answering): keep the last state. After a crash
 # the FC has usually reported disarmed before it went quiet; a UART glitch
-# in flight keeps "armed", i.e. full power and live video.
+# in flight keeps "armed", i.e. full power.
 
 case "$1" in
 0 | 1)
