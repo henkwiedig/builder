@@ -127,8 +127,35 @@ reset_chip() {
 	devmem "$data" 32 "$mask"
 }
 
+# After the reset pulse the MMC core keeps the old card -- RTOS identity
+# and all -- until its next poll finds the chip gone (~0.8 s on the
+# caddx-ascent-lite; the ROM card follows ~0.4 s later). Loading the module
+# in that window binds the stale card, so rtos_ready() passes at once,
+# ar8030d opens a node that vanishes under it a moment later ("sdio detach"
+# in its log), and it never re-attaches: no link until the next restart.
+# Seen live on a stop + start. Wait for the old card to go first; a chip
+# that was not running RTOS (cold boot) passes straight through.
+STALE_CARD_WAIT_S=3
+
+wait_stale_card() {
+	[ -n "$AR8030_RESET_GPIO_BANK" ] && [ -n "$AR8030_RESET_GPIO_BIT" ] || return 0
+	i=0
+	while [ $i -lt $((STALE_CARD_WAIT_S * 10)) ]; do
+		stale=""
+		for d in /sys/bus/sdio/devices/*:*; do
+			[ -e "$d/vendor" ] || continue
+			[ "$(cat "$d/vendor"):$(cat "$d/device")" = "0x4152:0x8030" ] || stale=1
+		done
+		[ -z "$stale" ] && return 0
+		usleep 100000 2>/dev/null || sleep 0.1
+		i=$((i + 1))
+	done
+	logger -t ar8030-transport-tx "old SDIO card still there ${STALE_CARD_WAIT_S}s after the chip reset, loading the module anyway"
+}
+
 load_module() {
 	reset_chip
+	wait_stale_card
 	echo -n "/lib/firmware" > /sys/module/firmware_class/parameters/path
 	args=""
 	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"
@@ -322,6 +349,23 @@ tx_stop_action() {
 	rm -f "$PIDFILE"
 }
 
+# Kills the pidfile's process and waits up to ~3 s for it to exit. stop()'s
+# rmmod fails while ar8030d still holds /dev/artosyn_sdio, and a plain kill
+# returns before it lets go: the old module then stayed loaded across a
+# restart, so start()'s modprobe was a no-op (new fw_name/cfg_name ignored)
+# and the reset hit a bound driver.
+kill_wait() {
+	pid=$(cat "$1" 2>/dev/null)
+	rm -f "$1"
+	[ -n "$pid" ] || return 0
+	kill "$pid" 2>/dev/null || return 0
+	i=0
+	while kill -0 "$pid" 2>/dev/null && [ $i -lt 15 ]; do
+		sleep 0.2
+		i=$((i + 1))
+	done
+}
+
 start() {
 	echo "Starting ar8030-transport-tx..."
 	mkdir -p "$RUNDIR"
@@ -337,10 +381,8 @@ start() {
 stop() {
 	echo "Stopping ar8030-transport-tx..."
 	tx_stop_action
-	[ -f "$LIFECYCLED_PIDFILE" ] && kill "$(cat "$LIFECYCLED_PIDFILE")" 2>/dev/null
-	rm -f "$LIFECYCLED_PIDFILE"
-	[ -f "$AR8030D_PIDFILE" ] && kill "$(cat "$AR8030D_PIDFILE")" 2>/dev/null
-	rm -f "$AR8030D_PIDFILE"
+	kill_wait "$LIFECYCLED_PIDFILE"
+	kill_wait "$AR8030D_PIDFILE"
 	rmmod "$MODULE" 2>/dev/null
 }
 
