@@ -30,7 +30,7 @@ BINARIES_DIR is wiped and regenerated every builder.sh run regardless
 is simpler than an intermediate cache/vendor-firmware/ that would just get
 recomputed just as often.
 
-ar8030's and waybeam's own fetch scripts (devices/hi3516cv6xx_fpv_caddx-
+ar8030's and waybeam's own fetch scripts (devices/hi3516cv6xx_artosyn_caddx-
 ascent-lite/general/scripts/fetch-vendor-{firmware,sensors}.py) are thin:
 they just copy the relevant piece out of BINARIES_DIR into their own
 package's $(@D), which is how those packages' respective INSTALL steps
@@ -164,7 +164,7 @@ def main() -> int:
     vendor_file_id = sys.argv[2]
     builder_dir = (binaries_dir / ".." / ".." / "..").resolve()
 
-    device_dir = builder_dir / "devices" / "hi3516cv6xx_fpv_caddx-ascent-lite"
+    device_dir = builder_dir / "devices" / "hi3516cv6xx_artosyn_caddx-ascent-lite"
     fetch_script = device_dir / "scripts" / "fetch-vendor-img.sh"
     vendor_img = builder_dir / "cache" / "vendor-images" / "Ascent_H_Sky.img"
 

@@ -118,6 +118,7 @@ SMOKE_TARGETS = [
     "ssc338q_waybeam_generic",           # waybeam, the one build without majestic
     "gk7205v200_otg_generic",            # otg
     "ssc338q_apfpv",                     # devices/apfpv
+    "hi3516cv6xx_artosyn_caddx-ascent-lite",  # artosyn, the AR8030 link; NAND/FIT
 ]
 
 # LICENSE and README anchored to whole filenames; unanchored they would also

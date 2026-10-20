@@ -69,7 +69,7 @@
 
 scr_version=1.0.0
 LOCK_FILE=/tmp/sysupgrade.lock
-DEVICE_PLATFORM=hi3516cv6xx_fpv_caddx-ascent-lite
+DEVICE_PLATFORM=hi3516cv6xx_artosyn_caddx-ascent-lite
 
 extracted_files=
 lock_owned=

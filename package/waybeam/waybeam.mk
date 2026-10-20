@@ -77,7 +77,7 @@ ifneq ($(WAYBEAM_SENSOR_FETCH_SCRIPT),)
 # FETCH_SCRIPT, set in the device's own defconfig -- see this package's
 # Config.in) before the package builds, so it can populate $(@D)/
 # vendor-sensors/ with this board's sensor tuning presets -- see that
-# Config.in entry for the full contract and devices/hi3516cv6xx_fpv_caddx-
+# Config.in entry for the full contract and devices/hi3516cv6xx_artosyn_caddx-
 # ascent-lite/general/scripts/fetch-vendor-sensors.py for a worked
 # example (CADDX's vendor image, shared with package/ar8030's own
 # baseband-firmware fetch via the same pattern). Deliberately not this

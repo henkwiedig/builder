@@ -18,4 +18,4 @@ config BR2_PACKAGE_CADDX_PCTOOL
 	  gadget (/usr/bin/usb-gadget with "mode rndis|pctool", stock ids
 	  1D76:0101 in pctool mode), the hook (/usr/sbin/pctool-hook) and
 	  its identity (its own /etc/default/pctoold); currently
-	  hi3516cv6xx_fpv_caddx-ascent-lite. See README.md.
+	  hi3516cv6xx_artosyn_caddx-ascent-lite. See README.md.

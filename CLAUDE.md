@@ -43,7 +43,7 @@ What `builder.sh <device>` does, in order:
   `fw_setenv`, and `dd`s a flashable NOR image. Needs `squashfs-tools`.
 - `package.sh [pkg]` — force a full rebuild of one Buildroot package inside an existing
   `openipc/` tree (`dirclean` + `rebuild`; defaults to `busybox`).
-- `devices/hi3516cv6xx_fpv_caddx-ascent-lite/scripts/pack-caddx-ascent.py` — repacks a finished
+- `devices/hi3516cv6xx_artosyn_caddx-ascent-lite/scripts/pack-caddx-ascent.py` — repacks a finished
   build's `fitImage`/`rootfs.ubi`/`usrdata.ubi` into the vendor's undocumented "ASW" 5-slot
   container format (magic `0x575341`, no signature check — reverse-engineered and
   round-trip-verified against a real stock image; see the script's own docstring for the
@@ -73,7 +73,7 @@ What `builder.sh <device>` does, in order:
   the time this runs: `package/ascent-vendor-firmware`'s build step downloads the same
   file earlier in the same build, and `fetch-vendor-img.sh` is a no-op on a warm cache.
 
-- `devices/hi3516cv6xx_fpv_caddx-ascent-lite/scripts/usbburn.py` — flashes, dumps and switches
+- `devices/hi3516cv6xx_artosyn_caddx-ascent-lite/scripts/usbburn.py` — flashes, dumps and switches
   the A/B boot bank of the Ascent air unit over USB, with no serial adapter: hold bind while
   powering on and the stock U-Boot exposes a command console on 3361:d001 ("VENDOR"). Needs
   pyusb + a udev rule (see its `--help`). Images go in by partition name (`kernel0=fitImage`,
@@ -86,7 +86,8 @@ What `builder.sh <device>` does, in order:
 Device directory names encode `<soc>_<flavor>_<vendor>-<model>[-<version>]`:
 - **soc** — OpenIPC SoC name: `hi3518ev200`, `ssc337de`, `t31`, `gk7205v200`, …
 - **flavor** — firmware track: `lite` (default, the vast majority), `ultimate`, `wfbng`
-  (the wfb-ng air unit; `fpv` until it was renamed to say what it carries), `rubyfpv`, `apfpv`. Prefer `lite` for new devices unless flash size forces otherwise.
+  (the wfb-ng air unit; `fpv` until it was renamed to say what it carries), `rubyfpv`, `apfpv`,
+  `artosyn` (an Artosyn AR8030 link instead of WiFi). Prefer `lite` for new devices unless flash size forces otherwise.
 
 The minimal required files for a registered device (per README "Requirements"):
 ```

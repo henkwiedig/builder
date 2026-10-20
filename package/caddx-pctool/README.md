@@ -59,7 +59,7 @@ starts `pctoold`; nothing runs at boot. The board provides:
   shows (stock's values for the board). Per unit, `fw_setenv pctool_fw|pctool_hw|pctool_sn`.
 - whatever triggers `pctool-mode toggle`.
 
-On hi3516cv6xx_fpv_caddx-ascent-lite (`devices/.../general/overlay`):
+On hi3516cv6xx_artosyn_caddx-ascent-lite (`devices/.../general/overlay`):
 
 - The USB port does RNDIS (default) **or** the PC tool's serial port, never both: the
   cv610's DWC3 has 3 IN endpoints besides ep0 and each function needs 2 (`acm: can't

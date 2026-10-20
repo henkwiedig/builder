@@ -85,7 +85,7 @@ config BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT
 	  build itself -- print a warning and leave <output-dir> empty on
 	  any failure instead.
 
-	  See devices/hi3516cv6xx_fpv_caddx-ascent-lite's defconfig +
+	  See devices/hi3516cv6xx_artosyn_caddx-ascent-lite's defconfig +
 	  general/scripts/fetch-vendor-firmware.py for a full example
 	  (CADDX's "Ascent H Sky" OTA image on Google Drive). Left empty,
 	  no fetch runs and ar8030.img doesn't get installed.
@@ -174,7 +174,7 @@ config BR2_PACKAGE_AR8030_TUNTAP
 	  below), for the ground-side half.
 
 	  Needs CONFIG_TUN in the kernel (this device's own defconfig adds
-	  a fragment for it -- see devices/hi3516cv6xx_fpv_caddx-ascent-lite/
+	  a fragment for it -- see devices/hi3516cv6xx_artosyn_caddx-ascent-lite/
 	  br-ext-chip-hisilicon/board/hi3516cv6xx/fragments/tun.config).
 
 	  Links a vendored copy of libtuntap (dev_helper/tuntap_bb/

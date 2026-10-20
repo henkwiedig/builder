@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pack an OpenIPC build of hi3516cv6xx_fpv_caddx-ascent-lite into the vendor
+Pack an OpenIPC build of hi3516cv6xx_artosyn_caddx-ascent-lite into the vendor
 "ASW" container format so the stock CADDX_PCTool Windows flasher can write it.
 
 Why this works: CADDX_PCTool does not verify a signature over the image (only
@@ -91,7 +91,7 @@ append a free-form OpenIPC build identifier after them.
 
 CAVEAT: nand_env.bin's bootargs still say `mem=64m` (vendor's cap, not this
 board's real 128MB) and its `fpvboot` bootcmd is the vendor's own -- review
-devices/hi3516cv6xx_fpv_caddx-ascent-lite before trusting this for anything
+devices/hi3516cv6xx_artosyn_caddx-ascent-lite before trusting this for anything
 you can't recover from a bad flash. The BootROM UART pad (see
 ASCENT_LITE_PLUS_RECOVERY.md) is the recovery path if a flash goes wrong.
 """

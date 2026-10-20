@@ -6,7 +6,7 @@
 #
 # Set custom upgrade url
 #
-fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/hi3516cv6xx_fpv_caddx-ascent-lite-nor.tgz'
+fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/hi3516cv6xx_artosyn_caddx-ascent-lite-nor.tgz'
 
 #
 # No wlandev: the downlink is the Artosyn AR8030 baseband (SDIO), driven by

@@ -1,7 +1,7 @@
 # Caddx Ascent Lite (Hi3516CV610) FPV air unit.
 #
 # Derived from firmware's hi3516cv6xx_ultimate_defconfig. Deltas against it:
-#   - VARIANT "ultimate" -> "fpv"
+#   - VARIANT "ultimate" -> "artosyn"
 #   - + AR8030 (the radio link) and waybeam (the encoder/streamer)
 #   - - majestic, majestic-fonts, majestic-webui  (waybeam replaces them)
 #   - - divinus                                   (the other encoder; one owner)
@@ -12,13 +12,14 @@
 # Each removal is spelled out as an explicit "is not set" below rather than a
 # deleted line, so a diff against upstream stays readable.
 #
-# NOTE: "fpv" here is only the OpenIPC variant *label* — it is deliberately not
-# the upstream FPV package set (wifibroadcast-ng + rtl8812au/rtl88x2eu). On this
-# board the downlink is the Artosyn AR8030 baseband, not a WiFi dongle, and the
-# cv6xx kernel has CONFIG_WIRELESS off anyway. VARIANT only feeds the image name
-# (openipc.hi3516cv6xx-nor-fpv.tgz), the excludes filename
-# (hi3516cv6xx_fpv.list) and os-release BUILD_OPTION/BUILD_PLATFORM; majestic's
-# flavor is BR2_OPENIPC_MAJESTIC, which stays at its "lite" default.
+# NOTE: the variant names the transport, as wfbng, rubyfpv and apfpv do: the
+# downlink is the Artosyn AR8030 baseband, not wfb-ng on a WiFi dongle, and the
+# cv6xx kernel has CONFIG_WIRELESS off anyway. Firmware branches on "fpv"/"wfbng"
+# only for other SoCs' sensor lists and majestic-webui, neither of which this
+# board builds, so VARIANT only feeds the image name
+# (openipc.hi3516cv6xx-*-artosyn.tgz), the excludes filename
+# (hi3516cv6xx_artosyn.list) and os-release BUILD_OPTION/BUILD_PLATFORM;
+# majestic's flavor is BR2_OPENIPC_MAJESTIC, which stays at its "lite" default.
 
 # OpenIPC
 BR2_OPENIPC_SOC_VENDOR="hisilicon"
@@ -26,10 +27,10 @@ BR2_OPENIPC_SOC_MODEL="hi3516cv6xx"
 BR2_OPENIPC_SOC_FAMILY="hi3516cv6xx"
 # One cv6xx image serves dies that report distinct ids (hi3516cv610,
 # hi3516cv608) via fw_printenv/ipcinfo. Upgrade identity comes from
-# BUILD_PLATFORM=hi3516cv6xx_fpv; these aliases are a defensive route
+# BUILD_PLATFORM=hi3516cv6xx_artosyn; these aliases are a defensive route
 # for any image/camera that still surfaces the per-die id.
 BR2_OPENIPC_SOC_ALIASES="hi3516cv610 hi3516cv608"
-BR2_OPENIPC_VARIANT="fpv"
+BR2_OPENIPC_VARIANT="artosyn"
 BR2_OPENIPC_FLASH_SIZE="16"
 # OPENIPC_MAJESTIC defaults to "lite" — only the "lite" flavor of the
 # cv6xx majestic binary has been published to OpenIPC S3 so far.

@@ -30,7 +30,7 @@
  * Built by the "openipc-bsel" Buildroot package (../openipc-bsel.mk) --
  * not device-specific in itself (it just looks for an MTD partition named
  * "sel" and speaks the BSEL record format), but currently only enabled by
- * hi3516cv6xx_fpv_caddx-ascent-lite's defconfig.
+ * hi3516cv6xx_artosyn_caddx-ascent-lite's defconfig.
  */
 
 #include <fcntl.h>

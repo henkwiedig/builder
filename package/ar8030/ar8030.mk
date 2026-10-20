@@ -55,7 +55,7 @@ ifneq ($(AR8030_VENDOR_FETCH_SCRIPT),)
 # FETCH_SCRIPT, set in the device's own defconfig -- see this package's
 # Config.in) before the package builds, so it can populate $(@D)/
 # vendor-firmware/ with this board's own ar8030.img -- see that Config.in
-# entry for the full contract and devices/hi3516cv6xx_fpv_caddx-ascent-
+# entry for the full contract and devices/hi3516cv6xx_artosyn_caddx-ascent-
 # lite/general/scripts/fetch-vendor-firmware.py for a worked example.
 # Deliberately not this package's own concern: a different AR8030 board
 # sources this from a different vendor in a different format, and

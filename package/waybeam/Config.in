@@ -64,7 +64,7 @@ config BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT
 	  <output-dir>, and must never fail the build itself -- print a
 	  warning and leave <output-dir> empty on any failure instead.
 
-	  See devices/hi3516cv6xx_fpv_caddx-ascent-lite's defconfig +
+	  See devices/hi3516cv6xx_artosyn_caddx-ascent-lite's defconfig +
 	  general/scripts/fetch-vendor-sensors.py for a full example. Left
 	  empty, no fetch runs and /etc/sensors ships empty.
 

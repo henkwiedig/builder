@@ -11,7 +11,7 @@
 # sits in output/images/ alongside fitImage/rootfs.ubi/etc.
 #
 # The actual packer and vendor-image fetcher live outside the firmware tree,
-# in the builder repo itself (devices/hi3516cv6xx_fpv_caddx-ascent-lite/
+# in the builder repo itself (devices/hi3516cv6xx_artosyn_caddx-ascent-lite/
 # scripts/{pack-caddx-ascent.py,fetch-vendor-img.sh}) rather than here under
 # general/scripts/ like this file -- they need a persistent cache directory
 # (cache/vendor-images/) that survives builder.sh's `rm -rf openipc` between
@@ -30,7 +30,7 @@
 
 BINARIES_DIR="$1"
 BUILDER_DIR=$(cd "${BINARIES_DIR}/../../.." && pwd)
-DEVICE_SCRIPTS="${BUILDER_DIR}/devices/hi3516cv6xx_fpv_caddx-ascent-lite/scripts"
+DEVICE_SCRIPTS="${BUILDER_DIR}/devices/hi3516cv6xx_artosyn_caddx-ascent-lite/scripts"
 VENDOR_IMG="${BUILDER_DIR}/cache/vendor-images/Ascent_H_Sky.img"
 
 # The device's own upgrade daemon never inspects a transferred file's bytes

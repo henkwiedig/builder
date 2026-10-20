@@ -165,7 +165,7 @@ jobs:
 
           NAME=${{inputs.platform}}
           # Caddx Ascent Lite vendor firmware extraction -- see master.yml.
-          if [ "${NAME}" = hi3516cv6xx_fpv_caddx-ascent-lite ]; then
+          if [ "${NAME}" = hi3516cv6xx_artosyn_caddx-ascent-lite ]; then
             pipx install ubi_reader
           fi
 

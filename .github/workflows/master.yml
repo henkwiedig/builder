@@ -323,7 +323,7 @@ jobs:
           # Caddx Ascent Lite: package/ascent-vendor-firmware extracts the AR8030
           # firmware and sensor tuning from CADDX's stock image with
           # ubireader_extract_files, a host prerequisite.
-          if [ "${NAME}" = hi3516cv6xx_fpv_caddx-ascent-lite ]; then
+          if [ "${NAME}" = hi3516cv6xx_artosyn_caddx-ascent-lite ]; then
             pipx install ubi_reader
           fi
 
