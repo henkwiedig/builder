@@ -73,6 +73,14 @@ What `builder.sh <device>` does, in order:
   the time this runs: `package/ascent-vendor-firmware`'s build step downloads the same
   file earlier in the same build, and `fetch-vendor-img.sh` is a no-op on a warm cache.
 
+- `devices/hi3516cv6xx_fpv_caddx-ascent-lite/scripts/usbburn.py` — flashes, dumps and switches
+  the A/B boot bank of the Ascent air unit over USB, with no serial adapter: hold bind while
+  powering on and the stock U-Boot exposes a command console on 3361:d001 ("VENDOR"). Needs
+  pyusb + a udev rule (see its `--help`). Images go in by partition name (`kernel0=fitImage`,
+  or `--bank N --images output/images` / `--asw <img>`); every chunk is CRC-checked after upload
+  and after the NAND write. The protocol quirks are documented in the script's docstring.
+  Recovery only works while the boot partition is intact; otherwise it's defib + serial.
+
 ## Device anatomy
 
 Device directory names encode `<soc>_<flavor>_<vendor>-<model>[-<version>]`:
