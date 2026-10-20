@@ -65,8 +65,11 @@ What `builder.sh <device>` does, in order:
   normally is). The hook derives the builder checkout's path from `BINARIES_DIR` and always
   exits 0 (a nonzero post-image script fails `make` outright), so a broken Drive scrape just
   skips the ASW repack with a warning. Drops the result straight into `BINARIES_DIR`
-  (`output/images/hi3516cv6xx_fpv_caddx-ascent-lite-asw.img`) — `builder.sh` does not archive
-  it, it just sits in `output/images/`. In practice the vendor image is often already cached by
+  (`output/images/Ascent_H_Sky_<sdk>_<app>_<qa>_OpenIPC_<builder-sha>.img`; the device's
+  upgrade daemon only accepts names of that shape) — `builder.sh` does not archive it, it just
+  sits in `output/images/`. CI renames it to `Ascent_H_Sky_<sdk>_<app>_<qa>_OpenIPC.img` (a
+  fixed name, so the rolling `nightly`/`latest` releases replace it rather than collect one per
+  builder commit) and uploads it next to the `.tgz`. In practice the vendor image is often already cached by
   the time this runs: `package/ascent-vendor-firmware`'s build step downloads the same
   file earlier in the same build, and `fetch-vendor-img.sh` is a no-op on a warm cache.
 

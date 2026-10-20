@@ -320,6 +320,13 @@ jobs:
           export BR2_DL_DIR=/tmp/builder-dl
 
           NAME=${{matrix.platform}}
+          # Caddx Ascent Lite: package/ascent-vendor-firmware extracts the AR8030
+          # firmware and sensor tuning from CADDX's stock image with
+          # ubireader_extract_files, a host prerequisite.
+          if [ "${NAME}" = hi3516cv6xx_fpv_caddx-ascent-lite ]; then
+            pipx install ubi_reader
+          fi
+
           # Retry budget for transient upstream toolchain/CDN flakes
           # (matches OpenIPC/firmware/.github/workflows/build.yml).
           backoffs="30 60 120 300 600 1200"
@@ -358,6 +365,17 @@ jobs:
               mv ${NANDFW} ../${NAME}-nand.tgz
               echo NANDFW=${NAME}-nand.tgz >> ${GITHUB_ENV}
             fi
+          fi
+
+          # Caddx Ascent Lite image for the stock CADDX_PCTool flasher. Fixed
+          # name, so the rolling releases replace it instead of collecting one
+          # per builder commit; the device reads only the version tokens after
+          # "Ascent_H_Sky", the rest is free-form.
+          ASWFW=$(find output/images -name 'Ascent_H_Sky_*_OpenIPC_*.img' | head -1)
+          if [ ! -z ${ASWFW} ]; then
+            ASWIMG=$(basename ${ASWFW} | sed 's/_OpenIPC_[^_]*\.img$/_OpenIPC.img/')
+            mv ${ASWFW} ../${ASWIMG}
+            echo ASWIMG=${ASWIMG} >> ${GITHUB_ENV}
           fi
 
           if [ -z ${NORFW} ] && [ -z ${NANDFW} ]; then
@@ -447,7 +465,7 @@ jobs:
               cp -a "$f" reports/
             fi
           done
-          for f in "${NORFW:-}" "${NANDFW:-}"; do
+          for f in "${NORFW:-}" "${NANDFW:-}" "${ASWIMG:-}"; do
             # An `if` rather than a `&&` chain: the step runs under `bash -e`,
             # where a trailing `&&` that tests false is only harmless because
             # something after it resets the status.
@@ -661,8 +679,9 @@ jobs:
           # Releases carry firmware and nothing else. The per-device size
           # reports that used to ride along as sizes.*.json sidecars reach
           # openipc.org once, from the report job below, out of their own
-          # reports-* artifacts.
-          mapfile -t IMAGES < <(find dist -maxdepth 1 -type f -name '*.tgz' | sort)
+          # reports-* artifacts. The Caddx Ascent Lite also ships its image for
+          # the stock CADDX_PCTool flasher (Ascent_H_Sky_*.img).
+          mapfile -t IMAGES < <(find dist -maxdepth 1 -type f \( -name '*.tgz' -o -name 'Ascent_H_Sky_*.img' \) | sort)
 
           # Nothing moves when there is no firmware to move it to. A dated
           # release with nothing in it, or the two tags users flash from
