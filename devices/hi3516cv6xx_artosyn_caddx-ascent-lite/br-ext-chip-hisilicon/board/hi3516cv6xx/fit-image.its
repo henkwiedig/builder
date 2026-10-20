@@ -11,7 +11,18 @@
 			type = "flat_dt";
 			arch = "arm";
 			compression = "none";
-			load = <0x40000000>;
+			/*
+			 * Not 0x40000000, where firmware's and CADDX's FITs put it:
+			 * the kernel builds its first page table at 0x40004000, so
+			 * a DTB that U-Boot's fixups grow past 16 KiB loses the
+			 * tail of its strings block, and with it property names
+			 * (the in-tree demb DTS crossed that in OpenIPC/linux #101
+			 * and the USB controller lost "phys"). fdt_high=0xffffffff
+			 * boots it where it is loaded. Clear of the kernel and the
+			 * relocated decompressor below (~0x40a00000) and of the
+			 * 4 MiB fpvboot reads the FIT into at 0x41000000.
+			 */
+			load = <0x40f00000>;
 		};
 
 		linux_kernel {
