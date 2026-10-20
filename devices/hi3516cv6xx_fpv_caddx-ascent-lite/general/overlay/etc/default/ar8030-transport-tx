@@ -11,7 +11,14 @@
 # latency figures.
 # -C pi: bitrate controller = link capacity feedforward + PI on the
 # link-side queueing delay (ar8030-transport tx/bitrate_ctl.c).
-AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi"
+# -n 300: lowest bitrate the controller asks for, = waybeam's CV610 floor
+# (0.84.3). The encoder only holds that with a colortrans sensor bin
+# (isp.sensorBin .../*_colortrans.bin): bench 1080p100, static scene, 350
+# kbps on target, 250-200 within 5-10%. With the default bins it delivered
+# 0.6-1.3 Mbit/s when asked for 500 or 250 -- use -n 1000 there.
+# -F 3000: focus mode -- waybeam's centre-priority ROI (fpv.roiEnabled) on
+# as soon as the rate is below 3000 kbps, off after 5 s back above it.
+AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi -n 300 -F 3000"
 
 # GPIO7_3 (bank 7 at 0x11097000, bit 3): this board's ar8030_rst line --
 # the vendor's own sys_config.ko pulsed it (fpv_edu405_gpio_init); here
