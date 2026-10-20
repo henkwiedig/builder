@@ -20,7 +20,13 @@
 # link-side delay.
 # -F 3000: focus mode -- waybeam's centre-priority ROI (fpv.roiEnabled) on
 # as soon as the rate is below 3000 kbps, off after 5 s back above it.
-AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi -n 300 -F 3000"
+# -D 4: below that floor, fewer frames -- waybeam encodes every 2nd, then
+# every 4th frame (video0.fpsDivisor, waybeam 0.85.0) and its floor drops to
+# 150 / 75 kbps; the frames keep their size, so the cost is the frame
+# interval only, and only where the link can't carry 300 kbps at 100 fps.
+# Replays of the 2026-10-02/03 flights: dropped frames 651 -> 280, each
+# stage active 0-4.5% of a flight.
+AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi -n 300 -F 3000 -D 4"
 
 # GPIO7_3 (bank 7 at 0x11097000, bit 3): this board's ar8030_rst line --
 # the vendor's own sys_config.ko pulsed it (fpv_edu405_gpio_init); here
