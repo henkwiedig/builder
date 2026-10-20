@@ -57,7 +57,7 @@ What `builder.sh <device>` does, in order:
   verified on real hardware.
 
   Auto-run at the end of this device's own `BR2_ROOTFS_POST_IMAGE_SCRIPT` (in its defconfig),
-  after the shared SoC `post-image.sh` (fitImage) and `make-usrdata-image.sh` (usrdata.ubi), by
+  after the board's own `post-image.sh` (fitImage; firmware dropped the shared cv6xx one) and `make-usrdata-image.sh` (usrdata.ubi), by
   `general/scripts/pack-caddx-ascent-hook.sh` — ordinary Buildroot-copied overlay content
   (unlike the two scripts above, which need `cache/vendor-images/` to survive builder.sh's
   `rm -rf openipc` between builds, so they're invoked from the long-lived builder checkout by

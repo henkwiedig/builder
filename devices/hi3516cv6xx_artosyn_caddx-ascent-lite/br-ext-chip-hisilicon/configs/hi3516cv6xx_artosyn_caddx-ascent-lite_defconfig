@@ -32,6 +32,12 @@ BR2_OPENIPC_SOC_FAMILY="hi3516cv6xx"
 BR2_OPENIPC_SOC_ALIASES="hi3516cv610 hi3516cv608"
 BR2_OPENIPC_VARIANT="artosyn"
 BR2_OPENIPC_FLASH_SIZE="16"
+# Firmware's repack checks the kernel at the start of firmware.bin against what
+# the bootloader reads to boot it. fpvboot boots the FIT from kernel0/kernel1,
+# 4 MiB each; the 2 MiB default is the NOR kernel slot. The check reads a uImage
+# header's data size, which on a FIT is the FDT's strings offset, just short of
+# its total size.
+BR2_OPENIPC_NOR_KERNEL_READ_SIZE=0x400000
 # OPENIPC_MAJESTIC defaults to "lite" — only the "lite" flavor of the
 # cv6xx majestic binary has been published to OpenIPC S3 so far.
 
@@ -63,9 +69,10 @@ BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMI
 # below), so it's layered on as a fragment instead of touching the file
 # every hi3516cv6xx device builds against. See that fragment's own
 # comment for why.
-BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/nand.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/usb-gadget.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/hrtimers.config"
-# Runs three scripts, space-separated, in order: the shared SoC script
-# (fitImage/firmware.bin), our own that builds the blank usrdata0/usrdata1
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/nand.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/usb-gadget.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/hrtimers.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/cma.config"
+# Runs three scripts, space-separated, in order: this board's
+# board/hi3516cv6xx/post-image.sh (fitImage/firmware.bin -- firmware dropped
+# the shared cv6xx one with the split NOR layout), our own that builds the blank usrdata0/usrdata1
 # UBI image (see general/scripts/make-usrdata-image.sh for why that has to
 # happen at build time rather than on first boot), and last, a hook that
 # repacks all three into the vendor's "ASW" container for the stock
