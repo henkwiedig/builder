@@ -13,8 +13,8 @@ fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/a
 # ar8030-transport-tx's artosyn_drv.ko + ar8030d from
 # /etc/init.d/S65ar8030-transport-tx, not a WiFi dongle.
 #
-# No majestic/waybeam: the NT99235 camera and the Wave521C encoder are V4L2
-# devices on this kernel; there is no OpenIPC encoder app for them yet.
+# No majestic: waybeam's ar9311 backend drives the NT99235 camera and the
+# Wave521C encoder, both V4L2 devices on this kernel (/etc/waybeam.json).
 #
 
 exit 0
