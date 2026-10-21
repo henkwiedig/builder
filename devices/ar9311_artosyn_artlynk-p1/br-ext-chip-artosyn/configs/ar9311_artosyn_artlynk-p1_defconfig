@@ -7,7 +7,7 @@
 # (package/ml-kernel, applied by general/linux/linux-ext-ml-kernel.mk; board
 # "betafpv-vr04-air" = P1_SKY). Artosyn has published no kernel source.
 #
-# Userland: the hi3516cv6xx_fpv_caddx-ascent-lite (Ascent) set, minus what is
+# Userland: the hi3516cv6xx_artosyn_caddx-ascent-lite (Ascent) set, minus what is
 # HiSilicon-only (waybeam and msposd drive the HiSilicon MPP; hisilicon-
 # opensdk/osdrv; openipc-bsel, which flips CADDX's fpvboot bank). There is
 # no encoder app yet: the camera and the wave5 codec are V4L2 devices on
@@ -17,7 +17,11 @@
 BR2_OPENIPC_SOC_VENDOR="artosyn"
 BR2_OPENIPC_SOC_MODEL="ar9311"
 BR2_OPENIPC_SOC_FAMILY="ar9311"
-BR2_OPENIPC_VARIANT="fpv"
+# The variant names the transport, as wfbng, rubyfpv and apfpv do: the Artosyn
+# AR8030 baseband (same as hi3516cv6xx_artosyn_caddx-ascent-lite). It only
+# feeds the image name, the excludes filename (ar9311_artosyn.list) and
+# os-release BUILD_OPTION/BUILD_PLATFORM.
+BR2_OPENIPC_VARIANT="artosyn"
 BR2_OPENIPC_FLASH_SIZE="16"
 
 # Architecture
@@ -87,7 +91,7 @@ BR2_PACKAGE_AR8030_FIRMWARE=y
 # The baseband runs the Ascent air firmware, not the stock P1 one: the P1
 # firmware (2026-03) uses an older MAC frame header and cannot link with
 # Ascent ground units. The Ascent image runs on the P1 radio unchanged
-# (see devices/ar9311_fpv_artlynk-p1/README.md).
+# (see devices/ar9311_artosyn_artlynk-p1/README.md).
 BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT="scripts/fetch-ascent-ar8030-firmware.py"
 BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY="ascent-vendor-firmware"
 BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE=y
