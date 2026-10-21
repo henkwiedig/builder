@@ -153,11 +153,14 @@ reset_chip() {
 # ar8030d opens a node that vanishes under it a moment later ("sdio detach"
 # in its log), and it never re-attaches: no link until the next restart.
 # Seen live on a stop + start. Wait for the old card to go first; a chip
-# that was not running RTOS (cold boot) passes straight through.
+# that was not running RTOS (cold boot) passes straight through. Either
+# reset (register or gpiolib) applies; without one there is nothing to wait
+# for.
 STALE_CARD_WAIT_S=3
 
 wait_stale_card() {
-	[ -n "$AR8030_RESET_GPIO_BANK" ] && [ -n "$AR8030_RESET_GPIO_BIT" ] || return 0
+	[ -n "$AR8030_RESET_GPIO" ] ||
+		{ [ -n "$AR8030_RESET_GPIO_BANK" ] && [ -n "$AR8030_RESET_GPIO_BIT" ]; } || return 0
 	i=0
 	while [ $i -lt $((STALE_CARD_WAIT_S * 10)) ]; do
 		stale=""
