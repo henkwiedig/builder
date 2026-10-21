@@ -53,4 +53,11 @@ AR8030_CFG_NAME=ar8030/p1_ascent_air.json
 # Ascent -- same baseband firmware, same ground: uplink MCS table + range
 # 1-2 and rfo_kikp; the goggles push the matching downlink table. See
 # ar8030-transport common/ar8030_link_policy.h.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2"
+# --rf-path-b-off: one RF path, like the Ascent Lite -- port A fitted, port B
+# unpopulated -- but the chip comes up with path B transmitting and
+# receiving too. lifecycled switches it off the way stock does on the Lite
+# (PRJ_CMD_RF_PATH_CTRL); tx_mode stays 2TX_STBC, as there (see
+# p1_ascent_air.json).
+# Not --fem-ctrl: its FEM bit (>= 24 dBm) is the Lite's FEM wiring; the P1
+# has a GSR5755. Only with an output-power measurement.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2 --rf-path-b-off"
