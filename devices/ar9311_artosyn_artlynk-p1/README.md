@@ -61,7 +61,9 @@ table) plus the P1's power section and PA calibration. Things that matter:
 
 - broadcast `tx_mode` must stay `2TX_STBC`: the P1 has only RF port A
   fitted (FEM GSR5755, port B unpopulated) and under the Ascent firmware
-  `1TX` transmits on port B
+  `1TX` transmits on port B. Path B is switched off at runtime instead
+  (`ar8030-lifecycled --rf-path-b-off`, the firmware's RF path control),
+  exactly as on the Ascent Lite, which has the same single path
 - the channel table must match the ground's (42 entries), or the ground
   logs `chan tab: X not match Y` and never pairs
 - the stock P1 `bb_config_air.json` does not boot the Ascent firmware
