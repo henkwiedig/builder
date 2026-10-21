@@ -16,8 +16,17 @@
 # here may inherit the lock's fd 9: ar8030-still and waybeam would hold
 # the lock for as long as they run (flock locks follow the open file), and
 # the next call would wait for it forever.
+#
+# P1: stopping waybeam is only part of it. The camera chain stays clocked
+# while its modules are loaded (sensor MCLK, CSI-2, VIF, ISP at 333 MHz)
+# and is as much heat as waybeam itself -- bench, fan on: 53 degC
+# streaming, 47 with waybeam stopped, 40 with the chain unloaded too. So
+# "on" unloads it; S95waybeam start loads it again (load-ar9311-camera).
+# wave5 stays: unloading it saves nothing measurable, and it is the one
+# module the loader warns about re-probing.
 
 STILL=/usr/bin/ar8030-still
+CAMERA_MODULES="ar_cvisp ar_isp ar_vif ar_csi2 nt99235"
 FRAME=/usr/share/ar8030/overheat.h265
 PIDFILE=/var/run/ar8030-still.pid
 
@@ -31,8 +40,11 @@ on)
 		logger -t video-pause "waybeam did not stop, no still frame"
 		exit 1
 	fi
+	for m in $CAMERA_MODULES; do
+		rmmod "$m" 2>/dev/null
+	done
 	start-stop-daemon -S -b -m -q -p "$PIDFILE" -x "$STILL" -- -f "$FRAME" 9>&-
-	logger -t video-pause "video paused, still frame on"
+	logger -t video-pause "video paused, camera chain off, still frame on"
 	;;
 off)
 	start-stop-daemon -K -q -p "$PIDFILE" -x "$STILL"
