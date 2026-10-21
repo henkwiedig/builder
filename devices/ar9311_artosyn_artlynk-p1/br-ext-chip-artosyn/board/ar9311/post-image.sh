@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# ar9311_fpv_artlynk-p1 post-image.
+# ar9311_artosyn_artlynk-p1 post-image.
 #
 # uImage.ar9311: the arm64 Image in the container the stock SPL/U-Boot boot
 # (it rejects a raw `booti`), same layout as the stock kernel0/kernel1

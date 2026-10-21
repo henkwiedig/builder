@@ -4,7 +4,7 @@ RAM-boot a BetaFPV P1 / Artosyn PROXIMA 9311 (AR9311) over USB -- no flash
 needed. Nothing is written to the board's NAND.
 
   ar9311-usbboot.py linux  [--images DIR] [--serial TTY [--root-password PW]]
-      patched stock SPL + U-Boot, then the ar9311_fpv_artlynk-p1 build's
+      patched stock SPL + U-Boot, then the ar9311_artosyn_artlynk-p1 build's
       kernel/initramfs/dtb; U-Boot autoboots them (no UART needed), --serial
       shows the boot log
   ar9311-usbboot.py uboot  [--images DIR]      stop at the stock U-Boot
@@ -81,7 +81,7 @@ import usb.core
 import usb.util
 
 BUILDER = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../.."))
-DEFAULT_IMAGES = os.path.join(BUILDER, "openipc-ar9311_fpv_artlynk-p1/output/images")
+DEFAULT_IMAGES = os.path.join(BUILDER, "openipc/output/images")
 
 # ---------------------------------------------------------------- ROM protocol
 
@@ -346,7 +346,7 @@ def read(path):
         with open(path, "rb") as f:
             return f.read()
     except OSError as e:
-        sys.exit(f"{path}: {e.strerror} (built ar9311_fpv_artlynk-p1 with the stock image?)")
+        sys.exit(f"{path}: {e.strerror} (built ar9311_artosyn_artlynk-p1 with the stock image?)")
 
 
 def cmd_spl(a):

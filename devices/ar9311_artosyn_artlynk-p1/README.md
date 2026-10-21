@@ -1,4 +1,4 @@
-# ar9311_fpv_artlynk-p1 — BetaFPV P1 SKY (Artosyn PROXIMA 9311 / AR9311)
+# ar9311_artosyn_artlynk-p1 — BetaFPV P1 SKY (Artosyn PROXIMA 9311 / AR9311)
 
 Air unit: quad Cortex-A53, 256 MiB DDR, 128 MiB SPI-NAND, AR8030 baseband on
 SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
@@ -10,7 +10,7 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Kernel | mainline 6.18.36 + MissingLynk's open BSP ([ml-kernel](https://github.com/Missing-Lynk/ml-kernel), board `betafpv-vr04-air` = P1_SKY), applied by `general/linux/linux-ext-ml-kernel.mk`; `board/ar9311/openipc.config` adds what the OpenIPC userland needs |
 | Kernel image | `uImage.ar9311`: OTRA + LZ4 legacy uImage, the only format the stock U-Boot/SPL boot (`board/ar9311/post-image.sh`) |
 | Modules | ml-kernel's out-of-tree Artosyn drivers (`package/ml-kernel-modules`) + `artosyn_drv` (ar8030-transport-tx); in-tree modules pruned to ml-kernel's own set |
-| Userland | the Ascent (`hi3516cv6xx_fpv_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
+| Userland | the Ascent (`hi3516cv6xx_artosyn_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
 | Rootfs | `rootfs.ubi` (standard OpenIPC `rootfs` + `rootfs_data` UBI, also as `firmware.bin`), `rootfs.cpio.gz` for RAM boot |
 | AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
 | Video | waybeam's `ar9311` backend (NT99235 camera through the MissingLynk V4L2 chain, H.265 on wave5, into `frame-shm://venc_frames` for `ar8030-transport-tx`); the waybeam pin predates it, so build with `WAYBEAM_OVERRIDE_SRCDIR=/path/to/waybeam_venc` (branch `ar9311`) |
@@ -19,8 +19,8 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 ## RAM boot (no flash needed)
 
 ```sh
-devices/ar9311_fpv_artlynk-p1/scripts/ar9311-usbboot.py linux
-devices/ar9311_fpv_artlynk-p1/scripts/ar9311-usbboot.py linux --serial /dev/ttyUSB0 --root-password <pw>
+devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-usbboot.py linux
+devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-usbboot.py linux --serial /dev/ttyUSB0 --root-password <pw>
 ```
 
 Board in mask-ROM USB mode (`5343:0200`, e.g. with no bootable NAND); start

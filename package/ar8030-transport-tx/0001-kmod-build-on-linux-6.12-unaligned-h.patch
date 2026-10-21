@@ -2,7 +2,7 @@ From: OpenIPC builder
 Subject: [PATCH] kmod: build on Linux >= 6.12 (asm/unaligned.h -> linux/unaligned.h)
 
 Linux 6.12 moved <asm/unaligned.h> to <linux/unaligned.h>; needed for the
-AR9311 (ar9311_fpv_artlynk-p1) mainline 6.18 kernel.
+AR9311 (ar9311_artosyn_artlynk-p1) mainline 6.18 kernel.
 ---
 diff --git a/kmod/artosyn_net.c b/kmod/artosyn_net.c
 index 489305b..2f80956 100644

@@ -2,7 +2,7 @@
 """
 BUILD_CMDS for artlynk-p1-vendor-firmware (see the sibling .mk).
 
-Extracts the proprietary blobs ar9311_fpv_artlynk-p1 needs from BetaFPV's
+Extracts the proprietary blobs ar9311_artosyn_artlynk-p1 needs from BetaFPV's
 stock P1 SKY OTA image (P1_SKY_*.img, Artosyn "ARTO" container) into
 BINARIES_DIR/artlynk-p1/:
 
@@ -20,12 +20,12 @@ BINARIES_DIR/artlynk-p1/:
                         requested by the Artosyn ISP drivers as artosyn/...
   loader.bin, uboot0.img, vendor.img, p1.dtb
                         stock SPL, U-Boot, DDR training firmware and DT, for
-                        booting a board over USB (devices/ar9311_fpv_artlynk-p1/
+                        booting a board over USB (devices/ar9311_artosyn_artlynk-p1/
                         scripts/ar9311-usbboot.py)
 
 Nothing is committed. The stock image is looked up locally first:
 $ARTLYNK_P1_VENDOR_IMG, else <builder>/cache/vendor-images/P1_SKY_*.img
-(newest match); if there is none, devices/ar9311_fpv_artlynk-p1/scripts/
+(newest match); if there is none, devices/ar9311_artosyn_artlynk-p1/scripts/
 fetch-vendor-img.sh downloads BetaFPV's Google Drive copy (file id from the
 .mk, passed as argv[3]) to cache/vendor-images/P1_SKY_vendor.img.
 
@@ -65,12 +65,12 @@ def find_image(binaries_dir, file_id=None):
     env = os.environ.get("ARTLYNK_P1_VENDOR_IMG")
     if env:
         return Path(env) if Path(env).is_file() else None
-    # BINARIES_DIR = <builder>/openipc-<device>/output/images
+    # BINARIES_DIR = <builder>/openipc/output/images
     builder = Path(binaries_dir).resolve().parents[2]
     hits = sorted(glob.glob(str(builder / "cache/vendor-images/P1_SKY_*.img")), key=os.path.getmtime)
     if hits:
         return Path(hits[-1])
-    fetch = builder / "devices/ar9311_fpv_artlynk-p1/scripts/fetch-vendor-img.sh"
+    fetch = builder / "devices/ar9311_artosyn_artlynk-p1/scripts/fetch-vendor-img.sh"
     dest = builder / "cache/vendor-images/P1_SKY_vendor.img"
     if not fetch.is_file():
         return None
