@@ -72,18 +72,20 @@ BR2_PACKAGE_UBOOT_TOOLS=y
 # as initrd), for boards without flash.
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
-# Standard OpenIPC NAND layout: UBI with a "rootfs" UBIFS volume and an
-# autoresizing "rootfs_data" overlay volume; the ml-kernel air DTS already
-# boots "ubi.mtd=18 root=ubi:rootfs rootfstype=ubifs" (mtd18 = userapp1).
-# SPI-NAND XT26Q01D: 128 KiB PEB, 2 KiB page and sub-page.
-BR2_TARGET_ROOTFS_UBI=y
-BR2_TARGET_ROOTFS_UBI_PEBSIZE=0x20000
-BR2_TARGET_ROOTFS_UBI_SUBSIZE=2048
-BR2_TARGET_ROOTFS_UBI_USE_CUSTOM_CONFIG=y
-BR2_TARGET_ROOTFS_UBI_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL)/scripts/ubifs/ubinize.cfg"
-BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000
-BR2_TARGET_ROOTFS_UBIFS_MINIOSIZE=0x800
-BR2_TARGET_ROOTFS_UBIFS_MAXLEBCNT=2048
+# No NAND rootfs until there is a NAND install; the P1 only RAM-boots so far.
+# Firmware's repack runs its generic NAND branch for any UBI build, and that
+# wants an output/images/uImage of at most 4 MiB -- the P1's kernel is the
+# ~6 MB OTRA container uImage.ar9311. The layout to bring back with the
+# install, as built before: standard OpenIPC UBI, a "rootfs" UBIFS volume
+# and an autoresizing "rootfs_data" overlay, which the ml-kernel air DTS
+# already boots ("ubi.mtd=18 root=ubi:rootfs rootfstype=ubifs", mtd18 =
+# userapp1); SPI-NAND XT26Q01D, 128 KiB PEB, 2 KiB page and sub-page:
+#   BR2_TARGET_ROOTFS_UBI=y _UBI_PEBSIZE=0x20000 _UBI_SUBSIZE=2048
+#   _UBI_USE_CUSTOM_CONFIG=y
+#   _UBI_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL)/scripts/ubifs/ubinize.cfg"
+#   BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000 _UBIFS_MINIOSIZE=0x800
+#   _UBIFS_MAXLEBCNT=2048
+# BR2_TARGET_ROOTFS_UBI is not set
 
 # Packages (the Ascent set, see header)
 BR2_PACKAGE_AR8030=y
