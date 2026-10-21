@@ -1,0 +1,49 @@
+#!/bin/sh
+#
+# Last-resort heat cutoff for the BetaFPV P1, run by /etc/init.d/S96heat-guard
+# (settings in /etc/default/heat-guard). At HEAT_GUARD_CRIT_C SoC it pauses
+# the video and takes the AR8030 down -- ar8030-transport-tx stopped, the chip
+# held in reset (GPIO23) -- and brings both back at HEAT_GUARD_RESUME_C. The
+# goggles lose the link in between.
+#
+# lifecycled's overheat pause (--overheat-c 105: video paused, camera chain
+# off, radio at 10 dBm) slows a P1 without airflow but does not stop it.
+# Bench, fan off: back to ~100 degC after the pause, then +1 degC every 30 s.
+# The AR8030 is the rest of the heat: held in reset too, the same board cooled
+# from 112 to 89 degC in 80 s, still without airflow. The stock Ascent
+# firmware reboots at 110 degC for the same reason.
+#
+# Separate from the radio stack on purpose: it acts through S65's stop and
+# start, and still acts if lifecycled is hung.
+
+[ -r /etc/default/heat-guard ] && . /etc/default/heat-guard
+
+CRIT=${HEAT_GUARD_CRIT_C:-110}
+RESUME=${HEAT_GUARD_RESUME_C:-90}
+INTERVAL=5
+RESET=/sys/class/gpio/gpio23
+
+at_least() {
+	awk -v a="$1" -v b="$2" 'BEGIN { exit !(a >= b) }'
+}
+
+cut=0
+while :; do
+	if t=$(p1-temp 2>/dev/null); then
+		if [ $cut = 0 ] && at_least "$t" "$CRIT"; then
+			logger -t heat-guard "SoC $t degC >= $CRIT: video paused, AR8030 off until $RESUME"
+			/usr/sbin/video-pause on
+			/etc/init.d/S65ar8030-transport-tx stop >/dev/null 2>&1
+			[ -d $RESET ] || echo 23 > /sys/class/gpio/export
+			echo low > $RESET/direction
+			cut=1
+		elif [ $cut = 1 ] && at_least "$RESUME" "$t"; then
+			logger -t heat-guard "SoC $t degC <= $RESUME: AR8030 and video back"
+			# S65 start pulses the reset itself, which releases it.
+			/etc/init.d/S65ar8030-transport-tx start >/dev/null 2>&1
+			/usr/sbin/video-pause off
+			cut=0
+		fi
+	fi
+	sleep $INTERVAL
+done
