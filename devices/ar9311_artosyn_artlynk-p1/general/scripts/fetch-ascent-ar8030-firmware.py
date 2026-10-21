@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
 This device's BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT (see
-package/ar8030/Config.in for the contract): copies the Caddx Ascent air
-baseband image, extracted into BINARIES_DIR by package/ascent-vendor-firmware
-(this device's BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY, so it has
-already run), into the directory AR8030_INSTALL_FIRMWARE reads from.
+package/ar8030/Config.in for the contract): copies into the directory
+AR8030_INSTALL_FIRMWARE reads from
+  - ar8030.img: the Caddx Ascent air baseband image, extracted into
+    BINARIES_DIR by package/ascent-vendor-firmware;
+  - ar8030.json: the P1's own config, p1_ascent_air.json, generated into
+    BINARIES_DIR/artlynk-p1/ by package/artlynk-p1-vendor-firmware -- under
+    the name every tool defaults to, so ar8030-pair persists the peer into
+    the config the chip loads.
+Both packages are this device's BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY,
+so they have already run.
 
 The P1 runs the Ascent firmware rather than its stock one so that it links
 with Ascent ground units (see devices/ar9311_artosyn_artlynk-p1/README.md).
@@ -28,6 +34,15 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, out / "ar8030.img")
     print(f"fetch-ascent-ar8030-firmware: copied {src}")
+
+    cfg = Path(sys.argv[1], "artlynk-p1", "p1_ascent_air.json")
+    if not cfg.is_file():
+        print(f"fetch-ascent-ar8030-firmware: WARNING: {cfg} not found (no stock P1 image?) -- "
+              f"installing the plain Ascent ar8030.json, without the P1's power section "
+              f"and PA calibration", file=sys.stderr)
+        return 0
+    shutil.copyfile(cfg, out / "ar8030.json")
+    print(f"fetch-ascent-ar8030-firmware: copied {cfg} as ar8030.json")
     return 0
 
 

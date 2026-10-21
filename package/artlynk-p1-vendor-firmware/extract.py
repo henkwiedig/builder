@@ -11,7 +11,8 @@ BINARIES_DIR/artlynk-p1/:
                         firmware (package/ascent-vendor-firmware)
   bb_config_air.json    the stock P1 AR8030 RF config (air unit as DEV)
   p1_ascent_air.json    the P1 as AP with the Ascent link settings, built from
-                        the ar8030 package's config (see make_ap_config())
+                        the ar8030 package's config (see make_ap_config());
+                        the ar8030 package installs it as ar8030.json
   wave521c_k3_codec_fw.bin
                         Wave521C codec firmware (stock /usr/bin/chagall.bin.gz),
                         requested by the wave5 V4L2 driver as cnm/...

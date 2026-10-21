@@ -7,10 +7,10 @@ config BR2_PACKAGE_ARTLYNK_P1_VENDOR_FIRMWARE
 	    /lib/firmware/cnm/wave521c_k3_codec_fw.bin   (wave5 codec)
 	    /lib/firmware/artosyn/nt99235-tuning-preview-fpv.bin (ISP)
 	    /lib/firmware/ar8030/bb_config_air.json      (P1 RF config)
-	    /lib/firmware/ar8030/p1_ascent_air.json      (P1 as AP, Ascent
-	                                                  link settings)
-	  The AR8030 baseband image is installed by the ar8030 package
-	  through the device's fetch script. The stock SPL/U-Boot/DDR
+	  The AR8030 baseband image and the generated p1_ascent_air.json
+	  (P1 as AP, Ascent link settings) are installed by the ar8030
+	  package, as ar8030.img and ar8030.json, through the device's
+	  fetch script. The stock SPL/U-Boot/DDR
 	  firmware are kept in output/images/artlynk-p1/ for USB boot.
 
 	  Nothing is committed. A local stock image is used first

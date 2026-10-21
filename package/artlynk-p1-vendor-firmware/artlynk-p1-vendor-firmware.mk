@@ -36,7 +36,6 @@ define ARTLYNK_P1_VENDOR_FIRMWARE_INSTALL_TARGET_CMDS
 	$(call ARTLYNK_P1_VENDOR_FIRMWARE_INSTALL_ONE,wave521c_k3_codec_fw.bin,cnm/wave521c_k3_codec_fw.bin)
 	$(call ARTLYNK_P1_VENDOR_FIRMWARE_INSTALL_ONE,nt99235-tuning-preview-fpv.bin,artosyn/nt99235-tuning-preview-fpv.bin)
 	$(call ARTLYNK_P1_VENDOR_FIRMWARE_INSTALL_ONE,bb_config_air.json,ar8030/bb_config_air.json)
-	$(call ARTLYNK_P1_VENDOR_FIRMWARE_INSTALL_ONE,p1_ascent_air.json,ar8030/p1_ascent_air.json)
 endef
 
 $(eval $(generic-package))

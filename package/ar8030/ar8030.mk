@@ -223,7 +223,10 @@ endef
 endif
 
 ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
-# ar8030.json (plain config) is committed and always installed. ar8030.img
+# ar8030.json (plain config) is committed and installed, unless the fetch
+# script left the board's own in vendor-firmware/ (the BetaFPV P1's, generated
+# from its stock image): the one name every tool defaults to, ar8030-pair's
+# persisted peer included. ar8030.img
 # is an unlicensed vendor binary blob -- not committed -- so it's only
 # installed when AR8030_FETCH_VENDOR_FIRMWARE (above) managed to fetch one
 # this build; ar8030-transport-tx's own S65 init script already omits
@@ -237,8 +240,12 @@ ifeq ($(BR2_PACKAGE_AR8030_FIRMWARE),y)
 # everything else under output/images/.
 define AR8030_INSTALL_FIRMWARE
 	$(INSTALL) -d -m 0755 $(TARGET_DIR)/lib/firmware/ar8030
-	$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.json \
-		$(TARGET_DIR)/lib/firmware/ar8030
+	if [ -f $(@D)/vendor-firmware/ar8030.json ]; then \
+		$(INSTALL) -m 0644 $(@D)/vendor-firmware/ar8030.json $(TARGET_DIR)/lib/firmware/ar8030; \
+	else \
+		$(INSTALL) -m 0644 $(AR8030_PKGDIR)/files/lib/firmware/ar8030/ar8030.json \
+			$(TARGET_DIR)/lib/firmware/ar8030; \
+	fi
 	if [ -f $(@D)/vendor-firmware/ar8030.img ]; then \
 		$(INSTALL) -m 0644 $(@D)/vendor-firmware/ar8030.img $(TARGET_DIR)/lib/firmware/ar8030; \
 		$(INSTALL) -D -m 0644 $(@D)/vendor-firmware/ar8030.img $(BINARIES_DIR)/ar8030.img; \
