@@ -34,11 +34,13 @@
 # (contrast the shared script's die()/reboot_system(), which both exist
 # because IT can strand the running filesystem mid-write).
 #
-# usrdata0/usrdata1 has three modes (usrdata_action below):
+# usrdata0/usrdata1 has four modes (usrdata_action below):
 #   flash (default)      write the usrdata the source provided (--asw='s
 #                         sub-image 4, or an explicit --usrdata=)
 #   keep  (--keep-usrdata)  leave the target bank's usrdataN exactly as it is
 #   wipe  (-n)              force-erase it to blank instead
+#   copy  (--copy-overlay)  recreate it blank and carry this bank's settings
+#                           over (copy_overlay below)
 # flash is the default, not keep, because a vendor ASW's usrdata sub-image is
 # NOT the blank filler this repo's own make-usrdata-image.sh produces -- it's
 # the vendor's real, pre-populated volume (product/factory config, whatever
@@ -65,11 +67,19 @@
 # CADDX_PCTool flasher exists is that CADDX's distribution format has no
 # signature check, only this same magic.
 #
-# CAVEAT -- not yet verified on hardware, same as pack-caddx-ascent.py.
+# Verified on hardware 2026-10-21: --asw=<http url> --copy-overlay -x, as
+# sbc-groundstations' ascent-ota runs it over the AR8030 link.
 
-scr_version=1.0.0
+scr_version=1.1.0
 LOCK_FILE=/tmp/sysupgrade.lock
 DEVICE_PLATFORM=hi3516cv6xx_artosyn_caddx-ascent-lite
+# What --copy-overlay carries from this bank's overlay (/overlay/root, the
+# overlayfs upper dir) to the target bank: settings and state -- the AR8030
+# pairing (lib/firmware/ar8030/ar8030.json), passwords, ssh keys,
+# /etc/default tuning. Program files dropped into /usr and the like stay
+# behind, since they would shadow the new image's own.
+OVERLAY_CARRY="etc root var lib/firmware"
+OVERLAY_BLANK=/usr/share/openipc/usrdata-blank.ubifs
 
 extracted_files=
 lock_owned=
@@ -232,6 +242,53 @@ verify_rootfs() {
 	echo_c 32 "Rootfs on bank $target_bank mounts and reads back cleanly"
 }
 
+# --copy-overlay: the target bank boots with this bank's settings instead of
+# a blank overlay -- a blank one has no AR8030 pairing, so a unit updated
+# over the radio link would never come back over it. usrdataN is recreated
+# the way general/overlay/init's mount_usrdata_overlay() provisions a virgin
+# partition (ubimkvol + the blank UBIFS the rootfs embeds), then the
+# OVERLAY_CARRY parts of the upper dir are copied in with tar, which keeps
+# owners, modes, symlinks and overlayfs whiteouts (char 0:0). Not kept:
+# overlayfs' opaque-dir xattrs.
+copy_overlay() {
+	echo_c 33 "\nOverlay"
+	flash_eraseall "$usrdata_dev" || die "Erasing $usrdata_dev failed; bank $target_bank NOT selected."
+	ubinum=$(next_free_ubi)
+	ubiattach -m "${usrdata_dev#/dev/mtd}" -d "$ubinum" /dev/ubi_ctrl ||
+		die "Cannot attach $usrdata_dev; bank $target_bank NOT selected."
+	if ! ubimkvol -N ubifs -m "/dev/ubi${ubinum}" >/dev/null ||
+		! ubiupdatevol "/dev/ubi${ubinum}_0" "$OVERLAY_BLANK"; then
+		ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+		die "Cannot create the overlay volume on $usrdata_dev; bank $target_bank NOT selected."
+	fi
+	mnt="/tmp/sysupgrade-overlay.$$"
+	mkdir -p "$mnt"
+	if ! mount -t ubifs "ubi${ubinum}:ubifs" "$mnt"; then
+		rmdir "$mnt" 2>/dev/null
+		ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+		die "Cannot mount the new overlay on $usrdata_dev; bank $target_bank NOT selected."
+	fi
+	carry=
+	for d in $OVERLAY_CARRY; do
+		[ -e "/overlay/root/$d" ] && carry="$carry $d"
+	done
+	mkdir -p "$mnt/root"
+	rc=0
+	if [ -n "$carry" ]; then
+		(set -o pipefail; tar -C /overlay/root -cf - $carry | tar -C "$mnt/root" -xf -) || rc=1
+	fi
+	sync
+	umount "$mnt"
+	rmdir "$mnt" 2>/dev/null
+	ubidetach -d "$ubinum" /dev/ubi_ctrl 2>/dev/null
+	[ "$rc" -eq 0 ] || die "Copying the overlay to $usrdata_dev failed; bank $target_bank NOT selected."
+	echo_c 32 "Carried over to bank $target_bank:$carry"
+	pattern=$(echo $OVERLAY_CARRY | sed 's/ /|/g')
+	left=$(cd /overlay/root && find . ! -type d | sed 's|^\./||' | grep -Ev "^($pattern)(/|$)")
+	[ -n "$left" ] && echo_c 33 "Left behind (the new image brings its own):" && echo "$left" | sed 's/^/  /'
+	return 0
+}
+
 # Which bank (0/1) is currently running, by asking which mtd backs the
 # already-attached ubi0 -- the same method general/overlay/init's
 # mount_usrdata_overlay() uses, and for the same reason: the fpvbsel=N
@@ -267,14 +324,27 @@ free_kb() {
 	echo "$kb"
 }
 
+# http:// goes through busybox wget, https:// through curl. This build's curl
+# does not run: libcurl-openipc links the toolchain sysroot's libz.so.1, and
+# with BR2_PACKAGE_ZLIB off nothing installs it on the target.
+download() {
+	case "$1" in
+		https://*) curl --connect-timeout 30 -m 1800 -# -L $curl_insecure -o "$2" "$1" ;;
+		*) wget -T 60 -O "$2" "$1" ;;
+	esac
+}
+
 # Best-effort: refuse to spend time/bandwidth downloading an ASW that plainly
 # will not fit in /tmp, using Content-Length from a HEAD request. Never
 # fatal on its own uncertainty -- a server with no Content-Length (chunked
-# encoding) or a blocked HEAD just skips this, and curl then fails on its
-# own once /tmp fills.
+# encoding) or a blocked HEAD just skips this, and the download then fails
+# on its own once /tmp fills.
 check_download_fits() {
-	len=$(curl --connect-timeout 30 -s -I -L $curl_insecure "$1" 2>/dev/null |
-		tr -d '\r' | awk 'tolower($0) ~ /^content-length:/ {v=$2} END{print v}')
+	case "$1" in
+		https://*) headers=$(curl --connect-timeout 30 -s -I -L $curl_insecure "$1" 2>/dev/null) ;;
+		*) headers=$(wget -T 30 -S --spider "$1" 2>&1) ;;
+	esac
+	len=$(echo "$headers" | tr -d '\r' | awk 'tolower($1) == "content-length:" {v=$2} END{print v}')
 	case "$len" in '' | *[!0-9]*) return 0 ;; esac
 	kb=$(free_kb /tmp) || return 0
 	margin_kb=1024
@@ -283,23 +353,23 @@ check_download_fits() {
 	fi
 }
 
-# Sets fetched=1 when $1 was a URL and got downloaded to a temp file we own
-# (safe to delete once we're done reading it); leaves it empty for a local
-# path, which belongs to the operator.
+# Sets resolved_asw to a local file: $1 itself, or (a URL) a download of it,
+# with asw_is_temp=1 since that copy is ours to delete once we're done
+# reading it. A local path belongs to the operator. Sets globals rather than
+# printing the path, so it must not run in $(...): there die would only end
+# the subshell.
 fetch_if_url() {
-	fetched=
 	case "$1" in
 		http://* | https://*)
 			check_download_fits "$1"
-			dst="/tmp/sysupgrade-fetch.$$"
+			resolved_asw="/tmp/sysupgrade-fetch.$$"
+			asw_is_temp=1
+			extracted_files="$extracted_files $resolved_asw"
 			echo_c 33 "Downloading $1"
-			curl --connect-timeout 30 -m 1800 -# -L $curl_insecure -o "$dst" "$1" || die "Cannot fetch $1"
-			extracted_files="$extracted_files $dst"
-			fetched=1
-			echo "$dst"
+			download "$1" "$resolved_asw" || die "Cannot fetch $1"
 			;;
 		*)
-			echo "$1"
+			resolved_asw=$1
 			;;
 	esac
 }
@@ -442,6 +512,10 @@ openipc-bsel to it. Nothing on the running bank is ever touched.
   -n, --wipe_overlay    Erase it to blank instead. Self-heals on next boot.
   --keep-usrdata         Leave it exactly as it is instead, even if a
                         usrdata source was given.
+  --copy-overlay         Recreate it blank and carry this bank's settings
+                        over ($OVERLAY_CARRY from
+                        /overlay/root): AR8030 pairing, passwords, ssh
+                        keys. Program files in the overlay stay behind.
 
   --set-password=PASS   Set root's password on the target bank's rootfs
                         (needs --asw=/--rootfs= to actually flash one).
@@ -457,6 +531,7 @@ target_bank=
 force_bank=
 wipe_overlay=
 keep_usrdata=
+copy_usrdata=
 no_reboot=
 force=
 asw_url=
@@ -483,6 +558,7 @@ for i in "$@"; do
 			;;
 		-n | --wipe_overlay) wipe_overlay=1 ;;
 		--keep-usrdata) keep_usrdata=1 ;;
+		--copy-overlay) copy_usrdata=1 ;;
 		-x | --no_reboot) no_reboot=1 ;;
 		-f | --force) force=1 ;;
 		--insecure) curl_insecure=-k ;;
@@ -495,8 +571,8 @@ done
 	exit 0
 }
 
-[ "1" = "$wipe_overlay" ] && [ "1" = "$keep_usrdata" ] &&
-	die "-n/--wipe_overlay and --keep-usrdata contradict each other; pick one."
+[ "$wipe_overlay$keep_usrdata$copy_usrdata" = 1 ] || [ -z "$wipe_overlay$keep_usrdata$copy_usrdata" ] ||
+	die "-n/--wipe_overlay, --keep-usrdata and --copy-overlay contradict each other; pick one."
 
 if [ -n "$explicit_password" ]; then
 	[ -n "$explicit_rootfs" ] || [ -n "$asw_url" ] ||
@@ -505,9 +581,14 @@ if [ -n "$explicit_password" ]; then
 	[ "${#explicit_password}" -lt 8 ] && echo_c 33 "Warning: that password is under 8 characters."
 fi
 
+# CI builds name the device here (the workflow exports BUILD_PLATFORM);
+# local builds get firmware's <soc>_<variant> fallback (general/scripts/
+# rootfs_script.sh), and this board is the only artosyn one. Builds from
+# before b9bbec6 (2026-10-21) carry the old fpv names. A plain cv6xx fpv
+# camera has no A/B partitions, so active_bank stops it before any write.
 plat=$(grep '^BUILD_PLATFORM=' /etc/os-release 2>/dev/null | cut -d= -f2)
 case "$plat" in
-	"$DEVICE_PLATFORM"*) ;;
+	"$DEVICE_PLATFORM"* | hi3516cv6xx_artosyn | hi3516cv6xx_fpv_caddx-ascent-lite* | hi3516cv6xx_fpv) ;;
 	*) [ "1" = "$force" ] || die "This sysupgrade is built for $DEVICE_PLATFORM, running platform is '$plat'. Pass -f to override." ;;
 esac
 
@@ -530,8 +611,7 @@ resolved_asw=
 asw_is_temp=
 have_asw=
 if [ -n "$asw_url" ]; then
-	resolved_asw=$(fetch_if_url "$asw_url")
-	asw_is_temp=$fetched
+	fetch_if_url "$asw_url"
 	asw_read_header "$resolved_asw"
 	have_asw=1
 fi
@@ -562,6 +642,12 @@ if [ "1" = "$wipe_overlay" ]; then
 elif [ "1" = "$keep_usrdata" ]; then
 	usrdata_action=keep
 	[ "1" = "$have_usrdata" ] && echo_c 33 "Note: --keep-usrdata leaves the target bank's usrdata as-is; the source's usrdata is not used."
+elif [ "1" = "$copy_usrdata" ]; then
+	usrdata_action=copy
+	[ -d /overlay/root ] || die "--copy-overlay: no overlay at /overlay/root to copy from."
+	[ -f "$OVERLAY_BLANK" ] || die "--copy-overlay: $OVERLAY_BLANK is missing."
+	[ -n "$explicit_password" ] && [ -e /overlay/root/etc/shadow ] &&
+		echo_c 33 "Note: the carried /etc/shadow overrides --set-password on bank $target_bank."
 elif [ "1" = "$have_usrdata" ]; then
 	usrdata_action=flash
 else
@@ -586,6 +672,15 @@ if [ "keep" != "$usrdata_action" ]; then
 	usrdata_dev=$(get_mtd_device "usrdata${target_bank}")
 	[ "$usrdata_dev" = "/dev/" ] && die "No usrdata${target_bank} MTD partition found"
 fi
+# otherbank leaves the target bank's partitions attached; erasing them under
+# a live UBI attach corrupts both.
+for dev in "$rootfs_dev" "$usrdata_dev"; do
+	[ -n "$dev" ] || continue
+	for f in /sys/class/ubi/ubi*/mtd_num; do
+		[ -f "$f" ] && [ "$(cat "$f")" = "${dev#/dev/mtd}" ] &&
+			die "$dev is attached as $(basename "$(dirname "$f")"); run 'otherbank umount' first."
+	done
+done
 
 # Sizes for the Plan below: an explicit file's real size, or (not yet
 # extracted) the size read out of the ASW header.
@@ -603,6 +698,7 @@ case "$usrdata_action" in
 	flash) echo "  usrdata${target_bank} <- ${usrdata_file:-ASW sub-image 4}  (${usrdata_size} bytes) -> $usrdata_dev" ;;
 	wipe) echo "  usrdata${target_bank} <- ERASED (self-heals to blank on next boot of bank $target_bank)" ;;
 	keep) echo "  usrdata${target_bank} left untouched" ;;
+	copy) echo "  usrdata${target_bank} <- blank + this bank's $OVERLAY_CARRY -> $usrdata_dev" ;;
 esac
 [ "1" = "$have_asw" ] && echo "  (ASW sub-images are streamed straight into flash, no temp copies)"
 [ -n "$explicit_password" ] && echo "  Root password will be set on bank $target_bank"
@@ -664,6 +760,10 @@ case "$usrdata_action" in
 		echo_c 33 "\nOverlay"
 		echo "Erasing $usrdata_dev (bank $target_bank self-heals it to blank on next boot)"
 		flash_eraseall "$usrdata_dev" || die "Erasing $usrdata_dev failed"
+		;;
+	copy)
+		progress usrdata
+		copy_overlay
 		;;
 esac
 
