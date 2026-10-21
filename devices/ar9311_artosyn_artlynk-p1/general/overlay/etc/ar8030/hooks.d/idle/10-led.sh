@@ -5,12 +5,9 @@
 # ".paired" marker lifecycled writes next to the active config:
 #   - never bound: solid red, waiting for the bind button;
 #   - bound before, no link right now: slow green blink, "searching".
-# The config name comes from /etc/default/ar8030-transport-tx, like
-# S65ar8030-transport-tx's own.
-AR8030_CFG_NAME=ar8030/ar8030.json
-[ -r /etc/default/ar8030-transport-tx ] && . /etc/default/ar8030-transport-tx
+CFG=/lib/firmware/ar8030/ar8030.json
 
-if [ -f "/lib/firmware/$AR8030_CFG_NAME.paired" ]; then
+if [ -f "$CFG.paired" ]; then
 	exec /usr/share/openipc/p1-led.sh blink 0.5
 fi
 exec /usr/share/openipc/p1-led.sh red

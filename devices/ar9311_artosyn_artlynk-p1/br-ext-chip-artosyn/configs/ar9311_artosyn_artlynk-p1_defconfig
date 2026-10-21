@@ -59,8 +59,9 @@ BR2_PACKAGE_ML_KERNEL_MODULES_PRUNE=y
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh"
 
 # Stock-image blobs: the P1 RF config (power/PA calibration, for the
-# generated p1_ascent_air.json), Wave521C codec firmware, NT99235 ISP tuning,
-# and the SPL/U-Boot/DDR firmware used to USB-boot a board.
+# generated p1_ascent_air.json, installed as ar8030/ar8030.json by the ar8030
+# package), Wave521C codec firmware, NT99235 ISP tuning, and the
+# SPL/U-Boot/DDR firmware used to USB-boot a board.
 BR2_PACKAGE_ARTLYNK_P1_VENDOR_FIRMWARE=y
 
 # Filesystem
@@ -95,7 +96,7 @@ BR2_PACKAGE_AR8030_FIRMWARE=y
 # Ascent ground units. The Ascent image runs on the P1 radio unchanged
 # (see devices/ar9311_artosyn_artlynk-p1/README.md).
 BR2_PACKAGE_AR8030_FIRMWARE_FETCH_SCRIPT="scripts/fetch-ascent-ar8030-firmware.py"
-BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY="ascent-vendor-firmware"
+BR2_PACKAGE_AR8030_FIRMWARE_FETCH_DEPENDENCY="ascent-vendor-firmware artlynk-p1-vendor-firmware"
 BR2_PACKAGE_ASCENT_VENDOR_FIRMWARE=y
 BR2_PACKAGE_AR8030_PAIR_TOOL=y
 # BR2_PACKAGE_AR8030_USB_LOADER is not set
