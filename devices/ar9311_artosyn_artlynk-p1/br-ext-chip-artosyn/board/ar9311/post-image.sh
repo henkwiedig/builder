@@ -11,9 +11,8 @@
 #   LZ4 frame with independent 4 MiB blocks and a content checksum -- the
 #        lz4 CLI's defaults with -B7; U-Boot rejects linked blocks
 #
-# firmware.bin: rootfs.ubi (for the "userapp" partition). The firmware
-# Makefile's repack step size-checks firmware.bin when a board produces
-# one; its generic UBI branch would size-check a 4 MiB uImage instead.
+# No firmware.bin: firmware's repack takes one for a NOR split image
+# (uImage + squashfs) now.
 
 set -e
 LOAD=0x200a0000
@@ -37,5 +36,3 @@ PY
 cat uImage.lz4 >> uImage.ar9311
 head -c $((padded - size)) /dev/zero >> uImage.ar9311
 rm -f Image.lz4 uImage.lz4
-
-cp rootfs.ubi firmware.bin

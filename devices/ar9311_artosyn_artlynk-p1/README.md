@@ -11,7 +11,7 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Kernel image | `uImage.ar9311`: OTRA + LZ4 legacy uImage, the only format the stock U-Boot/SPL boot (`board/ar9311/post-image.sh`) |
 | Modules | ml-kernel's out-of-tree Artosyn drivers (`package/ml-kernel-modules`) + `artosyn_drv` (ar8030-transport-tx); in-tree modules pruned to ml-kernel's own set |
 | Userland | the Ascent (`hi3516cv6xx_artosyn_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
-| Rootfs | `rootfs.ubi` (standard OpenIPC `rootfs` + `rootfs_data` UBI, also as `firmware.bin`), `rootfs.cpio.gz` for RAM boot |
+| Rootfs | `rootfs.cpio.gz` for RAM boot; no NAND (UBI) rootfs until there is a NAND install (see the defconfig) |
 | AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
 | Video | waybeam's `ar9311` backend (NT99235 camera through the MissingLynk V4L2 chain, H.265 on wave5, into `frame-shm://venc_frames` for `ar8030-transport-tx`), from waybeam_venc's `ar9311` branch, which `package/waybeam/waybeam.mk` pins separately from the cv610 backend |
 | Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
