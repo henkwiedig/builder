@@ -30,4 +30,10 @@ AR8030_CFG_NAME=ar8030/p1_ascent_air.json
 # proxima-9311-air.dts). Startup power 200 mW (lifecycled: 22 dBm) instead of
 # lifecycled's air default of 400 mW (26 dBm): the stock P1 configs top out
 # at 22-23 dBm for its PA. Only applies while no power is persisted.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200"
+# --soc-temp-cmd/--overheat-c 105: as on the Ascent, at >= 105 degC SoC
+# (/usr/bin/p1-temp, the protemp sensor) hooks.d/overheat stops the camera
+# stack -- the wave5 encoder and ISP -- and shows a still "VTX OVERHEAT"
+# frame (/usr/sbin/video-pause); hooks.d/resume brings the video back at
+# --overheat-resume-c (default 95). 105 is also where the stock P1 goggles
+# warn about the air temperature.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105"
