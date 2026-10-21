@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# Pauses the camera stack for heat and stands a still frame in for it
+# (ar8030-still: "VTX OVERHEAT" on the goggles), or undoes that.
+# ar8030-lifecycled runs it from hooks.d/overheat and hooks.d/resume
+# (--overheat-c, see /etc/default/ar8030-transport-tx); by hand:
+#
+#   video-pause on|off
+#
+# Order matters both ways. waybeam removes its frame-shm ring when it
+# exits and ar8030-still creates one under the same name, so the still
+# starts only once waybeam is gone. ar8030-transport-tx only looks for a
+# replaced ring after a 200 ms gap in frames, so the still stops before
+# waybeam starts. The lock keeps a resume during a slow stop in order --
+# lifecycled starts hooks without waiting for them. Nothing started from
+# here may inherit the lock's fd 9: ar8030-still and waybeam would hold
+# the lock for as long as they run (flock locks follow the open file), and
+# the next call would wait for it forever.
+
+STILL=/usr/bin/ar8030-still
+FRAME=/usr/share/ar8030/overheat.h265
+PIDFILE=/var/run/ar8030-still.pid
+
+exec 9>/var/run/video-pause.lock
+flock 9
+
+case "$1" in
+on)
+	/etc/init.d/S95waybeam stop >/dev/null 2>&1 9>&-
+	if pidof waybeam waybeam-resp waybeam-wd >/dev/null; then
+		logger -t video-pause "waybeam did not stop, no still frame"
+		exit 1
+	fi
+	start-stop-daemon -S -b -m -q -p "$PIDFILE" -x "$STILL" -- -f "$FRAME" 9>&-
+	logger -t video-pause "video paused, still frame on"
+	;;
+off)
+	start-stop-daemon -K -q -p "$PIDFILE" -x "$STILL"
+	i=0
+	while pidof ar8030-still >/dev/null && [ "$i" -lt 20 ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+	rm -f "$PIDFILE"
+	/etc/init.d/S95waybeam start >/dev/null 2>&1 9>&-
+	logger -t video-pause "video resumed"
+	;;
+*)
+	echo "Usage: $0 on|off" >&2
+	exit 1
+	;;
+esac
