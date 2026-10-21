@@ -36,4 +36,10 @@ AR8030_CFG_NAME=ar8030/p1_ascent_air.json
 # frame (/usr/sbin/video-pause); hooks.d/resume brings the video back at
 # --overheat-resume-c (default 95). 105 is also where the stock P1 goggles
 # warn about the air temperature.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105"
+# --standby-dbm 10: the stock Ascent's low-power mode against overheating on the
+# ground -- 10 dBm while the FC is disarmed, configured power again on arm,
+# and for the whole of an overheat pause, armed or not. msposd reports the
+# FC's arm state (MSP_STATUS) through /usr/bin/armed.sh -> POST
+# /api/v1/armed; lifecycled assumes armed until it does, so a P1 without an
+# FC stays at full power.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10"

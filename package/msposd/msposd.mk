@@ -51,10 +51,11 @@ else ifeq ($(OPENIPC_SOC_FAMILY),ar9311)
 	# No vendor region API on this SoC (open kernel, no MPP): msposd's
 	# headless target only forwards MSP to the ground, where the OSD is
 	# drawn. No OSDRV, no vendor libraries, no fonts. The target lives on
-	# the fork's `headless` branch (upstream main + the target), which does
-	# not carry the hi3516cv6xx support the shared pin above needs.
+	# the fork's `headless` branch (upstream main + the target + the FC
+	# arm-state hook, /usr/bin/armed.sh), which does not carry the
+	# hi3516cv6xx support the shared pin above needs.
 	MSPOSD_FAMILY = headless
-	MSPOSD_VERSION = db1f68ead14c299e205557227b9fa67d7d7e8ebb
+	MSPOSD_VERSION = 2a66b59f0d88b244b4619a2e7761f008374e2a42
 	MSPOSD_SITE = https://github.com/henkwiedig/msposd.git
 else ifeq ($(OPENIPC_SOC_FAMILY),infinity6b0)
 	MSPOSD_FAMILY = star6b0
