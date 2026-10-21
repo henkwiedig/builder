@@ -101,9 +101,8 @@ BR2_PACKAGE_AR8030_TOOLS=y
 BR2_PACKAGE_AR8030_TUNTAP=y
 BR2_PACKAGE_AR8030_TRANSPORT_TX=y
 # Video: waybeam's ar9311 backend (NT99235 V4L2 camera -> wave5 H.265 ->
-# frame-shm://venc_frames, which ar8030-transport-tx sends over the link).
-# Until the waybeam pin carries it, build with
-# WAYBEAM_OVERRIDE_SRCDIR=/path/to/waybeam_venc (branch ar9311).
+# frame-shm://venc_frames, which ar8030-transport-tx sends over the link),
+# pinned in package/waybeam/waybeam.mk.
 BR2_PACKAGE_WAYBEAM=y
 BR2_PACKAGE_WAYBEAM_BACKEND_AR9311=y
 BR2_PACKAGE_WAYBEAM_JSON_CLI=y
