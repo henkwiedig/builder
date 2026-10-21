@@ -106,11 +106,16 @@ mount_usrdata_overlay() {
 	# partition, so /sys/class/ubi/ubi1_0 is the one, if anything is there
 	# at all.
 	vol=$(cat /sys/class/ubi/ubi1_0/name 2>/dev/null)
-	[ -n "$vol" ] && mount -t ubifs "ubi1:$vol" /overlay 2>/dev/null && return 0
+	if [ -n "$vol" ] && mount -t ubifs "ubi1:$vol" /overlay 2>/dev/null; then
+		# firstboot (sysupgrade -n without an image) leaves this marker on
+		# the mounted volume: reset it below, now that nothing has it open.
+		[ -e /overlay/firstboot ] || return 0
+		umount /overlay
+	fi
 
 	# Mount failed: either nothing exists yet (virgin, never provisioned) or
-	# it exists but UBIFS couldn't recover it. Either way, (re)create it from
-	# the known-good blank image and retry once.
+	# it exists but UBIFS couldn't recover it. Either way -- or on firstboot's
+	# request -- (re)create it from the known-good blank image and retry once.
 	blank=/usr/share/openipc/usrdata-blank.ubifs
 	[ -f "$blank" ] || return 1
 	[ -e /sys/class/ubi/ubi1/ubi1_0 ] || ubimkvol -N ubifs -m /dev/ubi1 || return 1

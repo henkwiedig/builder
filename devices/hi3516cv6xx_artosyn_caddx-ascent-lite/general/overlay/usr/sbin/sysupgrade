@@ -41,6 +41,9 @@
 #   wipe  (-n)              force-erase it to blank instead
 #   copy  (--copy-overlay)  recreate it blank and carry this bank's settings
 #                           over (copy_overlay below)
+# -n with no image at all is firstboot's call (the shared
+# general/overlay/usr/sbin/firstboot runs `sysupgrade -n [-x]`): reset the
+# RUNNING bank's overlay instead, see reset_overlay below.
 # flash is the default, not keep, because a vendor ASW's usrdata sub-image is
 # NOT the blank filler this repo's own make-usrdata-image.sh produces -- it's
 # the vendor's real, pre-populated volume (product/factory config, whatever
@@ -489,12 +492,33 @@ flash_stream() {
 	echo "Verified ${len}B (md5 $want)"
 }
 
+# firstboot: the running bank's usrdata is mounted as /overlay, so it can't
+# be erased from here. Leave a marker on it instead; general/overlay/init
+# recreates the volume from the blank image on the next boot, before it
+# mounts it. Checks that this image's /init knows the marker, since a
+# sysupgrade copied onto an older image would otherwise do nothing.
+reset_overlay() {
+	grep -q "^ubi1:[^ ]* /overlay ubifs" /proc/mounts ||
+		die "/overlay is not this bank's usrdata volume; nothing to reset."
+	grep -q /overlay/firstboot /init ||
+		die "This image's /init cannot reset the overlay (older build)."
+	touch /overlay/firstboot && sync || die "Cannot mark /overlay for a reset."
+	echo_c 32 "The overlay is reset to the image defaults on the next boot."
+	echo_c 33 "That includes the AR8030 pairing: bind again afterwards."
+	[ "1" = "$no_reboot" ] && exit 0
+	echo_c 37 "\nRebooting"
+	busybox reboot -d 1 -f
+	exit 0
+}
+
 print_usage() {
 	echo "
 Usage: $0 [options]
 
 Flashes the bank NOT currently running (auto-detected), then switches
 openipc-bsel to it. Nothing on the running bank is ever touched.
+With -n and no image (firstboot): resets the RUNNING bank's overlay to
+the image defaults on the next boot, then reboots (-x: doesn't).
 
   --asw=FILE|URL        Vendor ASW container (CADDX's own OTA image, or this
                         repo's scripts/pack-caddx-ascent.py output). Supplies
@@ -566,10 +590,14 @@ for i in "$@"; do
 	esac
 done
 
-[ -n "$asw_url" ] || [ -n "$explicit_kernel" ] || [ -n "$explicit_rootfs" ] || {
-	print_usage
-	exit 0
-}
+firstboot=
+if [ -z "$asw_url$explicit_kernel$explicit_rootfs" ]; then
+	[ "1" = "$wipe_overlay" ] || {
+		print_usage
+		exit 0
+	}
+	firstboot=1
+fi
 
 [ "$wipe_overlay$keep_usrdata$copy_usrdata" = 1 ] || [ -z "$wipe_overlay$keep_usrdata$copy_usrdata" ] ||
 	die "-n/--wipe_overlay, --keep-usrdata and --copy-overlay contradict each other; pick one."
@@ -585,7 +613,8 @@ fi
 # local builds get firmware's <soc>_<variant> fallback (general/scripts/
 # rootfs_script.sh), and this board is the only artosyn one. Builds from
 # before b9bbec6 (2026-10-21) carry the old fpv names. A plain cv6xx fpv
-# camera has no A/B partitions, so active_bank stops it before any write.
+# camera has no A/B partitions (active_bank) and no usrdata overlay
+# (reset_overlay), so either stops it before any write.
 plat=$(grep '^BUILD_PLATFORM=' /etc/os-release 2>/dev/null | cut -d= -f2)
 case "$plat" in
 	"$DEVICE_PLATFORM"* | hi3516cv6xx_artosyn | hi3516cv6xx_fpv_caddx-ascent-lite* | hi3516cv6xx_fpv) ;;
@@ -594,6 +623,8 @@ esac
 
 create_lock
 trap cleanup EXIT
+
+[ "1" = "$firstboot" ] && reset_overlay
 
 bank_active=$(active_bank)
 if [ -n "$force_bank" ]; then
