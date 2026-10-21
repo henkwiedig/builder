@@ -26,11 +26,12 @@ AR8030_RESET_GPIO=23
 # lifecycled's air default of 400 mW (26 dBm): the stock P1 configs top out
 # at 22-23 dBm for its PA. Only applies while no power is persisted.
 # --soc-temp-cmd/--overheat-c 105: as on the Ascent, at >= 105 degC SoC
-# (/usr/bin/p1-temp, the protemp sensor) hooks.d/overheat stops the camera
-# stack -- the wave5 encoder and ISP -- and shows a still "VTX OVERHEAT"
-# frame (/usr/sbin/video-pause); hooks.d/resume brings the video back at
+# (/usr/bin/p1-temp, the protemp sensor) hooks.d/overheat stops waybeam,
+# unloads the camera chain and shows a still "VTX OVERHEAT" frame
+# (/usr/sbin/video-pause); hooks.d/resume brings the video back at
 # --overheat-resume-c (default 95). 105 is also where the stock P1 goggles
-# warn about the air temperature.
+# warn about the air temperature. Without airflow that only slows the P1
+# down; /usr/sbin/heat-guard takes the AR8030 down too at 110.
 # --standby-dbm 10: the stock Ascent's low-power mode against overheating on the
 # ground -- 10 dBm while the FC is disarmed, configured power again on arm,
 # and for the whole of an overheat pause, armed or not. msposd reports the

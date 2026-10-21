@@ -1,0 +1,12 @@
+# heat-guard runtime configuration, sourced by /etc/init.d/S96heat-guard and
+# /usr/sbin/heat-guard.
+
+# HEAT_GUARD_ENABLED=false
+
+# SoC degC (/usr/bin/p1-temp). Above lifecycled's overheat pause (105, see
+# /etc/default/ar8030-transport-tx), which the guard backs up: at CRIT the
+# AR8030 goes off as well and the link drops; at RESUME the radio stack and
+# the video come back. 110 is where the stock Ascent firmware reboots. Bench,
+# fan off: 112 -> 89 degC in 80 s with the AR8030 off.
+HEAT_GUARD_CRIT_C=110
+HEAT_GUARD_RESUME_C=90
