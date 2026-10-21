@@ -5,7 +5,14 @@
 
 # AR8030_TRANSPORT_TX_ENABLED=false
 
-AR8030_TRANSPORT_TX_ARGS=""
+# -C pi: bitrate controller = link capacity feedforward + PI on the
+# link-side queueing delay (ar8030-transport tx/bitrate_ctl.c), as on the
+# Ascent; waybeam's ar9311 backend takes live video0.bitrate.
+# -n 1000: lowest bitrate the controller asks for, = waybeam's floor on
+# AR9311 (VENC_BITRATE_MIN_KBPS; 300 is CV610 only).
+# Not the Ascent's -F/-D/-S: the ar9311 backend has no ROI (focus mode),
+# no video0.fpsDivisor and no timing sidecar.
+AR8030_TRANSPORT_TX_ARGS="-C pi -n 1000"
 
 # AR8030 reset: GPIO23 (bank1 line0), active low. Only drivable through the
 # artosyn_gpio driver (loaded from /etc/modules): its direction register is
@@ -42,4 +49,8 @@ AR8030_CFG_NAME=ar8030/p1_ascent_air.json
 # FC's arm state (MSP_STATUS) through /usr/bin/armed.sh -> POST
 # /api/v1/armed; lifecycled assumes armed until it does, so a P1 without an
 # FC stays at full power.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10"
+# --link-policy 2: stock's runtime MCS policy for video_strategy 2, as on the
+# Ascent -- same baseband firmware, same ground: uplink MCS table + range
+# 1-2 and rfo_kikp; the goggles push the matching downlink table. See
+# ar8030-transport common/ar8030_link_policy.h.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2"
