@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# SoC temperature in degC from the AR9311's protemp sensor (IIO device
+# "temperature", artosyn_protemp.ko), with the driver's own conversion:
+# (raw * 5320 - 1373400) / 10000, ~0.53 degC per step of the 9-bit code.
+# Its in_temp_scale is the same value cut to whole degrees, which msposd -t
+# shows.
+#
+#   p1-temp      e.g. 61.1
+#   p1-temp -r   the raw code instead, e.g. 373
+
+for d in /sys/bus/iio/devices/iio:device*; do
+	[ "$(cat "$d/name" 2>/dev/null)" = temperature ] || continue
+	raw=$(cat "$d/in_temp_raw") || exit 1
+	if [ "$1" = "-r" ]; then
+		echo "$raw"
+	else
+		awk -v r="$raw" 'BEGIN { printf "%.1f\n", (r * 5320 - 1373400) / 10000 }'
+	fi
+	exit 0
+done
+
+echo "p1-temp: no protemp IIO device (artosyn_protemp not loaded?)" >&2
+exit 1
