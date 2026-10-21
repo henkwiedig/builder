@@ -182,8 +182,7 @@ load_module() {
 	args=""
 	[ -f "/lib/firmware/$FW_NAME" ] && args="$args fw_name=$FW_NAME"
 	[ -f "/lib/firmware/$CFG_NAME" ] && args="$args cfg_name=$CFG_NAME"
-	# AR8030_MODULE_ARGS (/etc/default): extra artosyn_drv parameters, e.g.
-	# link_trailer=1 for baseband firmware that frames SDIO transfers.
+	# AR8030_MODULE_ARGS (/etc/default): extra artosyn_drv parameters.
 	modprobe "$MODULE" $args $AR8030_MODULE_ARGS || return 1
 }
 
