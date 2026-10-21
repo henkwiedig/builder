@@ -45,9 +45,9 @@ config BR2_PACKAGE_WAYBEAM_BACKEND_AR9311
 	depends on BR2_aarch64
 	help
 	  SOC_BUILD=ar9311: NT99235 camera through the MissingLynk
-	  V4L2 camera chain, H.265 on the wave5 encoder. Needs the
-	  waybeam_venc ar9311 branch (docs/AR9311_BACKEND.md) -- build
-	  with WAYBEAM_OVERRIDE_SRCDIR pointing at it until it is pinned.
+	  V4L2 camera chain, H.265 on the wave5 encoder. Built from the
+	  waybeam_venc ar9311 branch (docs/AR9311_BACKEND.md), which
+	  waybeam.mk pins separately from the cv610 backend.
 
 endchoice
 
