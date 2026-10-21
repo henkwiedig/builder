@@ -76,10 +76,8 @@ trap 'rm -f "$ACTION_LOCKFILE"' EXIT
 test -r /etc/default/ar8030-transport-tx && . /etc/default/ar8030-transport-tx
 
 MODULE="artosyn_drv"
-# Relative to /lib/firmware; a board's /etc/default can point these at its
-# own baseband image/RF config (AR8030_FW_NAME/AR8030_CFG_NAME).
-FW_NAME="${AR8030_FW_NAME:-ar8030/ar8030.img}"
-CFG_NAME="${AR8030_CFG_NAME:-ar8030/ar8030.json}"
+FW_NAME="ar8030/ar8030.img"
+CFG_NAME="ar8030/ar8030.json"
 # 1 = INTF_TYPE_SDIO (/dev/artosyn_sdio) -- the only interface this
 # module implements. INTF_TYPE_DRV (3, /dev/ar_mdev<N>) has no kernel-side
 # counterpart left to open at all (see package/ar8030/Config.in).

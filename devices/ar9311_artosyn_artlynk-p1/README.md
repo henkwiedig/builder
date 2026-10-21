@@ -75,8 +75,11 @@ the P1 ran the Ascent firmware; see git history), and has no project dispatch la
 the standard pair API).
 
 The Ascent air firmware runs on the P1 radio as is, so this target uses it,
-with `p1_ascent_air.json`: the Ascent air config (AP, full 42-entry channel
-table) plus the P1's power section and PA calibration. Things that matter:
+with its own config, generated as `p1_ascent_air.json` and installed as
+`/lib/firmware/ar8030/ar8030.json` (the name every tool defaults to, so
+`ar8030-pair` persists the peer into the config the chip loads): the Ascent
+air config (AP, full 42-entry channel table) plus the P1's power section and
+PA calibration. Things that matter:
 
 - broadcast `tx_mode` must stay `2TX_STBC`: the P1 has only RF port A
   fitted (FEM GSR5755, port B unpopulated) and under the Ascent firmware
