@@ -41,8 +41,25 @@ Working (hardware-tested, RAM boot):
 - AR8030 bring-up: reset via gpiolib, firmware upload, RTOS (`4152:8031`),
   `ar8030d` + `ar8030-lifecycled` with events, ioctls answered, `ar_net0`
 - **pairing and link with a Caddx Ascent ground unit** (`ar8030-pair` on
-  both, slot 0 `CONNECT`); video over the link not tested yet (no encoder
-  app, see below)
+  both, slot 0 `CONNECT`)
+- video: 1080p60 H.265 from the P1 camera over the link to an Ascent ground
+  unit (waybeam's `ar9311` backend: auto-exposure, cyclic intra refresh,
+  picture controls on `/api/v1/iq`; restarts within a boot stream clean
+  video since waybeam 0.86.1)
+- bind button and status LED; msposd OSD forwarding with the SoC temperature
+
+Taken over from the Ascent, not yet tested on the P1:
+
+- `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
+  waited for before `rmmod` (this used to leave lifecycled running), and
+  the module load waits for the old RTOS SDIO card to go after the gpiolib
+  reset
+- overheat pause: `p1-temp` (protemp sensor), lifecycled `--overheat-c 105`,
+  `video-pause` with ar8030-still's "VTX OVERHEAT" frame
+- 10 dBm standby while the FC is disarmed (msposd -> `armed.sh` ->
+  lifecycled `--standby-dbm 10`)
+- PI bitrate controller (`ar8030-transport-tx -C pi -n 1000`), stock link
+  policy (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
 
 ### Radio link
 
@@ -72,11 +89,5 @@ table) plus the P1's power section and PA calibration. Things that matter:
 
 Not working yet:
 
-- `S65ar8030-transport-tx stop` leaves `ar8030-lifecycled` running.
-- Video: waybeam encodes 1080p60 H.265 (bench-tested over RTP); not yet
-  tested end to end over the radio. No auto-exposure yet (fixed sensor
-  exposure/gain). Restarting waybeam without a reboot can leave the wave5
-  encoder emitting noise (firmware state survives the encoder instance;
-  waybeam_venc `docs/AR9311_BACKEND.md`).
 - NAND install not done (MissingLynk writes slot B: `kernel1`, `dtb1`,
   `userapp1` = mtd18).
