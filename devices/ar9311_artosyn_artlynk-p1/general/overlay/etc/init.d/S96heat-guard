@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# heat-guard: the P1's last-resort heat cutoff (AR8030 off at
+# HEAT_GUARD_CRIT_C), see /usr/sbin/heat-guard and /etc/default/heat-guard.
+
+test -r /etc/default/heat-guard && . /etc/default/heat-guard
+
+DAEMON=/usr/sbin/heat-guard
+PIDFILE=/var/run/heat-guard.pid
+
+if [ "x$HEAT_GUARD_ENABLED" = "xfalse" ]; then
+	echo "Starting heat-guard... skipped (disabled)"
+	exit 0
+fi
+
+start() {
+	echo "Starting heat-guard..."
+	start-stop-daemon -S -b -m -q -p "$PIDFILE" -x "$DAEMON"
+}
+
+stop() {
+	echo "Stopping heat-guard..."
+	start-stop-daemon -K -q -p "$PIDFILE"
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+	start)
+		start
+		;;
+
+	stop)
+		stop
+		;;
+
+	restart|reload)
+		stop
+		start
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

@@ -48,18 +48,39 @@ Working (hardware-tested, RAM boot):
   video since waybeam 0.86.1)
 - bind button and status LED; msposd OSD forwarding with the SoC temperature
 
-Taken over from the Ascent, not yet tested on the P1:
-
 - `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
-  waited for before `rmmod` (this used to leave lifecycled running), and
-  the module load waits for the old RTOS SDIO card to go after the gpiolib
-  reset
-- overheat pause: `p1-temp` (protemp sensor), lifecycled `--overheat-c 105`,
-  `video-pause` with ar8030-still's "VTX OVERHEAT" frame
-- 10 dBm standby while the FC is disarmed (msposd -> `armed.sh` ->
-  lifecycled `--standby-dbm 10`)
-- PI bitrate controller (`ar8030-transport-tx -C pi -n 1000`), stock link
-  policy (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
+  waited for before `rmmod`, the module load waits for the old RTOS SDIO
+  card to go after the gpiolib reset, and the link is back ~18 s later
+  with the persisted peer
+- PI bitrate controller (`ar8030-transport-tx -C pi -n 1000`: 1000 kbps ->
+  ~22 Mbit/s at MCS 12, link-side delay 8-14 ms), stock link policy
+  (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
+- heat protection, see "Heat" below
+
+Taken over from the Ascent, not yet tested on the P1 (no FC on the bench):
+10 dBm standby while the FC is disarmed (msposd -> `armed.sh` ->
+lifecycled `--standby-dbm 10`).
+
+### Heat
+
+Without airflow the P1 overheats fast: from 63 to over 100 degC SoC in
+about two minutes on the bench (MissingLynk's notes say the same). With a
+fan on, settled SoC temperatures by what is running: 53 degC streaming,
+47 with waybeam stopped, 40 with the camera chain unloaded too, 34 with
+the AR8030 held in reset as well -- waybeam, the camera chain (clocked as
+long as its modules are loaded) and the AR8030 are about a third each.
+wave5 idle costs nothing measurable.
+
+Two stages, both hardware-tested without airflow:
+
+- lifecycled `--overheat-c 105` (`p1-temp`): `video-pause` stops waybeam,
+  unloads the camera chain and puts ar8030-still's "VTX OVERHEAT" frame on
+  the link; the radio drops to 10 dBm. Back at 95. Without airflow that
+  takes the SoC from 106 to ~100 degC, after which it creeps up again
+  (+1 degC / 30 s).
+- `heat-guard` (S96, `/etc/default/heat-guard`) at 110: the AR8030 goes off
+  too (S65 stop, held in reset), the link drops; back at 90. Without
+  airflow: 112 -> 89 degC in 80 s.
 
 ### Radio link
 
