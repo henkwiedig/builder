@@ -7,7 +7,7 @@ baseband image, extracted into BINARIES_DIR by package/ascent-vendor-firmware
 already run), into the directory AR8030_INSTALL_FIRMWARE reads from.
 
 The P1 runs the Ascent firmware rather than its stock one so that it links
-with Ascent ground units (see devices/ar9311_fpv_artlynk-p1/README.md).
+with Ascent ground units (see devices/ar9311_artosyn_artlynk-p1/README.md).
 Never fails the build.
 """
 import shutil

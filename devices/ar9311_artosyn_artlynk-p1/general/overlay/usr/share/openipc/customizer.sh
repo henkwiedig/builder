@@ -6,7 +6,7 @@
 #
 # Set custom upgrade url
 #
-fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/ar9311_fpv_artlynk-p1-nand.tgz'
+fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/ar9311_artosyn_artlynk-p1-nand.tgz'
 
 #
 # No wlandev: the downlink is the AR8030 baseband on SDIO, driven by
