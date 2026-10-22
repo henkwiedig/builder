@@ -102,6 +102,10 @@ Working (hardware-tested, RAM boot):
   ~22 Mbit/s at MCS 12, link-side delay 8-14 ms), stock link policy
   (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
 - heat protection, see "Heat" below
+- `sysupgrade` both ways: OpenIPC into the other slot with the settings
+  carried over, and BetaFPV's `P1_SKY_v2.0.5_20260330_a22d901.img` back
+  with `--set-password` (stock 2.0.5 then answers ssh at 192.168.3.99, not
+  .100); from stock, a static `openipc-bsel set` switches back
 - **NAND install and boot from flash** (slot B): the stock SPL loads
   `kernel1`/`dtb1` itself, the kernel mounts `userapp1`'s rootfs read-only
   with the `rootfs_data` overlay and boots to the login prompt with RNDIS
@@ -165,8 +169,6 @@ PA calibration. Things that matter:
 
 Not working yet:
 
-- `sysupgrade` back to stock (BetaFPV's image, `--set-password`) is not
-  hardware-tested yet; OpenIPC -> OpenIPC is (slot B to A, settings carried)
 - a warm `reboot` resets the SoC, but the SPL then often hangs reading the
   kernel (`spi_load_image_os 114`, no `Uncompressing Firmware`) until a power
   cycle; not analysed yet
