@@ -11,6 +11,7 @@
     "fps": 100,
     "size": "1920x1080",
     "bitrate": 2600,
+    "maxFramePct": 150,
     "gopSize": 1.0,
     "sliceCount": 1,
     "resilience": "racing",
