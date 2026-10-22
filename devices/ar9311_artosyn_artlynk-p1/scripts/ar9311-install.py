@@ -125,8 +125,10 @@ class Board:
         m = re.search(rb"bank=([01])", r.stdout)
         return int(m.group(1)) if m else None
 
-    def md5(self, cmd):
-        out = self.text(f"set -o pipefail; {cmd} | md5sum")
+    def md5(self, cmd, pipefail=True):
+        """md5 of cmd's output. pipefail off where cmd ends in head -c, which
+        closes the pipe on a writer that may still be writing."""
+        out = self.text(f"{'set -o pipefail; ' if pipefail else ''}{cmd} | md5sum")
         return out.split()[0]
 
     def bad_blocks(self, num):
@@ -296,7 +298,8 @@ def cmd_install(a):
                 length = os.path.getsize(files[name])
                 print(f"writing {part} (mtd{num}) ...")
                 board.run(f"flash_erase -q /dev/mtd{num} 0 0 && nandwrite -p -q /dev/mtd{num} {STAGE}/{name}")
-                back = board.md5(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{num} | head -c {length}")
+                back = board.md5(f"nanddump --bb=skipbad --omitoob -q -l {length} /dev/mtd{num} | head -c {length}",
+                                 pipefail=False)
                 if back != md5_file(files[name]):
                     sys.exit(f"{part}: readback differs -- slot B is incomplete, do not activate it")
                 print(f"  {part}: {length} bytes, readback ok")

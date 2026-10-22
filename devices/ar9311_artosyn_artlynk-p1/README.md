@@ -141,8 +141,8 @@ PA calibration. Things that matter:
 
 Not working yet:
 
-- NAND install: `ar9311-install.py` backup, `--dry-run` and the slot switch
-  are hardware-tested; nothing has been written to slot B or booted from it
-  yet. Whether the stock SPL cold-boots our kernel from `kernel1` (it
+- NAND install: `ar9311-install.py` backup, install (slot B written and
+  verified in 13 s) and the slot switch are hardware-tested; nothing has
+  booted from slot B yet. Whether the stock SPL cold-boots our kernel from `kernel1` (it
   rewrites the dtb's `ubi.mtd=18` to the active slot's `userapp`) is
   unproven.
