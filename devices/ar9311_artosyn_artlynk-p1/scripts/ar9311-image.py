@@ -10,8 +10,8 @@ the layout of BetaFPV's stock ones (P1_SKY_*.img, Artosyn "ARTO"):
 The stock image gives the header, the loader (the SPL), the partition table
 and the vendor, env and uboot segments, its stored bytes unchanged: the SPL
 and the signed stock U-Boot go on as they are. The kernel, dtb and userapp
-segments are this build's, LZO1X-compressed like the stock ones, userapp in
-4 MiB segments. The header's customer version says "OpenIPC" (stock:
+segments are this build's, LZO1X-compressed like the stock ones, in segments
+of at most 4 MiB as there. The header's customer version says "OpenIPC" (stock:
 "haming"), which is how /usr/sbin/sysupgrade tells the two apart; the SHA-256
 is this image's own and the RSA signature stays empty, so the stock flasher
 (U-Boot's USB upgrade) rejects it -- sysupgrade and ar9311-install.py take it.
@@ -30,7 +30,9 @@ MAGIC = 0x4152544F
 BASE_HDR = 0x100
 PART_ENTRY = 0x34
 SEG_ENTRY = 0x20
-USERAPP_SEG = 0x400000
+# No stock segment unpacks to more than 4 MiB (userapp comes in 4 MiB pieces,
+# the kernel is 4.16 MB): U-Boot's USB upgrade may size its buffer for that.
+SEGMENT = 0x400000
 CUSTOMER = b"OpenIPC"
 
 
@@ -84,11 +86,10 @@ def cmd_pack(a):
     for file_off, flash_off, stored, size in b["segs"]:
         if part_of(b["parts"], flash_off) in ("vendor", "env0", "uboot0"):
             segs.append((flash_off, base[file_off:file_off + stored], size))
-    for part, blob, step in (("kernel0", kernel, len(kernel)), ("dtb0", dtb, len(dtb)),
-                             ("userapp0", userapp, USERAPP_SEG)):
+    for part, blob in (("kernel0", kernel), ("dtb0", dtb), ("userapp0", userapp)):
         off = b["parts"][part][0]
-        for i in range(0, len(blob), step):
-            chunk = blob[i:i + step]
+        for i in range(0, len(blob), SEGMENT):
+            chunk = blob[i:i + SEGMENT]
             stored = lzo.compress(chunk, 9, False)
             if lzo.decompress(stored, False, len(chunk)) != chunk:
                 sys.exit(f"{part}: LZO round trip failed")
