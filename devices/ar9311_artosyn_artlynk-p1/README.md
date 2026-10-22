@@ -82,6 +82,10 @@ Working (hardware-tested, RAM boot):
   ~22 Mbit/s at MCS 12, link-side delay 8-14 ms), stock link policy
   (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
 - heat protection, see "Heat" below
+- **NAND install and boot from flash** (slot B, `ar9311-install.py`): the
+  stock SPL loads `kernel1`/`dtb1` itself, the kernel mounts `userapp1`'s
+  rootfs read-only with the `rootfs_data` overlay and boots to the login
+  prompt with RNDIS up; root mounted 1.1 s after the kernel starts
 
 Taken over from the Ascent, not yet tested on the P1 (no FC on the bench):
 10 dBm standby while the FC is disarmed (msposd -> `armed.sh` ->
@@ -141,8 +145,7 @@ PA calibration. Things that matter:
 
 Not working yet:
 
-- NAND install: `ar9311-install.py` backup, install (slot B written and
-  verified in 13 s) and the slot switch are hardware-tested; nothing has
-  booted from slot B yet. Whether the stock SPL cold-boots our kernel from `kernel1` (it
-  rewrites the dtb's `ubi.mtd=18` to the active slot's `userapp`) is
-  unproven.
+- updates of an installed P1: the image's `sysupgrade` is firmware's
+  generic one and knows neither the slots nor the P1's partitions, and the
+  running system cannot rewrite `userapp1` under itself. Until there is a
+  P1 one, an update is a RAM boot and `ar9311-install.py install` again.
