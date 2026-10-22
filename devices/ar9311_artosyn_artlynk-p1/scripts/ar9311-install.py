@@ -10,6 +10,9 @@ through that system over SSH, none of it through the stock firmware.
   ar9311-install.py install openipc.ar9311-nand-artosyn.tgz --backup DIR [--activate] [--dry-run]
       the build's slot-B images to kernel1, dtb1 and userapp1, each verified
       (--dry-run: every check and the staging, nothing written)
+  ar9311-install.py sync-uboot
+      slot A's U-Boot (uboot0) to slot B (uboot1), byte for byte; install
+      does it too
   ar9311-install.py activate a|b
       the slot the stock SPL boots next (openipc-bsel, the GPT's bit 47)
   ar9311-install.py status
@@ -18,6 +21,11 @@ Slots: the SPL boots whichever of the env/uboot/kernel/dtb/userapp pairs the
 GPT marks active and points the kernel at that slot's userapp. Stock stays in
 slot A (the *0 partitions), which this script never writes; OpenIPC goes to
 slot B. "activate a" is the way back to stock, from any RAM boot.
+
+U-Boot: the SPL boots Linux itself (Falcon) and only hands over to U-Boot for
+USB upgrade and recovery. Slot B starts out with the previous stock release's
+U-Boot, while the SPL (spl0-3, shared) is the current one's; sync-uboot gives
+slot B a copy of slot A's, unchanged, so it stays the signed vendor image.
 
 Safety: install refuses unless DIR is a backup of this very unit (its factory
 partition -- RF calibration, unique per unit -- must match), unless the board
@@ -54,7 +62,7 @@ LAYOUT = [
     ("userapp0", 0x2d00000), ("userapp1", 0x2d00000), ("usr_data", 0x600000), ("usr_log", 0x600000),
 ]
 CHIP_SIZE = 0x8000000
-SLOT_B = ("kernel1", "dtb1", "userapp1")
+SLOT_B = ("uboot1", "kernel1", "dtb1", "userapp1")
 PKG_FILES = ("uImage.ar9311", "proxima-9311-air.dtb", "rootfs.ubi.ar9311")
 STAGE = "/tmp/ar9311-install"
 UBI_DEV = 7
@@ -92,9 +100,9 @@ class Board:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run(self, cmd, check=True, stdin=None, stdout=subprocess.PIPE):
+    def run(self, cmd, check=True, stdin=None, stdout=subprocess.PIPE, input=None):
         r = subprocess.run(["ssh", *self.opts, f"root@{self.host}", cmd],
-                           stdin=stdin, stdout=stdout, stderr=subprocess.PIPE)
+                           stdin=stdin, input=input, stdout=stdout, stderr=subprocess.PIPE)
         if check and r.returncode:
             sys.exit(f"board: `{cmd}` failed: {r.stderr.decode(errors='replace').strip()}")
         return r
@@ -199,6 +207,45 @@ def cmd_backup(a):
     with open(os.path.join(a.dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"backup complete: {a.dir} (active slot {SLOT_NAME.get(manifest['active_slot'], '?')})")
+
+# ---------------------------------------------------------------- U-Boot
+
+
+def otra_ok(blob):
+    """An OTRA container whose byte sum matches (U-Boot or kernel)."""
+    if blob[:4] != b"OTRA":
+        return False
+    n = struct.unpack_from("<I", blob, 0x10)[0]
+    return 0x40 + n <= len(blob) and sum(blob[0x40:0x40 + n]) & 0xFFFFFFFF == struct.unpack_from("<I", blob, 0x20)[0]
+
+
+def sync_uboot(board, parts):
+    """uboot1 := uboot0, if they differ; uboot0 must be a valid OTRA image."""
+    src, dst = parts["uboot0"][0], parts["uboot1"][0]
+    size = parts["uboot0"][1]
+    uboot0 = board.run(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{src}").stdout
+    uboot1 = board.run(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{dst}").stdout
+    if uboot0 == uboot1:
+        print("uboot1: already slot A's U-Boot")
+        return
+    if len(uboot0) != size or not otra_ok(uboot0):
+        sys.exit("uboot0 is not a complete OTRA image (bad block, or not a U-Boot): uboot1 not written")
+    if board.bad_blocks(dst):
+        sys.exit("uboot1 has a bad block: not written (the SPL may not skip it)")
+    assert "uboot1" in SLOT_B
+    board.run(f"cat > {STAGE}-uboot", input=uboot0)
+    if board.md5(f"cat {STAGE}-uboot") != hashlib.md5(uboot0).hexdigest():
+        sys.exit("uboot0: staged copy differs")
+    print(f"writing uboot1 (mtd{dst}) ...")
+    board.run(f"flash_erase -q /dev/mtd{dst} 0 0 && nandwrite -p -q /dev/mtd{dst} {STAGE}-uboot; rm -f {STAGE}-uboot")
+    if board.md5(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{dst}") != hashlib.md5(uboot0).hexdigest():
+        sys.exit("uboot1: readback differs -- write it again before using slot B's U-Boot")
+    print("  uboot1: slot A's U-Boot, readback ok")
+
+
+def cmd_sync_uboot(a):
+    with Board(a.host) as board:
+        sync_uboot(board, board.mtd())
 
 # ---------------------------------------------------------------- install
 
@@ -321,6 +368,7 @@ def cmd_install(a):
                          "slot B is incomplete, do not activate it")
             print(f"  userapp1: volumes rootfs + rootfs_data, rootfs readback ok")
             board.run(f"rm -rf {STAGE}")
+            sync_uboot(board, parts)
 
             if a.activate:
                 activate(board, parts, 1)
@@ -417,6 +465,8 @@ def main():
     p.add_argument("--activate", action="store_true", help="make slot B active once written")
     p.add_argument("--dry-run", action="store_true", help="all checks and the staging, no writes")
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser("sync-uboot", help="slot A's U-Boot to slot B")
+    p.set_defaults(fn=cmd_sync_uboot)
     p = sub.add_parser("activate", help="the slot the SPL boots next")
     p.add_argument("slot", choices=("a", "b"))
     p.add_argument("--force", action="store_true", help="activate slot B whatever it holds")
