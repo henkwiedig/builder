@@ -7,6 +7,9 @@ needed. Nothing is written to the board's NAND.
       patched stock SPL + U-Boot, then the ar9311_artosyn_artlynk-p1 build's
       kernel/initramfs/dtb; U-Boot autoboots them (no UART needed), --serial
       shows the boot log
+  ar9311-usbboot.py linux --nand-root ...
+      kernel/dtb only, root on the rootfs flashed to userapp1 (slot B): proves
+      a slot-B install boots before it is made the active slot
   ar9311-usbboot.py uboot  [--images DIR]      stop at the stock U-Boot
   ar9311-usbboot.py spl    <loader.bin>        just run an IMGI loader
 
@@ -300,6 +303,10 @@ class UBoot:
 # ---------------------------------------------------------------- commands
 
 KADDR, RDADDR, DTADDR = 0x21800000, 0x23000000, 0x24800000
+RAM_BOOTARGS = "earlycon keep_bootcon console=ttyS0,1152000 root=/dev/ram0 rdinit=/init"
+# As post-image.sh writes them into the dtb for the flash boot. Here ubi.mtd=18
+# stays userapp1: only the SPL's flash boot rewrites it to the active slot.
+NAND_BOOTARGS = "earlycon console=ttyS0,1152000 ubi.mtd=18 root=ubi0:rootfs rootfstype=ubifs ro"
 
 # ---------------------------------------------------------------- U-Boot autoboot patch
 
@@ -381,16 +388,24 @@ def cmd_uboot(a):
 
 def cmd_linux(a):
     kernel = read(os.path.join(a.images, "uImage.ar9311"))
-    initrd = read(os.path.join(a.images, "rootfs.cpio.gz"))
     dtb = read(os.path.join(a.images, a.dtb))
     if kernel[:4] != b"OTRA":
         sys.exit("uImage.ar9311: not the OTRA kernel container")
-    assert KADDR + len(kernel) < RDADDR and RDADDR + len(initrd) < DTADDR
+    extra = [(KADDR, kernel, "kernel"), (DTADDR, dtb, "dtb")]
+    if a.nand_root:
+        assert KADDR + len(kernel) < DTADDR
+        rd = "-"
+        bootargs = a.bootargs or NAND_BOOTARGS
+    else:
+        initrd = read(os.path.join(a.images, "rootfs.cpio.gz"))
+        assert KADDR + len(kernel) < RDADDR and RDADDR + len(initrd) < DTADDR
+        extra.insert(1, (RDADDR, initrd, "initrd"))
+        rd = f"{RDADDR:#x}:{len(initrd):#x}"
+        bootargs = a.bootargs or RAM_BOOTARGS
 
     bootcmd = ("setenv initrd_high 0xffffffffffffffff; setenv fdt_high 0xffffffffffffffff; "
-               f"bootm {KADDR:#x} {RDADDR:#x}:{len(initrd):#x} {DTADDR:#x}")
-    boot_uboot(a, extra=[(KADDR, kernel, "kernel"), (RDADDR, initrd, "initrd"), (DTADDR, dtb, "dtb")],
-               env={"bootcmd": bootcmd, "bootargs": a.bootargs, "bootdelay": "0"})
+               f"bootm {KADDR:#x} {rd} {DTADDR:#x}")
+    boot_uboot(a, extra=extra, env={"bootcmd": bootcmd, "bootargs": bootargs, "bootdelay": "0"})
     if not a.serial:
         print("started - U-Boot autoboots the kernel (--serial TTY to watch)")
         return
@@ -433,8 +448,10 @@ def main():
         p.set_defaults(fn=fn)
         if name == "linux":
             p.add_argument("--dtb", default="proxima-9311-air.dtb")
+            p.add_argument("--nand-root", action="store_true",
+                           help="no initramfs: mount the rootfs flashed to userapp1 (slot B), whatever slot is active")
             p.add_argument("--bootargs",
-                           default="earlycon keep_bootcon console=ttyS0,1152000 root=/dev/ram0 rdinit=/init")
+                           help="kernel command line (default: initramfs, or with --nand-root the flash boot's)")
             p.add_argument("--follow", type=float, default=90, help="seconds of boot log to show")
             p.add_argument("--root-password", help="claim the booted system with this root password")
 
