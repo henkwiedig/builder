@@ -21,9 +21,14 @@ ARTLYNK_P1_VENDOR_FIRMWARE_OUT = $(BINARIES_DIR)/artlynk-p1
 # downloads it into cache/vendor-images/. Bumping the vendor release means
 # editing this one line.
 ARTLYNK_P1_VENDOR_FIRMWARE_VENDOR_FILE_ID = 1JZ17WKLQK0cysCFlLsHTg7nyBegQhUWG
+# That image's release name, which nothing inside the image carries: the
+# OpenIPC image built in its layout is named after it (board/ar9311/
+# post-image.sh). A local image named P1_SKY_v* names itself instead.
+ARTLYNK_P1_VENDOR_FIRMWARE_VENDOR_RELEASE = P1_SKY_v2.0.5_20260330_a22d901
 
 define ARTLYNK_P1_VENDOR_FIRMWARE_BUILD_CMDS
-	python3 $(ARTLYNK_P1_VENDOR_FIRMWARE_PKGDIR)/extract.py $(BINARIES_DIR) $(HOST_DIR) $(ARTLYNK_P1_VENDOR_FIRMWARE_VENDOR_FILE_ID)
+	python3 $(ARTLYNK_P1_VENDOR_FIRMWARE_PKGDIR)/extract.py $(BINARIES_DIR) $(HOST_DIR) \
+		$(ARTLYNK_P1_VENDOR_FIRMWARE_VENDOR_FILE_ID) $(ARTLYNK_P1_VENDOR_FIRMWARE_VENDOR_RELEASE)
 endef
 
 define ARTLYNK_P1_VENDOR_FIRMWARE_INSTALL_ONE

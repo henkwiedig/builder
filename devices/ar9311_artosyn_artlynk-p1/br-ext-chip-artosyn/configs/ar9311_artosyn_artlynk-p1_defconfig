@@ -132,6 +132,9 @@ BR2_PACKAGE_YAML_CLI=y
 # A/B slot switch: the active bit of each slot pair in gpt0's GPT, which the
 # stock SPL boots from. See package/openipc-bsel/Config.in.
 BR2_PACKAGE_OPENIPC_BSEL=y
+# /usr/sbin/arto reads the update images /usr/sbin/sysupgrade flashes
+# (BetaFPV's stock P1_SKY_*.img and the OpenIPC ones in that layout).
+BR2_PACKAGE_ARTO_IMAGE=y
 BR2_PACKAGE_MTD=y
 BR2_PACKAGE_MTD_NANDWRITE=y
 BR2_PACKAGE_MTD_FLASH_ERASE=y

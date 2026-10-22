@@ -12,7 +12,7 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Modules | ml-kernel's out-of-tree Artosyn drivers (`package/ml-kernel-modules`) + `artosyn_drv` (ar8030-transport-tx); in-tree modules pruned to ml-kernel's own set |
 | Userland | the Ascent (`hi3516cv6xx_artosyn_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
 | Rootfs | `rootfs.cpio.gz` for RAM boot; `rootfs.ubi` for the NAND install: a UBIFS `rootfs` volume and an empty `rootfs_data` overlay (`board/ar9311/ubinize.cfg`) |
-| NAND install | `openipc.ar9311-nand-artosyn.tgz`: `uImage.ar9311`, `proxima-9311-air.dtb` (flash boot command line) and `rootfs.ubi.ar9311` with their md5sums, for slot B (`kernel1`, `dtb1`, `userapp1`); stock stays in slot A. Sizes are checked against the partitions |
+| Update image | `P1_SKY_<release>_OpenIPC_<builder sha>.img`: BetaFPV's update format with the stock SPL, vendor partition and U-Boot, and `uImage.ar9311`, `proxima-9311-air.dtb` (flash boot command line) and `rootfs.ubi`; for `sysupgrade` / `ar9311-install.py` (see below). Sizes are checked against the partitions |
 | AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
 | Video | waybeam's `ar9311` backend (NT99235 camera through the MissingLynk V4L2 chain, H.265 on wave5, into `frame-shm://venc_frames` for `ar8030-transport-tx`), from waybeam_venc's `ar9311` branch, which `package/waybeam/waybeam.mk` pins separately from the cv610 backend |
 | Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
@@ -36,28 +36,48 @@ nothing else holding the port) shows the boot log and, with
 `--root-password`, claims the fresh system. How and why: see the script's
 docstring. Networking: RNDIS gadget, board at 192.168.3.104.
 
-## NAND install (slot B)
+## NAND install and updates
 
 ```sh
 S=devices/ar9311_artosyn_artlynk-p1/scripts
 $S/ar9311-usbboot.py linux                  # mask ROM -> RAM boot, the NAND untouched
 ssh root@192.168.3.104                       # once per RAM boot: set the root password
 $S/ar9311-install.py backup ~/p1-backup      # every partition + the whole chip, md5-checked
-$S/ar9311-install.py install openipc/output/images/openipc.ar9311-nand-artosyn.tgz --backup ~/p1-backup
-$S/ar9311-install.py activate b              # then power-cycle without the CLK short
-$S/ar9311-install.py activate a              # back to stock, from any RAM boot
+$S/ar9311-install.py install openipc/output/images/P1_SKY_<release>_OpenIPC_<sha>.img --backup ~/p1-backup
+# then power-cycle (without the CLK short)
 ```
 
-The flash has two slots; the stock SPL boots the one the GPT marks active
-(attribute bit 47 in `gpt0`, `openipc-bsel`) and points the kernel at that
-slot's `userapp`. Stock stays in slot A, which nothing here writes; the
-install goes to slot B (`kernel1`, `dtb1`, `userapp1`). `install` runs only
-from a RAM boot, only with a backup of the same unit (its `factory`
-partition, the unit's RF calibration, must match) and verifies every write;
-`--dry-run` stops before the first one. `ar9311-usbboot.py linux --nand-root`
-boots the RAM kernel against the installed rootfs while slot A stays active.
-Nothing goes through the stock firmware, whose SSH password differs between
-releases.
+The build's update image, `P1_SKY_<release>_OpenIPC_<builder sha>.img`, is
+BetaFPV's own update format (Artosyn "ARTO", `scripts/ar9311-image.py`):
+built on the stock image `package/artlynk-p1-vendor-firmware` uses, with its
+SPL, vendor partition and signed U-Boot, and this build's kernel, dtb and
+rootfs. Its SHA-256 is its own and its RSA signature empty, so the stock
+flasher refuses it; `sysupgrade` on the board takes it and BetaFPV's
+`P1_SKY_*.img` alike:
+
+```sh
+sysupgrade --image=/tmp/P1_SKY_..._OpenIPC_<sha>.img      # OpenIPC, settings carried over
+sysupgrade --image=/tmp/P1_SKY_v2.0.5_20260330_a22d901.img --set-password=PASS   # back to stock
+```
+
+The flash has two slots, the env/uboot/kernel/dtb/userapp pairs; the stock
+SPL boots the one the GPT marks active (attribute bit 47 in `gpt0`,
+`openipc-bsel`). `sysupgrade` writes the slot not running and then switches
+to it, so the previous firmware stays one `openipc-bsel switch` away. It
+refuses an image whose SPL or vendor partition differs from the unit's (both
+slots share them: the stock flasher's job), and leaves `factory`, `usr_data`
+and `usr_log` alone, so stock comes back with its own settings and pairing.
+An OpenIPC image gets the running system's U-Boot variables and its overlay's
+passwords, ssh keys, AR8030 pairing and `/etc/default` (`-n`: none of it).
+`--set-password` sets root's password on what is flashed; for stock, whose
+`/etc/passwd` is on a read-only squashfs, through stock's own
+`/usrdata/run_dbg.sh` hook (see the script).
+
+`ar9311-install.py install` checks the backup is this unit's (its `factory`
+partition, the unit's RF calibration), uploads the image and runs the board's
+`sysupgrade`; it works from a RAM boot and from an installed system.
+`ar9311-usbboot.py linux --nand-root` boots the RAM kernel against slot B's
+rootfs.
 
 ## Status
 
@@ -82,10 +102,10 @@ Working (hardware-tested, RAM boot):
   ~22 Mbit/s at MCS 12, link-side delay 8-14 ms), stock link policy
   (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
 - heat protection, see "Heat" below
-- **NAND install and boot from flash** (slot B, `ar9311-install.py`): the
-  stock SPL loads `kernel1`/`dtb1` itself, the kernel mounts `userapp1`'s
-  rootfs read-only with the `rootfs_data` overlay and boots to the login
-  prompt with RNDIS up; root mounted 1.1 s after the kernel starts
+- **NAND install and boot from flash** (slot B): the stock SPL loads
+  `kernel1`/`dtb1` itself, the kernel mounts `userapp1`'s rootfs read-only
+  with the `rootfs_data` overlay and boots to the login prompt with RNDIS
+  up; root mounted 1.1 s after the kernel starts
 
 Taken over from the Ascent, not yet tested on the P1 (no FC on the bench):
 10 dBm standby while the FC is disarmed (msposd -> `armed.sh` ->
@@ -145,7 +165,8 @@ PA calibration. Things that matter:
 
 Not working yet:
 
-- updates of an installed P1: the image's `sysupgrade` is firmware's
-  generic one and knows neither the slots nor the P1's partitions, and the
-  running system cannot rewrite `userapp1` under itself. Until there is a
-  P1 one, an update is a RAM boot and `ar9311-install.py install` again.
+- `sysupgrade` back to stock (BetaFPV's image, `--set-password`) is not
+  hardware-tested yet; OpenIPC -> OpenIPC is (slot B to A, settings carried)
+- a warm `reboot` resets the SoC, but the SPL then often hangs reading the
+  kernel (`spi_load_image_os 114`, no `Uncompressing Firmware`) until a power
+  cycle; not analysed yet
