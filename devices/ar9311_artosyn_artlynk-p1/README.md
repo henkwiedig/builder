@@ -11,7 +11,8 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Kernel image | `uImage.ar9311`: OTRA + LZ4 legacy uImage, the only format the stock U-Boot/SPL boot (`board/ar9311/post-image.sh`) |
 | Modules | ml-kernel's out-of-tree Artosyn drivers (`package/ml-kernel-modules`) + `artosyn_drv` (ar8030-transport-tx); in-tree modules pruned to ml-kernel's own set |
 | Userland | the Ascent (`hi3516cv6xx_artosyn_caddx-ascent-lite`) set minus everything HiSilicon-only; musl, built by Buildroot for Cortex-A53 |
-| Rootfs | `rootfs.cpio.gz` for RAM boot; no NAND (UBI) rootfs until there is a NAND install (see the defconfig) |
+| Rootfs | `rootfs.cpio.gz` for RAM boot; `rootfs.ubi` for the NAND install: a UBIFS `rootfs` volume and an empty `rootfs_data` overlay (`board/ar9311/ubinize.cfg`) |
+| NAND install | `openipc.ar9311-nand-artosyn.tgz`: `uImage.ar9311`, `proxima-9311-air.dtb` (flash boot command line) and `rootfs.ubi.ar9311` with their md5sums, for slot B (`kernel1`, `dtb1`, `userapp1`); stock stays in slot A. Sizes are checked against the partitions |
 | AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
 | Video | waybeam's `ar9311` backend (NT99235 camera through the MissingLynk V4L2 chain, H.265 on wave5, into `frame-shm://venc_frames` for `ar8030-transport-tx`), from waybeam_venc's `ar9311` branch, which `package/waybeam/waybeam.mk` pins separately from the cv610 backend |
 | Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
@@ -115,5 +116,10 @@ PA calibration. Things that matter:
 
 Not working yet:
 
-- NAND install not done (MissingLynk writes slot B: `kernel1`, `dtb1`,
-  `userapp1` = mtd18).
+- NAND install: the build makes the slot-B images, but nothing writes them
+  yet. The plan, as MissingLynk does it: write `kernel1`, `dtb1` and
+  `userapp1` (mtd18) from the running stock firmware, prove the slot with
+  `ar9311-usbboot.py linux --nand-root` while stock slot A stays active, then
+  flip the active slot (GPT attribute bit 47 in `gpt0`). The stock SPL boots
+  the active slot itself and rewrites the dtb's `ubi.mtd=18` to that slot's
+  `userapp`; a cold boot of our kernel from `kernel1` is still unproven.
