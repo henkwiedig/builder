@@ -17,8 +17,10 @@
 # their checksums as openipc.ar9311-nand-artosyn.tgz. The stock SPL boots the
 # active slot itself (Falcon): it loads kernelN and dtbN and takes the kernel
 # command line from the dtb, rewriting ubi.mtd= to the slot's userapp (17 for
-# userapp0, 18 for userapp1) in place, so the number must stay numeric. RAM
-# boot is unaffected: U-Boot's bootargs replace the dtb's.
+# userapp0, 18 for userapp1) in place, so the number must stay numeric.
+# init=/init runs OpenIPC's /init, which puts the rootfs_data overlay over the
+# read-only rootfs before /sbin/init. RAM boot is unaffected: U-Boot's bootargs
+# replace the dtb's.
 #
 # No firmware.bin: firmware's repack takes one for a NOR split image
 # (uImage + squashfs) now. BR2_TARGET_ROOTFS_UBI stays off for the same
@@ -28,7 +30,7 @@
 set -e
 LOAD=0x200a0000
 BOARD_DIR=$(dirname "$0")
-BOOTARGS="earlycon console=ttyS0,1152000 ubi.mtd=18 root=ubi0:rootfs rootfstype=ubifs ro"
+BOOTARGS="earlycon console=ttyS0,1152000 ubi.mtd=18 root=ubi0:rootfs rootfstype=ubifs ro init=/init"
 SOC=ar9311
 DTB=proxima-9311-air.dtb
 
