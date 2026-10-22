@@ -1,38 +1,31 @@
 #!/usr/bin/env python3
 """
 Back up, install and switch the NAND slots of a BetaFPV P1 / Artosyn PROXIMA
-9311 that runs this build from RAM (ar9311-usbboot.py linux). Everything goes
-through that system over SSH, none of it through the stock firmware.
+9311 over SSH: to this build RAM-booted (ar9311-usbboot.py linux) for a first
+install or a rescue, or to an installed OpenIPC. None of it goes through the
+stock firmware.
 
   ar9311-install.py backup DIR
       every partition (data, bad blocks skipped) and the whole chip (with OOB)
       into DIR, md5 checked on both ends, plus MD5SUMS and manifest.json
-  ar9311-install.py install openipc.ar9311-nand-artosyn.tgz --backup DIR [--activate] [--dry-run]
-      the build's slot-B images to kernel1, dtb1 and userapp1, each verified
-      (--dry-run: every check and the staging, nothing written)
-  ar9311-install.py sync-uboot
-      slot A's U-Boot (uboot0) to slot B (uboot1), byte for byte; install
-      does it too
+  ar9311-install.py install IMAGE --backup DIR [--set-password=PASS] [-n]
+      an update image -- BetaFPV's stock P1_SKY_*.img or this build's
+      P1_SKY_*_OpenIPC_*.img -- into the slot not running, by the board's own
+      /usr/sbin/sysupgrade, which also makes that slot the active one
   ar9311-install.py activate a|b
       the slot the stock SPL boots next (openipc-bsel, the GPT's bit 47)
   ar9311-install.py status
 
 Slots: the SPL boots whichever of the env/uboot/kernel/dtb/userapp pairs the
-GPT marks active and points the kernel at that slot's userapp. Stock stays in
-slot A (the *0 partitions), which this script never writes; OpenIPC goes to
-slot B. "activate a" is the way back to stock, from any RAM boot.
-
-U-Boot: the SPL boots Linux itself (Falcon) and only hands over to U-Boot for
-USB upgrade and recovery. Slot B starts out with the previous stock release's
-U-Boot, while the SPL (spl0-3, shared) is the current one's; sync-uboot gives
-slot B a copy of slot A's, unchanged, so it stays the signed vendor image.
+GPT marks active and points the kernel at that slot's userapp. An update goes
+into the other slot, so the previous firmware stays one "activate" away; stock
+comes back from BetaFPV's own image the same way.
 
 Safety: install refuses unless DIR is a backup of this very unit (its factory
-partition -- RF calibration, unique per unit -- must match), unless the board
-runs from RAM, and if kernel1 or dtb1 has a bad block (whether the SPL skips
-one the way nandwrite does is unknown). Images are staged in the board's /tmp
-and checked before anything is erased; raw partitions are read back, the
-rootfs through UBI. Nothing is activated without --activate or "activate b".
+partition -- RF calibration, unique per unit -- must match), and checks the
+image's SHA-256 here before the upload; sysupgrade checks it again, refuses
+an image that would change the SPL or the vendor partition (both slots share
+them), and reads every raw partition back.
 
 SSH: one master connection (the root password is asked for once, or your key
 is used), every command over it. A fresh RAM boot has no root password and
@@ -49,7 +42,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tarfile
 import tempfile
 
 # mtd1..mtd20 (mtd0 is the whole 128 MiB chip), as the stock GPT and the
@@ -62,10 +54,8 @@ LAYOUT = [
     ("userapp0", 0x2d00000), ("userapp1", 0x2d00000), ("usr_data", 0x600000), ("usr_log", 0x600000),
 ]
 CHIP_SIZE = 0x8000000
-SLOT_B = ("uboot1", "kernel1", "dtb1", "userapp1")
-PKG_FILES = ("uImage.ar9311", "proxima-9311-air.dtb", "rootfs.ubi.ar9311")
-STAGE = "/tmp/ar9311-install"
-UBI_DEV = 7
+IMAGE_MAGIC = 0x4152544F
+STAGE = "/tmp/ar9311-install.img"
 
 # ---------------------------------------------------------------- SSH
 
@@ -151,7 +141,7 @@ def md5_file(path):
     return h.hexdigest()
 
 
-SLOT_NAME = {0: "A (stock)", 1: "B"}
+SLOT_NAME = {0: "A", 1: "B"}
 
 # ---------------------------------------------------------------- backup
 
@@ -208,176 +198,51 @@ def cmd_backup(a):
         json.dump(manifest, f, indent=2)
     print(f"backup complete: {a.dir} (active slot {SLOT_NAME.get(manifest['active_slot'], '?')})")
 
-# ---------------------------------------------------------------- U-Boot
-
-
-def otra_ok(blob):
-    """An OTRA container whose byte sum matches (U-Boot or kernel)."""
-    if blob[:4] != b"OTRA":
-        return False
-    n = struct.unpack_from("<I", blob, 0x10)[0]
-    return 0x40 + n <= len(blob) and sum(blob[0x40:0x40 + n]) & 0xFFFFFFFF == struct.unpack_from("<I", blob, 0x20)[0]
-
-
-def sync_uboot(board, parts):
-    """uboot1 := uboot0, if they differ; uboot0 must be a valid OTRA image."""
-    src, dst = parts["uboot0"][0], parts["uboot1"][0]
-    size = parts["uboot0"][1]
-    uboot0 = board.run(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{src}").stdout
-    uboot1 = board.run(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{dst}").stdout
-    if uboot0 == uboot1:
-        print("uboot1: already slot A's U-Boot")
-        return
-    if len(uboot0) != size or not otra_ok(uboot0):
-        sys.exit("uboot0 is not a complete OTRA image (bad block, or not a U-Boot): uboot1 not written")
-    if board.bad_blocks(dst):
-        sys.exit("uboot1 has a bad block: not written (the SPL may not skip it)")
-    assert "uboot1" in SLOT_B
-    board.run(f"cat > {STAGE}-uboot", input=uboot0)
-    if board.md5(f"cat {STAGE}-uboot") != hashlib.md5(uboot0).hexdigest():
-        sys.exit("uboot0: staged copy differs")
-    print(f"writing uboot1 (mtd{dst}) ...")
-    board.run(f"flash_erase -q /dev/mtd{dst} 0 0 && nandwrite -p -q /dev/mtd{dst} {STAGE}-uboot; rm -f {STAGE}-uboot")
-    if board.md5(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{dst}") != hashlib.md5(uboot0).hexdigest():
-        sys.exit("uboot1: readback differs -- write it again before using slot B's U-Boot")
-    print("  uboot1: slot A's U-Boot, readback ok")
-
-
-def cmd_sync_uboot(a):
-    with Board(a.host) as board:
-        sync_uboot(board, board.mtd())
-
 # ---------------------------------------------------------------- install
 
 
-def ubi_volume_md5(path, vol_id=0):
-    """(md5, length) of a UBI image's volume as the kernel reads it back."""
-    data = open(path, "rb").read()
-    if data[:4] != b"UBI#":
-        sys.exit(f"{path}: not a UBI image")
-    peb = 0x20000
-    vid_off, data_off = struct.unpack_from(">II", data, 16)
-    lebs = {}
-    for i in range(0, len(data), peb):
-        vid = data[i + vid_off:i + vid_off + 64]
-        if vid[:4] == b"UBI!" and struct.unpack_from(">I", vid, 8)[0] == vol_id:
-            lebs[struct.unpack_from(">I", vid, 12)[0]] = data[i + data_off:i + peb]
-    if not lebs or sorted(lebs) != list(range(len(lebs))):
-        sys.exit(f"{path}: volume {vol_id} is not a run of LEBs from 0")
-    blob = b"".join(lebs[n] for n in range(len(lebs)))
-    return hashlib.md5(blob).hexdigest(), len(blob)
-
-
-def check_package(path, workdir):
-    with tarfile.open(path) as tar:
-        for member in tar.getmembers():
-            name = member.name
-            if not member.isfile() or "/" in name or name not in PKG_FILES + tuple(f + ".md5sum" for f in PKG_FILES):
-                sys.exit(f"{path}: unexpected member {name!r}")
-            with tar.extractfile(member) as src, open(os.path.join(workdir, name), "wb") as dst:
-                shutil.copyfileobj(src, dst)
-    for name in PKG_FILES:
-        f = os.path.join(workdir, name)
-        if not os.path.exists(f) or not os.path.exists(f + ".md5sum"):
-            sys.exit(f"{path}: {name} or its .md5sum is missing")
-        if open(f + ".md5sum").read().split()[0] != md5_file(f):
-            sys.exit(f"{path}: {name} does not match its .md5sum")
-    kernel = open(os.path.join(workdir, PKG_FILES[0]), "rb").read()
-    n, s = struct.unpack_from("<I", kernel, 0x10)[0], struct.unpack_from("<I", kernel, 0x20)[0]
-    if kernel[:4] != b"OTRA" or n + 0x40 != len(kernel) or sum(kernel[0x40:]) & 0xFFFFFFFF != s:
-        sys.exit(f"{PKG_FILES[0]}: not an OTRA kernel container with a valid sum")
-    dtb = open(os.path.join(workdir, PKG_FILES[1]), "rb").read()
-    if dtb[:4] != b"\xd0\x0d\xfe\xed" or b"ubi.mtd=18" not in dtb:
-        sys.exit(f"{PKG_FILES[1]}: not a dtb with the flash boot command line (ubi.mtd=18)")
+def check_image(path):
+    """The image's kind ("OpenIPC" or the stock customer string), after its hash."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) < 0x220 or struct.unpack_from("<I", data, 0)[0] != IMAGE_MAGIC:
+        sys.exit(f"{path}: not an ARTO update image")
+    hext = struct.unpack_from("<H", data, 8)[0]
+    body = 0x100 + hext + 0x120
+    if hashlib.sha256(data[body:]).digest() != data[0x100 + hext:0x100 + hext + 32]:
+        sys.exit(f"{path}: SHA-256 mismatch (damaged or truncated)")
+    if data[0x80:0xc0].split(b"\0")[0] != b"P1_SKY":
+        sys.exit(f"{path}: not a P1 SKY image")
+    return data[0x2c:0x40].split(b"\0")[0].decode(errors="replace")
 
 
 def cmd_install(a):
-    work = tempfile.mkdtemp(prefix="ar9311-pkg-")
+    kind = check_image(a.image)
     try:
-        check_package(a.package, work)
-        files = {name: os.path.join(work, name) for name in PKG_FILES}
-        rootfs_md5, rootfs_len = ubi_volume_md5(files["rootfs.ubi.ar9311"])
-        try:
-            backup = dict(reversed(line.split()) for line in open(os.path.join(a.backup, "MD5SUMS")))
-        except OSError as e:
-            sys.exit(f"--backup {a.backup}: {e}")
-
-        with Board(a.host) as board:
-            parts = board.mtd()
-            if not board.ram_boot():
-                sys.exit("the board does not run from RAM: install only from ar9311-usbboot.py linux")
-            factory = board.md5(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{parts['factory'][0]}")
-            if backup.get("factory.bin") != factory:
-                sys.exit(f"{a.backup} is not a backup of this unit (factory differs): "
-                         "run backup first")
-            slot = board.active_slot()
-            if slot is None:
-                sys.exit("gpt0: no clear active slot (openipc-bsel check_flash)")
-            if slot == 1:
-                print("note: slot B is active -- until this install is done, power it up from "
-                      "RAM only; 'activate a' brings stock back")
-            for name in ("kernel1", "dtb1"):
-                if board.bad_blocks(parts[name][0]):
-                    sys.exit(f"{name} has a bad block: not written (the SPL may not skip it)")
-            sizes = {"kernel1": PKG_FILES[0], "dtb1": PKG_FILES[1]}
-            for part, name in sizes.items():
-                if os.path.getsize(files[name]) > parts[part][1]:
-                    sys.exit(f"{name} does not fit {part}")
-            attached = board.text("cat /sys/class/ubi/ubi*/mtd_num 2>/dev/null || true").split()
-            if str(parts["userapp1"][0]) in attached:
-                sys.exit("userapp1 is attached to UBI: install only from a RAM boot that does not use it")
-
-            print("staging the images on the board ...")
-            board.run(f"rm -rf {STAGE}; mkdir -p {STAGE}")
-            for name, f in files.items():
-                with open(f, "rb") as src:
-                    board.run(f"cat > {STAGE}/{name}", stdin=src)
-                if board.md5(f"cat {STAGE}/{name}") != md5_file(f):
-                    sys.exit(f"{name}: staged copy differs")
-            if a.dry_run:
-                board.run(f"rm -rf {STAGE}")
-                print("dry run: every check passed and the images staged intact; nothing written")
-                return
-
-            for part, name in sizes.items():
-                num = parts[part][0]
-                assert part in SLOT_B
-                length = os.path.getsize(files[name])
-                print(f"writing {part} (mtd{num}) ...")
-                board.run(f"flash_erase -q /dev/mtd{num} 0 0 && nandwrite -p -q /dev/mtd{num} {STAGE}/{name}")
-                back = board.md5(f"nanddump --bb=skipbad --omitoob -q -l {length} /dev/mtd{num} | head -c {length}",
-                                 pipefail=False)
-                if back != md5_file(files[name]):
-                    sys.exit(f"{part}: readback differs -- slot B is incomplete, do not activate it")
-                print(f"  {part}: {length} bytes, readback ok")
-
-            num = parts["userapp1"][0]
-            assert "userapp1" in SLOT_B
-            print(f"writing userapp1 (mtd{num}) with ubiformat ...")
-            board.run(f"ubiformat /dev/mtd{num} -y -q -f {STAGE}/rootfs.ubi.ar9311")
-            board.run(f"ubiattach -m {num} -d {UBI_DEV} >/dev/null")
-            try:
-                board.run(f"i=0; while [ ! -e /dev/ubi{UBI_DEV}_0 ] && [ $i -lt 50 ]; do "
-                          f"usleep 100000; i=$((i+1)); done")
-                vols = board.text(f"cat /sys/class/ubi/ubi{UBI_DEV}_*/name").split()
-                back = board.md5(f"head -c {rootfs_len} /dev/ubi{UBI_DEV}_0")
-            finally:
-                board.run(f"ubidetach -d {UBI_DEV}", check=False)
-            if sorted(vols) != ["rootfs", "rootfs_data"] or back != rootfs_md5:
-                sys.exit(f"userapp1: volumes {vols}, rootfs md5 {back} (want {rootfs_md5}) -- "
-                         "slot B is incomplete, do not activate it")
-            print(f"  userapp1: volumes rootfs + rootfs_data, rootfs readback ok")
-            board.run(f"rm -rf {STAGE}")
-            sync_uboot(board, parts)
-
-            if a.activate:
-                activate(board, parts, 1)
-            else:
-                print("slot B is written, slot A is still active. Next:\n"
-                      "  ar9311-usbboot.py linux --nand-root   (optional: boot slot B's rootfs from RAM)\n"
-                      "  ar9311-install.py activate b          then power-cycle without the CLK short")
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+        backup = dict(reversed(line.split()) for line in open(os.path.join(a.backup, "MD5SUMS")))
+    except OSError as e:
+        sys.exit(f"--backup {a.backup}: {e}")
+    with Board(a.host) as board:
+        parts = board.mtd()
+        factory = board.md5(f"nanddump --bb=skipbad --omitoob -q /dev/mtd{parts['factory'][0]}")
+        if backup.get("factory.bin") != factory:
+            sys.exit(f"{a.backup} is not a backup of this unit (factory differs): run backup first")
+        print(f"uploading {os.path.basename(a.image)} ({kind}) ...")
+        with open(a.image, "rb") as src:
+            board.run(f"cat > {STAGE}", stdin=src)
+        if board.md5(f"cat {STAGE}") != md5_file(a.image):
+            board.run(f"rm -f {STAGE}", check=False)
+            sys.exit("the uploaded copy differs")
+        opts = ["-x"] + (["-n"] if a.wipe_overlay else [])
+        if a.set_password:
+            opts.append("--set-password='" + a.set_password.replace("'", "'\\''") + "'")
+        r = board.run(f"sysupgrade --image={STAGE} {' '.join(opts)}; rc=$?; rm -f {STAGE}; exit $rc",
+                      check=False, stdout=None)
+        sys.stderr.write(r.stderr.decode(errors="replace"))
+        if r.returncode:
+            sys.exit("sysupgrade failed: the active slot is unchanged unless it said otherwise")
+        print(f"slot {SLOT_NAME.get(board.active_slot(), '?')} is active: power-cycle "
+              "(or reboot) to start it")
 
 # ---------------------------------------------------------------- activate / status
 
@@ -420,13 +285,12 @@ def slot_content(board, parts, n):
 
 
 def activate(board, parts, slot, force=False):
-    # Slot B starts out holding an older stock firmware, which looks complete
-    # too: only an install from this build counts, unless forced.
-    if slot == 1 and not force:
-        kernel, model, ubi, ours = slot_content(board, parts, 1)
-        if not (kernel and model and ubi and ours):
-            sys.exit(f"slot B holds no OpenIPC install (kernel {kernel}, dtb {model!r}, UBI {ubi}, "
-                     f"flash command line {ours}): not activated (--force activates it anyway)")
+    # Either firmware: a slot with stock in it is the way back to stock.
+    if not force:
+        kernel, model, ubi, ours = slot_content(board, parts, slot)
+        if not (kernel and model and ubi):
+            sys.exit(f"slot {SLOT_NAME[slot]} is not complete (kernel {kernel}, dtb {model!r}, "
+                     f"UBI {ubi}): not activated (--force activates it anyway)")
     print(board.text(f"openipc-bsel set {slot}").strip())
     if board.active_slot() != slot:
         sys.exit("gpt0 does not read back the new slot -- check it before power-cycling")
@@ -454,22 +318,21 @@ def cmd_status(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default="192.168.3.104", help="the RAM-booted board (default %(default)s)")
+    ap.add_argument("--host", default="192.168.3.104", help="the board (default %(default)s)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("backup", help="dump every partition and the whole chip")
     p.add_argument("dir")
     p.set_defaults(fn=cmd_backup)
-    p = sub.add_parser("install", help="write the slot-B images")
-    p.add_argument("package", help="openipc.ar9311-nand-artosyn.tgz")
+    p = sub.add_parser("install", help="flash an update image into the slot not running")
+    p.add_argument("image", help="P1_SKY_*.img (stock) or P1_SKY_*_OpenIPC_*.img")
     p.add_argument("--backup", required=True, help="this unit's backup directory")
-    p.add_argument("--activate", action="store_true", help="make slot B active once written")
-    p.add_argument("--dry-run", action="store_true", help="all checks and the staging, no writes")
+    p.add_argument("--set-password", help="root's password on what is flashed")
+    p.add_argument("-n", "--wipe-overlay", action="store_true",
+                   help="OpenIPC image: start the new slot without the running system's settings")
     p.set_defaults(fn=cmd_install)
-    p = sub.add_parser("sync-uboot", help="slot A's U-Boot to slot B")
-    p.set_defaults(fn=cmd_sync_uboot)
     p = sub.add_parser("activate", help="the slot the SPL boots next")
     p.add_argument("slot", choices=("a", "b"))
-    p.add_argument("--force", action="store_true", help="activate slot B whatever it holds")
+    p.add_argument("--force", action="store_true", help="activate the slot whatever it holds")
     p.set_defaults(fn=cmd_activate)
     p = sub.add_parser("status", help="running and active slot, what each slot holds")
     p.set_defaults(fn=cmd_status)

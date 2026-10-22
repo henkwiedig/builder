@@ -12,12 +12,13 @@
 #   LZ4 frame with independent 4 MiB blocks and a content checksum -- the
 #        lz4 CLI's defaults with -B7; U-Boot rejects linked blocks
 #
-# The NAND install goes to slot B, stock stays in slot A: uImage.ar9311 to
-# kernel1, the dtb to dtb1, rootfs.ubi (ubinize.cfg) to userapp1, packed with
-# their checksums as openipc.ar9311-nand-artosyn.tgz. The stock SPL boots the
-# active slot itself (Falcon): it loads kernelN and dtbN and takes the kernel
-# command line from the dtb, rewriting ubi.mtd= to the slot's userapp (17 for
-# userapp0, 18 for userapp1) in place, so the number must stay numeric.
+# The NAND install: P1_SKY_<release>_OpenIPC_<builder sha>.img, BetaFPV's
+# update image layout (scripts/ar9311-image.py) with this build's kernel, dtb
+# and rootfs.ubi (ubinize.cfg) in it, which /usr/sbin/sysupgrade flashes into
+# the slot not running. The stock SPL boots the active slot itself (Falcon):
+# it loads kernelN and dtbN and takes the kernel command line from the dtb,
+# rewriting ubi.mtd= to the slot's userapp (17 for userapp0, 18 for userapp1)
+# in place, so the number must stay numeric.
 # init=/init runs OpenIPC's /init, which puts the rootfs_data overlay over the
 # read-only rootfs before /sbin/init. RAM boot is unaffected: U-Boot's bootargs
 # replace the dtb's.
@@ -77,12 +78,17 @@ check uImage.${SOC} $((0x600000))
 check ${DTB} $((0x60000))
 check rootfs.ubi $((336 * 0x20000))
 
-# Checksums first, as firmware's REPACK_FIRMWARE packs them.
-cp -f rootfs.ubi rootfs.ubi.${SOC}
-md5sum uImage.${SOC} > uImage.${SOC}.md5sum
-md5sum ${DTB} > ${DTB}.md5sum
-md5sum rootfs.ubi.${SOC} > rootfs.ubi.${SOC}.md5sum
-tar -czf openipc.${SOC}-nand-artosyn.tgz \
-	uImage.${SOC}.md5sum ${DTB}.md5sum rootfs.ubi.${SOC}.md5sum \
-	uImage.${SOC} ${DTB} rootfs.ubi.${SOC}
-rm -f rootfs.ubi.${SOC} *.md5sum
+# On the stock image package/artlynk-p1-vendor-firmware used (its path and
+# release name in artlynk-p1/stock-image). Best-effort like those blobs:
+# without the stock image or python-lzo there is no update image.
+BUILDER_DIR=$(cd "${BINARIES_DIR}/../../.." && pwd)
+rm -f P1_SKY_*_OpenIPC_*.img
+if [ -f artlynk-p1/stock-image ]; then
+	sha=$(git -C "${BUILDER_DIR}" rev-parse --short HEAD 2>/dev/null)
+	python3 "${BUILDER_DIR}/devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-image.py" pack \
+		--base "$(sed -n 1p artlynk-p1/stock-image)" --kernel uImage.${SOC} --dtb ${DTB} \
+		--userapp rootfs.ubi --out "$(sed -n 2p artlynk-p1/stock-image)_OpenIPC_${sha:-unknown}.img" ||
+		echo "post-image: WARNING: no OpenIPC update image (python-lzo installed?)"
+else
+	echo "post-image: WARNING: no stock P1 image to build the OpenIPC update image on"
+fi
