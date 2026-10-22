@@ -24,8 +24,10 @@ devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-usbboot.py linux
 devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-usbboot.py linux --serial /dev/ttyUSB0 --root-password <pw>
 ```
 
-Board in mask-ROM USB mode (`5343:0200`, e.g. with no bootable NAND); start
-the script within ~10 s of power-on. The script patches the stock SPL to
+Board in mask-ROM USB mode (`5343:0200`): a board without NAND lands there
+by itself; a board with NAND does when its SPI-NAND CLK line is held to
+ground while it powers up (the boot ROM then finds no SPL). Start the script
+within ~10 s of power-on. The script patches the stock SPL to
 train DDR from a virtual flash in SRAM, re-enters the ROM's USB loader for a
 second session into DDR, loads U-Boot, kernel, initramfs and DTB, and
 patches U-Boot (skip its USB-upgrade loop, default env with a `bootm` of the
@@ -33,6 +35,29 @@ loaded images) so it autoboots -- no UART needed. `--serial` (1152000 baud,
 nothing else holding the port) shows the boot log and, with
 `--root-password`, claims the fresh system. How and why: see the script's
 docstring. Networking: RNDIS gadget, board at 192.168.3.104.
+
+## NAND install (slot B)
+
+```sh
+S=devices/ar9311_artosyn_artlynk-p1/scripts
+$S/ar9311-usbboot.py linux                  # mask ROM -> RAM boot, the NAND untouched
+ssh root@192.168.3.104                       # once per RAM boot: set the root password
+$S/ar9311-install.py backup ~/p1-backup      # every partition + the whole chip, md5-checked
+$S/ar9311-install.py install openipc/output/images/openipc.ar9311-nand-artosyn.tgz --backup ~/p1-backup
+$S/ar9311-install.py activate b              # then power-cycle without the CLK short
+$S/ar9311-install.py activate a              # back to stock, from any RAM boot
+```
+
+The flash has two slots; the stock SPL boots the one the GPT marks active
+(attribute bit 47 in `gpt0`, `openipc-bsel`) and points the kernel at that
+slot's `userapp`. Stock stays in slot A, which nothing here writes; the
+install goes to slot B (`kernel1`, `dtb1`, `userapp1`). `install` runs only
+from a RAM boot, only with a backup of the same unit (its `factory`
+partition, the unit's RF calibration, must match) and verifies every write;
+`--dry-run` stops before the first one. `ar9311-usbboot.py linux --nand-root`
+boots the RAM kernel against the installed rootfs while slot A stays active.
+Nothing goes through the stock firmware, whose SSH password differs between
+releases.
 
 ## Status
 
@@ -116,10 +141,8 @@ PA calibration. Things that matter:
 
 Not working yet:
 
-- NAND install: the build makes the slot-B images, but nothing writes them
-  yet. The plan, as MissingLynk does it: write `kernel1`, `dtb1` and
-  `userapp1` (mtd18) from the running stock firmware, prove the slot with
-  `ar9311-usbboot.py linux --nand-root` while stock slot A stays active, then
-  flip the active slot (GPT attribute bit 47 in `gpt0`). The stock SPL boots
-  the active slot itself and rewrites the dtb's `ubi.mtd=18` to that slot's
-  `userapp`; a cold boot of our kernel from `kernel1` is still unproven.
+- NAND install: `ar9311-install.py` backup, `--dry-run` and the slot switch
+  are hardware-tested; nothing has been written to slot B or booted from it
+  yet. Whether the stock SPL cold-boots our kernel from `kernel1` (it
+  rewrites the dtb's `ubi.mtd=18` to the active slot's `userapp`) is
+  unproven.
