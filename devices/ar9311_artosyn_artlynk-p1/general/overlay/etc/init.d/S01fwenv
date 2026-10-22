@@ -1,23 +1,47 @@
 #!/bin/sh
 #
-# fw_printenv/fw_setenv keep OpenIPC's variables in /etc/fw_env.bin (see
-# /etc/fw_env.config), so a RAM boot writes nothing to the NAND and a NAND
-# install keeps them in its overlay. The stock SPL boots the P1 from the GPT;
-# no U-Boot reads them.
+# Where fw_printenv/fw_setenv keep OpenIPC's variables (/etc/fw_env.config):
 #
-# Without a config, firmware's fw_printenv looks for an environment in every
-# MTD partition, the whole 128 MiB chip first, mmap'd into 120 MiB of RAM,
-# and never finds the stock one (0x8000 bytes, a size it does not try): every
-# call re-read the NAND, and the boot of a P1 with flash stalled for many
-# minutes in S40network.
+# - booted from a slot (ubi.mtd= names its userapp, see openipc-bsel
+#   check_cmdline): that slot's U-Boot environment, env0 or env1, in the
+#   stock U-Boot's format (0x8000 bytes at the partition's start), next to its
+#   own variables
+# - a RAM boot (rescue, install): /etc/fw_env.bin, a file in RAM, so it writes
+#   nothing to the NAND -- on a stock unit not even slot A's env0
 #
-# The first boot gets an empty, valid environment: the CRC32 of 0xfffc zero
-# bytes, then the zeros. /dev/zero does not exist yet (S38mdev makes it).
+# Without a config at all, firmware's fw_printenv looks for an environment in
+# every MTD partition, the whole 128 MiB chip first, mmap'd into 120 MiB of
+# RAM, and never finds the stock one (0x8000 bytes, a size it does not try):
+# every call re-read the NAND, and a P1 with flash stalled for many minutes in
+# S40network.
+#
+# A slot boot that kept its variables in /etc/fw_env.bin before has them moved
+# into its environment once. The file gets an empty, valid environment when
+# it is needed and missing: the CRC32 of 0xfffc zero bytes, then the zeros
+# (/dev/zero only exists on a flash boot this early).
 
 case "$1" in
 	start)
-		[ -s /etc/fw_env.bin ] && exit 0
-		{ printf '\277\146\013\121'; printf '%65532s' '' | tr ' ' '\000'; } > /etc/fw_env.bin
+		bank=$(openipc-bsel check_cmdline 2>/dev/null | sed -n 's/.*bank=\([01]\)$/\1/p')
+		env=
+		[ -n "$bank" ] && env=$(awk -F: -v name="\"env$bank\"" '$0 ~ name { print $1 }' /proc/mtd)
+		if [ -n "$env" ]; then
+			line="/dev/$env 0x0 0x8000 0x20000"
+		else
+			line="/etc/fw_env.bin 0x0 0x10000"
+			[ -s /etc/fw_env.bin ] ||
+				{ printf '\277\146\013\121'; printf '%65532s' '' | tr ' ' '\000'; } > /etc/fw_env.bin
+		fi
+		[ "$(grep -v '^#' /etc/fw_env.config 2>/dev/null)" = "$line" ] && exit 0
+
+		vars=
+		if [ -n "$env" ] && [ -s /etc/fw_env.bin ]; then
+			vars=$(fw_printenv 2>/dev/null)
+		fi
+		{ echo "# Written by /etc/init.d/S01fwenv."; echo "$line"; } > /etc/fw_env.config
+		if [ -n "$vars" ]; then
+			echo "$vars" | sed 's/=/ /' | fw_setenv -s - && rm -f /etc/fw_env.bin
+		fi
 		;;
 
 	stop)
