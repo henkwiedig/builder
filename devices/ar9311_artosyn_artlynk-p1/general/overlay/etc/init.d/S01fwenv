@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# fw_printenv/fw_setenv keep OpenIPC's variables in /etc/fw_env.bin (see
+# /etc/fw_env.config), so a RAM boot writes nothing to the NAND and a NAND
+# install keeps them in its overlay. The stock SPL boots the P1 from the GPT;
+# no U-Boot reads them.
+#
+# Without a config, firmware's fw_printenv looks for an environment in every
+# MTD partition, the whole 128 MiB chip first, mmap'd into 120 MiB of RAM,
+# and never finds the stock one (0x8000 bytes, a size it does not try): every
+# call re-read the NAND, and the boot of a P1 with flash stalled for many
+# minutes in S40network.
+#
+# The first boot gets an empty, valid environment: the CRC32 of 0xfffc zero
+# bytes, then the zeros. /dev/zero does not exist yet (S38mdev makes it).
+
+case "$1" in
+	start)
+		[ -s /etc/fw_env.bin ] && exit 0
+		{ printf '\277\146\013\121'; printf '%65532s' '' | tr ' ' '\000'; } > /etc/fw_env.bin
+		;;
+
+	stop)
+		;;
+
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac
