@@ -23,6 +23,8 @@ BINARIES_DIR/artlynk-p1/:
                         stock SPL, U-Boot, DDR training firmware and DT, for
                         booting a board over USB (devices/ar9311_artosyn_artlynk-p1/
                         scripts/ar9311-usbboot.py)
+  stock-image           the stock image's path and release name, one per line,
+                        for the OpenIPC image post-image.sh builds in its layout
 
 Nothing is committed. The stock image is looked up locally first:
 $ARTLYNK_P1_VENDOR_IMG, else <builder>/cache/vendor-images/P1_SKY_*.img
@@ -37,6 +39,7 @@ python-lzo (pip install python-lzo), ubi_reader (pip install ubi_reader);
 unsquashfs comes from $HOST_DIR (host-squashfs).
 """
 import glob
+import re
 import gzip
 import os
 import shutil
@@ -142,6 +145,7 @@ def main():
     binaries_dir = sys.argv[1]
     host_dir = sys.argv[2] if len(sys.argv) > 2 else None
     file_id = sys.argv[3] if len(sys.argv) > 3 else None
+    release = sys.argv[4] if len(sys.argv) > 4 else None
     out = Path(binaries_dir, "artlynk-p1")
     out.mkdir(parents=True, exist_ok=True)
 
@@ -151,6 +155,11 @@ def main():
              "cache/vendor-images/) - building without AR8030/codec/ISP firmware")
         return 0
     print(f"artlynk-p1-vendor-firmware: using {img}")
+    # The cache keeps a fetched image as P1_SKY_vendor.img; a P1_SKY_v<version> name is
+    # the release's own.
+    if re.match(r"P1_SKY_v\d", img.stem) or not release:
+        release = img.stem
+    (out / "stock-image").write_text(f"{img.resolve()}\n{release}\n")
 
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
