@@ -8,8 +8,9 @@ needed. Nothing is written to the board's NAND.
       kernel/initramfs/dtb; U-Boot autoboots them (no UART needed), --serial
       shows the boot log
   ar9311-usbboot.py linux --nand-root ...
-      kernel/dtb only, root on the rootfs flashed to userapp1 (slot B): proves
-      a slot-B install boots before it is made the active slot
+      kernel/dtb only, root on the rootfs flashed to userapp1 (slot B), with
+      the dtb's own (flash boot) command line: proves a slot-B install boots
+      before it is made the active slot
   ar9311-usbboot.py uboot  [--images DIR]      stop at the stock U-Boot
   ar9311-usbboot.py spl    <loader.bin>        just run an IMGI loader
 
@@ -304,9 +305,6 @@ class UBoot:
 
 KADDR, RDADDR, DTADDR = 0x21800000, 0x23000000, 0x24800000
 RAM_BOOTARGS = "earlycon keep_bootcon console=ttyS0,1152000 root=/dev/ram0 rdinit=/init"
-# As post-image.sh writes them into the dtb for the flash boot. Here ubi.mtd=18
-# stays userapp1: only the SPL's flash boot rewrites it to the active slot.
-NAND_BOOTARGS = "earlycon console=ttyS0,1152000 ubi.mtd=18 root=ubi0:rootfs rootfstype=ubifs ro"
 
 # ---------------------------------------------------------------- U-Boot autoboot patch
 
@@ -332,7 +330,11 @@ def patch_uboot(img, env):
         sys.exit("U-Boot default environment not found")
     old = [e.split(b"=", 1) for e in bytes(u[start:end]).split(b"\0")]
     new = dict(old)
-    new.update({k.encode(): v.encode() for k, v in env.items()})
+    for k, v in env.items():  # None removes the entry
+        if v is None:
+            new.pop(k.encode(), None)
+        else:
+            new[k.encode()] = v.encode()
     blob = b"\0".join(k + b"=" + v for k, v in new.items())
     if len(blob) > end - start:
         sys.exit(f"patched U-Boot env too long ({len(blob)} > {end - start} B)")
@@ -393,18 +395,33 @@ def cmd_linux(a):
         sys.exit("uImage.ar9311: not the OTRA kernel container")
     extra = [(KADDR, kernel, "kernel"), (DTADDR, dtb, "dtb")]
     if a.nand_root:
+        # With "ubi.mtd=" in its bootargs this U-Boot takes the boot for a
+        # flash boot: it rewrites the number to the active slot's userapp and
+        # replaces bootcmd with one loading that slot's kernelN/dtbN from the
+        # NAND ("Regenerate: ..."). So U-Boot gets no bootargs at all, and the
+        # kernel the dtb's own: the flash boot's (board/ar9311/post-image.sh),
+        # with ubi.mtd=18 = userapp1 whatever slot is active.
+        if a.bootargs and "ubi.mtd=" in a.bootargs:
+            sys.exit("--nand-root: U-Boot would boot the active slot from flash for bootargs "
+                     "with ubi.mtd=; the dtb's command line has it")
+        # Without bootargs U-Boot also skips its own GPT read ("part info"), and
+        # then never sets up the SPI-NAND: the kernel reads a garbage chip ID
+        # ("unknown raw ID", probe -95), finds no MTD and no userapp1. A read
+        # of gpt0's first page does it instead (into DDR the kernel reserves).
         assert KADDR + len(kernel) < DTADDR
         rd = "-"
-        bootargs = a.bootargs or NAND_BOOTARGS
+        nand_init = "mtd read spi-nand0 0x26000000 0x100000 0x800; "
+        bootargs = a.bootargs
     else:
         initrd = read(os.path.join(a.images, "rootfs.cpio.gz"))
         assert KADDR + len(kernel) < RDADDR and RDADDR + len(initrd) < DTADDR
         extra.insert(1, (RDADDR, initrd, "initrd"))
         rd = f"{RDADDR:#x}:{len(initrd):#x}"
+        nand_init = ""
         bootargs = a.bootargs or RAM_BOOTARGS
 
     bootcmd = ("setenv initrd_high 0xffffffffffffffff; setenv fdt_high 0xffffffffffffffff; "
-               f"bootm {KADDR:#x} {rd} {DTADDR:#x}")
+               f"{nand_init}bootm {KADDR:#x} {rd} {DTADDR:#x}")
     boot_uboot(a, extra=extra, env={"bootcmd": bootcmd, "bootargs": bootargs, "bootdelay": "0"})
     if not a.serial:
         print("started - U-Boot autoboots the kernel (--serial TTY to watch)")
@@ -451,7 +468,7 @@ def main():
             p.add_argument("--nand-root", action="store_true",
                            help="no initramfs: mount the rootfs flashed to userapp1 (slot B), whatever slot is active")
             p.add_argument("--bootargs",
-                           help="kernel command line (default: initramfs, or with --nand-root the flash boot's)")
+                           help="kernel command line (default: initramfs, or with --nand-root the dtb's)")
             p.add_argument("--follow", type=float, default=90, help="seconds of boot log to show")
             p.add_argument("--root-password", help="claim the booted system with this root password")
 
