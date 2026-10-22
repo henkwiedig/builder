@@ -73,6 +73,16 @@ passwords, ssh keys, AR8030 pairing and `/etc/default` (`-n`: none of it).
 `/etc/passwd` is on a read-only squashfs, through stock's own
 `/usrdata/run_dbg.sh` hook (see the script).
 
+Without SSH: the stock U-Boot's USB upgrade takes these images too. It
+checks BetaFPV's RSA signature but does not enforce it, writes the slot not
+active (plus all four SPL copies and the GPT) and makes it the active one;
+nothing carries over. From a unit running stock (or switched to a slot with
+stock in it):
+
+```sh
+$S/ar9311-usbburn.py flash P1_SKY_<release>_OpenIPC_<sha>.img --from-stock   # ~7 min upload, then power-cycle
+```
+
 `ar9311-install.py install` checks the backup is this unit's (its `factory`
 partition, the unit's RF calibration), uploads the image and runs the board's
 `sysupgrade`; it works from a RAM boot and from an installed system.
