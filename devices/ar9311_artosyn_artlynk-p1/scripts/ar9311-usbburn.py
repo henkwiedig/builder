@@ -4,8 +4,12 @@ Flash a BetaFPV P1 SKY (Artosyn PROXIMA 9311) through its stock U-Boot's USB
 upgrade -- no SSH, no pins, no RAM boot -- with any update image in BetaFPV's
 format: their P1_SKY_*.img, or this build's P1_SKY_*_OpenIPC_*.img.
 
-  ar9311-usbburn.py flash IMAGE [--from-stock [TTY]]
+  ar9311-usbburn.py flash IMAGE [--from-stock [TTY]] [--debug]
   ar9311-usbburn.py info IMAGE
+  ar9311-usbburn.py probe [--from-stock [TTY]]
+      U-Boot's status channel only: a 64-byte image without the ARTO magic,
+      which U-Boot rejects before writing anything; every report it sends
+      back is printed raw
 
 Getting there: the stock firmware reboots into U-Boot's upgrade mode on a
 10-byte command over its USB serial gadget (--from-stock sends it, default
@@ -33,11 +37,20 @@ chunk of a message then a 12-byte inner header (u16 port 0, u16 header length
 12, u32 payload size). The start command is one 56-byte message, "upgd" + the
 image size; the image is one message of 64-byte reports, 16 bytes of it in the
 first and 28 in every following one. U-Boot answers in the same framing with
-text: "Upgrade_status: <state> percent <n>", "upgrade_complete",
-"upgrade_failed: ret = <n>".
+text. A message spans several reports (U-Boot's MTU), only the first of
+which arrives reliably; its 16 characters say "upgrade failed!(" or "upgrade
+complete", which is what flash goes by.
 
-Access: /dev/hidrawN for 1d6b:0100 (and the serial gadget for --from-stock),
-e.g. /etc/udev/rules.d/80-artosyn.rules:
+U-Boot's report descriptor declares numbered reports (input 3 and 4, output
+1 and 2), but its packets start with the FF 55 magic: the kernel's HID core
+takes 0xff for an undeclared report ID and drops every report U-Boot sends,
+so its status only arrives through libusb (pyusb), which detaches the HID
+driver and reads endpoint 0x81 itself. Without access to the USB device the
+tool falls back to /dev/hidrawN: the upload works, the status does not come.
+
+Access (and the serial gadget for --from-stock), e.g.
+/etc/udev/rules.d/80-artosyn.rules:
+  SUBSYSTEM=="usb", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0100", MODE="0660", GROUP="plugdev"
   SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0100", MODE="0660", GROUP="plugdev"
 """
 import argparse
@@ -45,10 +58,12 @@ import glob
 import hashlib
 import math
 import os
+import queue
 import re
 import select
 import struct
 import sys
+import threading
 import time
 
 VID_PID = "00001D6B:00000100"
@@ -105,63 +120,135 @@ def check_image(data):
 
 
 class Gadget:
-    """U-Boot's upgrade gadget through /dev/hidrawN."""
+    """U-Boot's upgrade gadget: libusb if allowed (status readable), else hidraw."""
 
-    def __init__(self, timeout):
+    def __init__(self, timeout, debug=False):
         deadline = time.time() + timeout
-        self.fd = None
-        while self.fd is None:
-            for uevent in glob.glob("/sys/class/hidraw/hidraw*/device/uevent"):
-                if f"HID_ID=0003:{VID_PID}" in open(uevent).read():
-                    dev = "/dev/" + uevent.split("/")[4]
-                    try:
-                        self.fd = os.open(dev, os.O_RDWR)
-                    except PermissionError:
-                        sys.exit(f"{dev}: permission denied (udev rule, see --help)")
-                    print(f"U-Boot upgrade gadget at {dev}")
-                    break
-            else:
-                if time.time() > deadline:
-                    sys.exit("no 1d6b:0100 (U-Boot's upgrade mode) appeared")
-                time.sleep(0.5)
+        self.usb = self.fd = None
         self.text = bytearray()
-        self.messages = []
+        self.debug = debug
+        while not self.open():
+            if time.time() > deadline:
+                sys.exit("no 1d6b:0100 (U-Boot's upgrade mode) appeared")
+            time.sleep(0.5)
+
+    def open(self):
+        try:
+            import usb.core
+            import usb.util
+        except ImportError:
+            usb = None
+        if usb:
+            dev = usb.core.find(idVendor=0x1D6B, idProduct=0x0100)
+            if dev is None:
+                return False
+            try:
+                if dev.is_kernel_driver_active(0):
+                    dev.detach_kernel_driver(0)
+                usb.util.claim_interface(dev, 0)
+                self.usb = dev
+                # A read is kept pending on endpoint 0x81 all the time, as
+                # hidapi does: U-Boot sends the next report of a message only
+                # once the host takes the one before, and gives up quickly.
+                self.queue = queue.Queue()
+                threading.Thread(target=self.reader, daemon=True).start()
+                print(f"U-Boot upgrade gadget on USB bus {dev.bus} device {dev.address} (libusb)")
+                return True
+            except usb.core.USBError as e:
+                print(f"libusb: {e}; using hidraw, without U-Boot's status (udev rule, see --help)")
+        for uevent in glob.glob("/sys/class/hidraw/hidraw*/device/uevent"):
+            if f"HID_ID=0003:{VID_PID}" in open(uevent).read():
+                dev = "/dev/" + uevent.split("/")[4]
+                try:
+                    self.fd = os.open(dev, os.O_RDWR)
+                except PermissionError:
+                    sys.exit(f"{dev}: permission denied (udev rule, see --help)")
+                print(f"U-Boot upgrade gadget at {dev} (hidraw: no status from U-Boot)")
+                return True
+        return False
 
     def write(self, report):
-        os.write(self.fd, b"\0" + report)   # report ID 0, stripped by the kernel
+        if self.usb:
+            self.usb.write(0x02, report, timeout=1000)
+        else:
+            os.write(self.fd, b"\0" + report)   # report ID 0, stripped by the kernel
+
+    def reader(self):
+        import usb.core
+        while True:
+            try:
+                self.queue.put(bytes(self.usb.read(0x81, MTU, timeout=100)))
+            except usb.core.USBTimeoutError:
+                continue
+            except usb.core.USBError:
+                self.queue.put(None)   # gone: U-Boot reset, or unplugged
+                return
+
+    def read(self, timeout):
+        """One report from U-Boot, None after timeout seconds."""
+        if self.usb:
+            try:
+                raw = self.queue.get(timeout=timeout) if timeout else self.queue.get_nowait()
+            except queue.Empty:
+                return None
+            if raw is None:
+                raise OSError("the gadget is gone")
+            return raw
+        if select.select([self.fd], [], [], timeout)[0]:
+            return os.read(self.fd, MTU)
+        return None
 
     def poll(self, timeout=0.0):
         """Reads what U-Boot sent; returns the messages completed."""
         done = []
-        while select.select([self.fd], [], [], timeout)[0]:
+        while True:
+            raw = self.read(timeout)
+            if raw is None:
+                return done
             timeout = 0
-            raw = os.read(self.fd, MTU)
+            if self.debug:
+                print(f"\n  IN {len(raw):2d}: {raw.hex()}", end="")
+            # A leading report ID (the descriptor declares numbered reports)
+            # shifts the frame by one byte.
+            if raw[1:5] == MAGIC[:4] and raw[:4] != MAGIC[:4]:
+                raw = raw[1:]
             if len(raw) < OUTER:
                 continue
             chunks, index = struct.unpack_from("<II", raw, 0x14)
             if index == 0:
+                # The first 16 characters say enough on their own ("upgrade
+                # failed!(", "upgrade complete"): taken now, in case the rest
+                # of the message never comes.
                 self.text = bytearray(raw[OUTER + INNER:])
+                head = self.text.split(b"\0")[0].decode(errors="replace").strip()
+                if head and chunks > 1:
+                    done.append(head)
             else:
                 self.text += raw[OUTER:]
             if index + 1 >= chunks:
                 msg = self.text.split(b"\0")[0].decode(errors="replace").strip()
-                if msg:
+                if msg and (chunks > 1 or index == 0):
                     done.append(msg)
-        return done
+            else:
+                timeout = 0.2   # the rest follows the read of this one
 
 
 def report(msgs, state):
     for m in msgs:
+        if m == state.get("last"):
+            continue
+        state["last"] = m
         p = re.search(r"percent\D*(\d+)", m)
         if p:
             if p.group(1) != state.get("pct"):
                 state["pct"] = p.group(1)
                 print(f"\n  U-Boot: writing, {p.group(1)}%", end="", flush=True)
-        else:
+        elif not (state.get("pct") and m.lower().startswith("upgrade status")):
             print(f"\n  U-Boot: {m}", end="", flush=True)
-        if "upgrade_complete" in m:
+        low = m.lower().replace("_", " ")
+        if "upgrade complete" in low:
             state["result"] = True
-        elif "upgrade_failed" in m:
+        elif "upgrade fail" in low:
             state["result"] = False
 
 
@@ -178,7 +265,7 @@ def cmd_flash(a):
         with serial.Serial(a.from_stock, SERIAL_BAUD, timeout=1) as s:
             s.write(REBOOT_CMD)
         print(f"sent the upgrade command on {a.from_stock}")
-    g = Gadget(a.timeout)
+    g = Gadget(a.timeout, a.debug)
     state = {}
 
     g.write(start_cmd(len(data)))
@@ -197,17 +284,46 @@ def cmd_flash(a):
 
     deadline = time.time() + a.write_timeout
     while state.get("result") is None and time.time() < deadline:
+        if g.usb is None and time.time() > deadline - a.write_timeout + 120:
+            break   # hidraw: nothing will come; U-Boot writes in about a minute
         try:
             report(g.poll(1.0), state)
-        except OSError:
+        except Exception:
             break   # gadget gone: U-Boot finished and reset
     print()
     if state.get("result") is False:
         sys.exit("U-Boot reports the upgrade failed; the active slot is unchanged")
     if state.get("result") is None:
-        print("no completion message from U-Boot; check its serial console before resetting")
+        print("no completion message from U-Boot (hidraw, or none came): it wrote in under a "
+              "minute before; check its serial console, or wait a few minutes, before power-cycling")
     else:
         print("done: power-cycle the board, it boots the slot just written")
+
+
+def cmd_probe(a):
+    """64 bytes without the ARTO magic: rejected before any write; its answer raw."""
+    if a.from_stock:
+        try:
+            import serial
+        except ImportError:
+            sys.exit("--from-stock needs pyserial")
+        with serial.Serial(a.from_stock, SERIAL_BAUD, timeout=1) as s:
+            s.write(REBOOT_CMD)
+        print(f"sent the upgrade command on {a.from_stock}")
+    g = Gadget(a.timeout, debug=True)
+    junk = bytes(64)
+    g.write(start_cmd(len(junk)))
+    msgs = g.poll(1.0)
+    for r in data_reports(junk):
+        g.write(r)
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        msgs += g.poll(1.0)
+    print()
+    for m in dict.fromkeys(msgs):
+        print(f"  U-Boot: {m}")
+    print(f"{len(msgs)} message(s); U-Boot rejected the probe, nothing was written. "
+          "Power-cycle the board to leave the upgrade mode.")
 
 
 def cmd_info(a):
@@ -227,7 +343,13 @@ def main():
     p.add_argument("--timeout", type=float, default=60, help="seconds to wait for the gadget")
     p.add_argument("--write-timeout", type=float, default=600,
                    help="seconds to wait for U-Boot's write after the upload")
+    p.add_argument("--debug", action="store_true", help="print every report U-Boot sends, raw")
     p.set_defaults(fn=cmd_flash)
+    p = sub.add_parser("probe", help="U-Boot's status channel, with an image it rejects")
+    p.add_argument("--from-stock", nargs="?", const="/dev/ttyACM0", metavar="TTY",
+                   help="send stock's upgrade command first (default /dev/ttyACM0)")
+    p.add_argument("--timeout", type=float, default=60, help="seconds to wait for the gadget")
+    p.set_defaults(fn=cmd_probe)
     p = sub.add_parser("info", help="check an image as flash would")
     p.add_argument("image")
     p.set_defaults(fn=cmd_info)
