@@ -30,8 +30,8 @@
  *   switch         - set the other bank
  * All print the result to stdout; check_flash/check_cmdline exit with
  * the bank number (0/1) as the process exit status, or 1 if it could not be
- * determined; set exits 0 on success, 1 on failure. -f <file> (first
- * argument) works on a gpt0 image instead of the partition, e.g. a dump.
+ * determined; set exits 0 on success, 1 on failure. -f <file> -g <file>
+ * (first) work on gpt0 and gpt1 images instead of the partitions, e.g. dumps.
  *
  * Built by the "openipc-bsel" Buildroot package (../openipc-bsel.mk) --
  * not device-specific in itself (it looks for an MTD partition named "sel"
@@ -267,21 +267,24 @@ static int bsel_update(const char *mtddev, int bank_new)
 
 /*
  * GPT backend (BetaFPV P1 / Artosyn PROXIMA 9311). The NAND's partition
- * table is a GPT (512-byte sectors, header at sector 1, 128 entries of 128
- * bytes from sector 2) at the start of the "gpt0" partition; "gpt1" is left
- * erased. Five partitions come in pairs -- env, uboot, kernel, dtb, userapp,
- * suffixed 0 and 1 -- and the stock SPL boots the member of each pair whose
- * entry has attribute bit 47 set. The singletons (vendor, factory, usr_data,
- * usr_log) always have it set and are left alone. The SPL also points the
- * kernel at the active userapp by rewriting the command line's ubi.mtd=,
- * which is how check_cmdline tells the running bank.
+ * table is a GPT (512-byte sectors) kept in one of two partitions: "gpt0"
+ * holds it as a primary GPT (my_lba 1), "gpt1" as a backup GPT (my_lba the
+ * last sector, the entries 32 sectors before it), both with the header at
+ * sector 1 and the 128 entries of 128 bytes from sector 2 of their partition.
+ * The stock U-Boot's USB upgrade writes the table into the partition that
+ * does not hold it, then erases the other, so one is valid at a time; the SPL
+ * boots from either.
  *
- * set rewrites gpt0's first eraseblock with the bits moved and both CRCs
- * recomputed, keeping everything else in that block as it was (the stock
- * tool leaves stale buffer bytes after the entry array; they go back
- * unchanged). Between the erase and the write -- a few milliseconds -- the
- * board has no partition table, and a power cut there leaves it to USB
- * recovery.
+ * Five partitions come in pairs -- env, uboot, kernel, dtb, userapp, suffixed
+ * 0 and 1 -- and the stock SPL boots the member of each pair whose entry has
+ * attribute bit 47 set. The singletons (vendor, factory, usr_data, usr_log)
+ * always have it set and are left alone. The SPL also points the kernel at the
+ * active userapp by rewriting the command line's ubi.mtd=, which is how
+ * check_cmdline tells the running bank.
+ *
+ * set does as the upgrade does: the new table goes into the other partition,
+ * in that partition's form, is read back, and only then is the old one
+ * erased, so a power cut leaves the old table or the new one, never none.
  */
 #define GPT_SECTOR 512
 #define GPT_ACTIVE (1ULL << 47)
@@ -341,29 +344,23 @@ static uint32_t gpt_hdr_crc(const struct gpt *g)
 	return crc32_buf(h, g->hdr_size);
 }
 
-/* Finds and checks the GPT in buf: 0, or -1 if it is missing or its CRCs fail. */
+/* The GPT in buf (header at sector 1, entries from sector 2): 0 if sound. */
 static int gpt_parse(unsigned char *buf, size_t len, struct gpt *g)
 {
 	g->buf = buf;
 	g->hdr = GPT_SECTOR;
-	if (len < 2 * GPT_SECTOR || memcmp(buf + g->hdr, "EFI PART", 8) != 0) {
-		fprintf(stderr, "openipc-bsel: gpt0: no GPT header\n");
+	g->arr = 2 * GPT_SECTOR;
+	if (len < 2 * GPT_SECTOR || memcmp(buf + g->hdr, "EFI PART", 8) != 0)
 		return -1;
-	}
 	g->hdr_size = get_le32(buf + g->hdr + 12);
-	g->arr = get_le64(buf + g->hdr + 72) * GPT_SECTOR;
 	g->n = get_le32(buf + g->hdr + 80);
 	g->esz = get_le32(buf + g->hdr + 84);
 	if (g->hdr_size < 92 || g->hdr_size > GPT_SECTOR || g->esz < 128 || g->n == 0 ||
-	    g->n > 1024 || g->arr < 2 * GPT_SECTOR || g->arr + (size_t)g->n * g->esz > len) {
-		fprintf(stderr, "openipc-bsel: gpt0: implausible GPT header\n");
+	    g->n > 1024 || g->arr + (size_t)g->n * g->esz > len)
 		return -1;
-	}
 	if (gpt_hdr_crc(g) != get_le32(buf + g->hdr + 16) ||
-	    crc32_buf(buf + g->arr, (size_t)g->n * g->esz) != get_le32(buf + g->hdr + 88)) {
-		fprintf(stderr, "openipc-bsel: gpt0: GPT CRC mismatch\n");
+	    crc32_buf(buf + g->arr, (size_t)g->n * g->esz) != get_le32(buf + g->hdr + 88))
 		return -1;
-	}
 	return 0;
 }
 
@@ -410,14 +407,14 @@ static int gpt_bank(const struct gpt *g)
 		e0 = gpt_find(g, n0);
 		e1 = gpt_find(g, n1);
 		if (!e0 || !e1) {
-			fprintf(stderr, "openipc-bsel: gpt0: no %s/%s pair\n", n0, n1);
+			fprintf(stderr, "openipc-bsel: GPT: no %s/%s pair\n", n0, n1);
 			return -1;
 		}
 		a0 = !!(get_le64(e0 + 48) & GPT_ACTIVE);
 		a1 = !!(get_le64(e1 + 48) & GPT_ACTIVE);
 		b = a0 && !a1 ? 0 : a1 && !a0 ? 1 : -1;
 		if (b < 0 || (bank >= 0 && b != bank)) {
-			fprintf(stderr, "openipc-bsel: gpt0: mixed banks (%s active=%d, %s active=%d)\n",
+			fprintf(stderr, "openipc-bsel: GPT: mixed banks (%s active=%d, %s active=%d)\n",
 				n0, a0, n1, a1);
 			return -1;
 		}
@@ -442,7 +439,7 @@ static int gpt_set(struct gpt *g, int bank)
 			snprintf(name, sizeof(name), "%s%d", gpt_pairs[i], m);
 			e = gpt_find(g, name);
 			if (!e) {
-				fprintf(stderr, "openipc-bsel: gpt0: no %s\n", name);
+				fprintf(stderr, "openipc-bsel: GPT: no %s\n", name);
 				return -1;
 			}
 			attr = get_le64(e + 48);
@@ -453,9 +450,23 @@ static int gpt_set(struct gpt *g, int bank)
 			}
 		}
 	}
-	put_le32(g->buf + g->hdr + 88, crc32_buf(g->buf + g->arr, (size_t)g->n * g->esz));
-	put_le32(g->buf + g->hdr + 16, gpt_hdr_crc(g));
 	return changed;
+}
+
+/*
+ * Makes the header of g the form copy `to` keeps (0: primary in gpt0, 1:
+ * backup in gpt1), given the disk's last sector, and recomputes both CRCs.
+ */
+static void gpt_reform(struct gpt *g, int to, uint64_t last)
+{
+	unsigned char *h = g->buf + g->hdr;
+	uint64_t entry_sectors = ((uint64_t)g->n * g->esz + GPT_SECTOR - 1) / GPT_SECTOR;
+
+	put_le64(h + 24, to ? last : 1);                  /* my_lba */
+	put_le64(h + 32, to ? 1 : last);                  /* alternate_lba */
+	put_le64(h + 72, to ? last - entry_sectors : 2);  /* partition entries */
+	put_le32(h + 88, crc32_buf(g->buf + g->arr, (size_t)g->n * g->esz));
+	put_le32(h + 16, gpt_hdr_crc(g));
 }
 
 /* Finds the mtd device number whose /proc/mtd name is exactly name. */
@@ -481,175 +492,225 @@ static int find_mtd_by_name(const char *name)
 	return mtdnum;
 }
 
-/*
- * gpt0's first eraseblock (or a whole gpt0 image file), read into *buf.
- * Returns the length, or -1.
- */
-static ssize_t gpt_load(const char *path, int is_file, unsigned char **buf, struct mtd_info_user *info)
+/* gpt0/gpt1: the partition (or an image file given with -f/-g) and what it holds. */
+struct gpt_copy {
+	char path[256];
+	int is_file;
+	unsigned char *buf;
+	ssize_t len;
+	struct mtd_info_user info;
+	struct gpt g;
+	int valid;
+};
+
+/* Image files instead of the partitions (-f gpt0, -g gpt1), for dumps and tests. */
+static const char *gpt_image[2];
+
+/* Reads copy n's first eraseblock (or its image file); valid if it holds a sound GPT. */
+static int gpt_load(int n, struct gpt_copy *c)
 {
-	ssize_t len = -1;
 	int fd;
 
-	*buf = NULL;
-	fd = open(path, O_RDONLY);
+	memset(c, 0, sizeof(*c));
+	if (gpt_image[n]) {
+		snprintf(c->path, sizeof(c->path), "%s", gpt_image[n]);
+		c->is_file = 1;
+	} else {
+		char name[8];
+		int mtdnum;
+
+		snprintf(name, sizeof(name), "gpt%d", n);
+		mtdnum = find_mtd_by_name(name);
+		if (mtdnum < 0) {
+			fprintf(stderr, "openipc-bsel: no %s partition in /proc/mtd\n", name);
+			return -1;
+		}
+		snprintf(c->path, sizeof(c->path), "/dev/mtd%d", mtdnum);
+	}
+	fd = open(c->path, O_RDONLY);
 	if (fd < 0) {
-		fprintf(stderr, "openipc-bsel: cannot open %s\n", path);
+		fprintf(stderr, "openipc-bsel: cannot open %s\n", c->path);
 		return -1;
 	}
-	if (is_file) {
+	if (c->is_file) {
 		off_t size = lseek(fd, 0, SEEK_END);
 
-		if (size > 0 && size <= 16 << 20 && (*buf = malloc(size)) &&
-		    pread(fd, *buf, size, 0) == size)
-			len = size;
+		if (size > 0 && size <= 16 << 20 && (c->buf = malloc(size)) &&
+		    pread(fd, c->buf, size, 0) == size)
+			c->len = size;
 	} else {
 		long long start = 0;
 
-		if (ioctl(fd, MEMGETINFO, info) != 0) {
-			fprintf(stderr, "openipc-bsel: MEMGETINFO failed on %s\n", path);
-		} else if (ioctl(fd, MEMGETBADBLOCK, &start) != 0) {
-			fprintf(stderr, "openipc-bsel: %s: first eraseblock is bad\n", path);
-		} else if ((*buf = malloc(info->erasesize)) &&
-			   pread(fd, *buf, info->erasesize, 0) == (ssize_t)info->erasesize) {
-			len = info->erasesize;
-		} else {
-			fprintf(stderr, "openipc-bsel: cannot read %s\n", path);
-		}
+		if (ioctl(fd, MEMGETINFO, &c->info) != 0)
+			fprintf(stderr, "openipc-bsel: MEMGETINFO failed on %s\n", c->path);
+		else if (ioctl(fd, MEMGETBADBLOCK, &start) != 0)
+			fprintf(stderr, "openipc-bsel: %s: first eraseblock is bad\n", c->path);
+		else if ((c->buf = malloc(c->info.erasesize)) &&
+			 pread(fd, c->buf, c->info.erasesize, 0) == (ssize_t)c->info.erasesize)
+			c->len = c->info.erasesize;
 	}
 	close(fd);
-	if (len < 0) {
-		if (is_file)
-			fprintf(stderr, "openipc-bsel: cannot read %s\n", path);
-		free(*buf);
-		*buf = NULL;
+	if (c->len <= 0) {
+		fprintf(stderr, "openipc-bsel: cannot read %s\n", c->path);
+		free(c->buf);
+		c->buf = NULL;
+		return -1;
 	}
-	return len;
+	c->valid = gpt_parse(c->buf, c->len, &c->g) == 0;
+	return 0;
 }
 
-/* Erases gpt0's first eraseblock, writes buf back page by page, reads it back. */
-static int gpt_store_mtd(const char *path, const struct mtd_info_user *info, const unsigned char *buf)
+static int erased(const unsigned char *p, size_t n)
 {
-	struct erase_info_user ei = { .start = 0, .length = info->erasesize };
-	unsigned char *check;
-	uint32_t off, i;
+	while (n--)
+		if (*p++ != 0xFF)
+			return 0;
+	return 1;
+}
+
+/*
+ * Copy c's partition: buf (len bytes) written to its first eraseblock, page
+ * by page, and read back; with buf NULL every eraseblock is erased and the
+ * first read back as such. A file is overwritten instead.
+ */
+static int gpt_store(struct gpt_copy *c, const unsigned char *buf)
+{
+	unsigned char *check = malloc(c->len);
+	uint32_t off;
 	int fd, ret = -1;
 
-	check = malloc(info->erasesize);
-	fd = open(path, O_RDWR);
+	fd = open(c->path, c->is_file ? O_WRONLY : O_RDWR);
 	if (!check || fd < 0) {
-		fprintf(stderr, "openipc-bsel: cannot open %s\n", path);
+		fprintf(stderr, "openipc-bsel: cannot open %s\n", c->path);
 		goto out;
 	}
-	if (ioctl(fd, MEMERASE, &ei) != 0) {
-		fprintf(stderr, "openipc-bsel: %s: erase failed\n", path);
+	if (c->is_file) {
+		memset(check, 0xFF, c->len);
+		if (pwrite(fd, buf ? buf : check, c->len, 0) == c->len)
+			ret = 0;
+		else
+			fprintf(stderr, "openipc-bsel: cannot write %s\n", c->path);
 		goto out;
 	}
-	for (off = 0; off < info->erasesize; off += info->writesize) {
-		for (i = 0; i < info->writesize && buf[off + i] == 0xFF; i++)
-			;
-		if (i == info->writesize)
-			continue; /* erased already; programming 0xFF would only spend a write */
-		if (pwrite(fd, buf + off, info->writesize, off) != (ssize_t)info->writesize) {
-			fprintf(stderr, "openipc-bsel: %s: write failed at 0x%x\n", path, off);
+	for (off = 0; off < (buf ? c->info.erasesize : c->info.size); off += c->info.erasesize) {
+		struct erase_info_user ei = { .start = off, .length = c->info.erasesize };
+		long long bad = off;
+
+		if (off && ioctl(fd, MEMGETBADBLOCK, &bad) != 0)
+			continue;
+		if (ioctl(fd, MEMERASE, &ei) != 0) {
+			fprintf(stderr, "openipc-bsel: %s: erase failed at 0x%x\n", c->path, off);
 			goto out;
 		}
 	}
-	if (pread(fd, check, info->erasesize, 0) != (ssize_t)info->erasesize ||
-	    memcmp(check, buf, info->erasesize) != 0) {
-		fprintf(stderr, "openipc-bsel: %s: readback differs\n", path);
+	for (off = 0; buf && off < c->info.erasesize; off += c->info.writesize) {
+		if (erased(buf + off, c->info.writesize))
+			continue; /* erased already; programming 0xFF would only spend a write */
+		if (pwrite(fd, buf + off, c->info.writesize, off) != (ssize_t)c->info.writesize) {
+			fprintf(stderr, "openipc-bsel: %s: write failed at 0x%x\n", c->path, off);
+			goto out;
+		}
+	}
+	if (pread(fd, check, c->len, 0) != c->len ||
+	    (buf ? memcmp(check, buf, c->len) != 0 : !erased(check, c->len))) {
+		fprintf(stderr, "openipc-bsel: %s: readback differs\n", c->path);
 		goto out;
 	}
 	ret = 0;
 out:
-	if (ret)
-		fprintf(stderr, "openipc-bsel: the partition table may be damaged: restore gpt0 before rebooting\n");
 	if (fd >= 0)
 		close(fd);
 	free(check);
 	return ret;
 }
 
-static int gpt_store_file(const char *path, const unsigned char *buf, size_t len)
+/*
+ * Both copies read; returns the one to go by (gpt0 if both are valid and
+ * agree), or -1 with the reason on stderr.
+ */
+static int gpt_open(struct gpt_copy c[2])
 {
-	int fd = open(path, O_WRONLY);
+	int b0, b1;
 
-	if (fd < 0 || pwrite(fd, buf, len, 0) != (ssize_t)len) {
-		fprintf(stderr, "openipc-bsel: cannot write %s\n", path);
-		if (fd >= 0)
-			close(fd);
+	if (gpt_load(0, &c[0]) < 0 || gpt_load(1, &c[1]) < 0)
+		return -1;
+	if (!c[0].valid && !c[1].valid) {
+		fprintf(stderr, "openipc-bsel: neither gpt0 nor gpt1 holds a sound GPT\n");
 		return -1;
 	}
-	return close(fd);
-}
-
-/* gpt0's partition device, or the image file given with -f. */
-static const char *gpt_image;
-
-static int gpt_path(char *path, size_t size)
-{
-	int mtdnum;
-
-	if (gpt_image) {
-		snprintf(path, size, "%s", gpt_image);
-		return 0;
+	if (c[0].valid && c[1].valid) {
+		b0 = gpt_bank(&c[0].g);
+		b1 = gpt_bank(&c[1].g);
+		if (b0 != b1) {
+			fprintf(stderr, "openipc-bsel: gpt0 and gpt1 are both valid and disagree (bank %d/%d)\n",
+				b0, b1);
+			return -1;
+		}
 	}
-	mtdnum = find_mtd_by_name("gpt0");
-	if (mtdnum < 0)
-		return -1;
-	snprintf(path, size, "/dev/mtd%d", mtdnum);
-	return 0;
+	return c[0].valid ? 0 : 1;
 }
 
-/* The active bank in gpt0, or -1. */
+/* The active bank, or -1. */
 static int gpt_check(void)
 {
-	struct mtd_info_user info;
-	unsigned char *buf;
-	struct gpt g;
-	char path[256];
-	ssize_t len;
-	int bank = -1;
+	struct gpt_copy c[2];
+	int src, bank = -1;
 
-	if (gpt_path(path, sizeof(path)) < 0)
-		return -1;
-	len = gpt_load(path, gpt_image != NULL, &buf, &info);
-	if (len < 0)
-		return -1;
-	if (gpt_parse(buf, len, &g) == 0)
-		bank = gpt_bank(&g);
-	free(buf);
+	src = gpt_open(c);
+	if (src >= 0)
+		bank = gpt_bank(&c[src].g);
+	free(c[0].buf);
+	free(c[1].buf);
 	return bank;
 }
 
 static int gpt_update(int bank)
 {
-	struct mtd_info_user info;
-	unsigned char *buf;
-	struct gpt g;
-	char path[256];
-	ssize_t len;
-	int changed, ret = -1;
+	struct gpt_copy c[2];
+	struct gpt ng;
+	unsigned char *nbuf = NULL;
+	int src, dst, changed, ret = -1;
+	uint64_t last;
 
-	if (gpt_path(path, sizeof(path)) < 0)
-		return -1;
-	len = gpt_load(path, gpt_image != NULL, &buf, &info);
-	if (len < 0)
-		return -1;
-	if (gpt_parse(buf, len, &g) < 0)
+	src = gpt_open(c);
+	if (src < 0)
 		goto out;
-	changed = gpt_set(&g, bank);
+	dst = !src;
+	nbuf = malloc(c[dst].len);
+	if (!nbuf || (size_t)c[dst].len < c[src].g.arr + (size_t)c[src].g.n * c[src].g.esz)
+		goto out;
+	/* Protective MBR, header and entries, as the valid copy has them. */
+	memset(nbuf, 0xFF, c[dst].len);
+	memcpy(nbuf, c[src].buf, c[src].g.arr + (size_t)c[src].g.n * c[src].g.esz);
+	if (gpt_parse(nbuf, c[dst].len, &ng) < 0)
+		goto out;
+	changed = gpt_set(&ng, bank);
 	if (changed < 0)
 		goto out;
-	if (changed == 0) {
-		printf("openipc-bsel: gpt0: bank %d already active\n", bank);
+	if (changed == 0 && !c[dst].valid) {
+		printf("openipc-bsel: bank %d already active (gpt%d)\n", bank, src);
 		ret = 0;
 		goto out;
 	}
-	ret = gpt_image ? gpt_store_file(path, buf, len) : gpt_store_mtd(path, &info, buf);
+	last = src ? get_le64(c[src].buf + GPT_SECTOR + 24) : get_le64(c[src].buf + GPT_SECTOR + 32);
+	gpt_reform(&ng, dst, last);
+	if (gpt_parse(nbuf, c[dst].len, &ng) < 0)
+		goto out;
+	if (gpt_store(&c[dst], nbuf) < 0) {
+		fprintf(stderr, "openipc-bsel: gpt%d still holds the old table, unchanged\n", src);
+		goto out;
+	}
+	if (gpt_store(&c[src], NULL) < 0)
+		fprintf(stderr, "openipc-bsel: gpt%d (old table) not erased: both valid and they disagree\n", src);
+	else
+		ret = 0;
 	if (ret == 0)
-		printf("openipc-bsel: gpt0: bank %d active (%d entries changed)\n", bank, changed);
+		printf("openipc-bsel: bank %d active (%d entries changed, gpt%d -> gpt%d)\n",
+		       bank, changed, src, dst);
 out:
-	free(buf);
+	free(nbuf);
+	free(c[0].buf);
+	free(c[1].buf);
 	return ret;
 }
 
@@ -699,7 +760,7 @@ static int find_bank_from_ubi_mtd(void)
 
 static void usage(void)
 {
-	fprintf(stderr, "usage: openipc-bsel [-f gpt0-image] {check_flash | check_cmdline | set 0 | set 1 | switch}\n");
+	fprintf(stderr, "usage: openipc-bsel [-f gpt0-image -g gpt1-image] {check_flash | check_cmdline | set 0 | set 1 | switch}\n");
 }
 
 static int parse_bank_arg(const char *arg)
@@ -711,10 +772,10 @@ static int parse_bank_arg(const char *arg)
 	return -1;
 }
 
-/* The board keeps its bank in gpt0 (or -f named a gpt0 image), not in "sel". */
+/* The board keeps its bank in gpt0/gpt1 (or -f/-g named images), not in "sel". */
 static int uses_gpt(void)
 {
-	return gpt_image || (find_sel_mtd_num() < 0 && find_mtd_by_name("gpt0") >= 0);
+	return gpt_image[0] || gpt_image[1] || (find_sel_mtd_num() < 0 && find_mtd_by_name("gpt0") >= 0);
 }
 
 /* The running bank: fpvbsel= (Ascent), or the userapp ubi.mtd= names (P1). */
@@ -794,10 +855,14 @@ int main(int argc, char **argv)
 	char mtddev[64];
 	int mtdnum;
 
-	if (argc >= 3 && strcmp(argv[1], "-f") == 0) {
-		gpt_image = argv[2];
+	while (argc >= 3 && (strcmp(argv[1], "-f") == 0 || strcmp(argv[1], "-g") == 0)) {
+		gpt_image[argv[1][1] == 'g'] = argv[2];
 		argv += 2;
 		argc -= 2;
+	}
+	if (!gpt_image[0] != !gpt_image[1]) {
+		fprintf(stderr, "openipc-bsel: -f (gpt0) and -g (gpt1) go together\n");
+		return 1;
 	}
 
 	if (argc < 2) {

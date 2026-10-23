@@ -129,8 +129,8 @@ BR2_PACKAGE_MBEDTLS_OPENIPC=y
 # BR2_PACKAGE_MAJESTIC_WEBUI is not set
 BR2_PACKAGE_VTUND_OPENIPC=y
 BR2_PACKAGE_YAML_CLI=y
-# A/B slot switch: the active bit of each slot pair in gpt0's GPT, which the
-# stock SPL boots from. See package/openipc-bsel/Config.in.
+# A/B slot switch: the active bit of each slot pair in the GPT (in gpt0 or
+# gpt1), which the stock SPL boots from. See package/openipc-bsel/Config.in.
 BR2_PACKAGE_OPENIPC_BSEL=y
 # /usr/sbin/arto reads the update images /usr/sbin/sysupgrade flashes
 # (BetaFPV's stock P1_SKY_*.img and the OpenIPC ones in that layout).
