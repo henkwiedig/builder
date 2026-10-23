@@ -10,9 +10,12 @@ config BR2_PACKAGE_OPENIPC_BSEL
 
 	  - "sel" (CADDX Ascent's "fpvboot" u-boot command): a small "BSEL"
 	    magic record, reverse-engineered from the stock ar_bsel binary
-	  - "gpt0" (Artosyn PROXIMA 9311, BetaFPV P1): the GPT, whose
-	    attribute bit 47 marks the active member of each env, uboot,
-	    kernel, dtb and userapp pair for the stock SPL
+	  - "gpt0"/"gpt1" (Artosyn PROXIMA 9311, BetaFPV P1): the GPT,
+	    whose attribute bit 47 marks the active member of each env,
+	    uboot, kernel, dtb and userapp pair for the stock SPL. It lives
+	    in one of the two (primary form in gpt0, backup form in gpt1);
+	    a switch writes it into the other and then erases the old one,
+	    as the stock U-Boot's upgrade does
 
 	  Installs /usr/bin/openipc-bsel, CLI-compatible with the stock tool:
 	    openipc-bsel check_flash      read the bank the bootloader boots

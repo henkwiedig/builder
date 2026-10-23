@@ -118,7 +118,7 @@ class Board:
         return "root=/dev/ram0" in cmdline or "rdinit=" in cmdline and "root=" not in cmdline
 
     def active_slot(self):
-        """0 or 1 from gpt0, None if the GPT is unreadable or mixed."""
+        """0 or 1 from the GPT (gpt0 or gpt1), None if it is unreadable or mixed."""
         r = self.run("openipc-bsel check_flash", check=False)
         m = re.search(rb"bank=([01])", r.stdout)
         return int(m.group(1)) if m else None
@@ -293,7 +293,7 @@ def activate(board, parts, slot, force=False):
                      f"UBI {ubi}): not activated (--force activates it anyway)")
     print(board.text(f"openipc-bsel set {slot}").strip())
     if board.active_slot() != slot:
-        sys.exit("gpt0 does not read back the new slot -- check it before power-cycling")
+        sys.exit("the GPT does not read back the new slot -- check it before power-cycling")
     print(f"slot {SLOT_NAME[slot]} is active from the next power-up")
 
 

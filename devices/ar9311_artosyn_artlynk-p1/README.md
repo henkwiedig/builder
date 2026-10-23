@@ -61,7 +61,8 @@ sysupgrade --image=/tmp/P1_SKY_v2.0.5_20260330_a22d901.img --set-password=PASS  
 ```
 
 The flash has two slots, the env/uboot/kernel/dtb/userapp pairs; the stock
-SPL boots the one the GPT marks active (attribute bit 47 in `gpt0`,
+SPL boots the one the GPT marks active (attribute bit 47; the GPT lives in
+`gpt0` or `gpt1`, whichever the last update wrote,
 `openipc-bsel`). `sysupgrade` writes the slot not running and then switches
 to it, so the previous firmware stays one `openipc-bsel switch` away. It
 refuses an image whose SPL or vendor partition differs from the unit's (both
