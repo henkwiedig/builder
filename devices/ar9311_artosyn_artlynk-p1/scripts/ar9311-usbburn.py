@@ -27,7 +27,8 @@ rewrites all four SPL copies from the image's loader and both GPT copies,
 making that slot the active one, verifies, and asks for a reset. Nothing
 carries over: an OpenIPC slot comes up fresh (set root's password with one
 ssh login). The upload runs at about 27 KiB/s (28 bytes per HID report, one
-report per USB frame): ~7 min for an OpenIPC image, ~15 for a stock one.
+report per USB frame): ~7 min for an OpenIPC image, ~15 for a stock one; the
+write after it 10-20 s.
 
 Protocol (reversed from the U-Boot binary; the packet layout is Henk Wiedig's
 FreeArtLynk usbflasher.py): every HID report starts with a 36-byte header --
@@ -37,9 +38,13 @@ chunk of a message then a 12-byte inner header (u16 port 0, u16 header length
 12, u32 payload size). The start command is one 56-byte message, "upgd" + the
 image size; the image is one message of 64-byte reports, 16 bytes of it in the
 first and 28 in every following one. U-Boot answers in the same framing with
-text. A message spans several reports (U-Boot's MTU), only the first of
-which arrives reliably; its 16 characters say "upgrade failed!(" or "upgrade
-complete", which is what flash goes by.
+text. A message spans several reports (U-Boot's MTU), of which only the
+first ever arrives, and after a full upload not even that: U-Boot logs "Hid
+send timeout!" for every report while a read is pending here (no read,
+reads that time out, a read always pending: the same). Its write takes
+10-20 s after the upload, so flash waits a minute for a "upgrade complete"
+/ "upgrade failed!(" that arrives in short sessions (probe) and then says
+to power-cycle.
 
 U-Boot's report descriptor declares numbered reports (input 3 and 4, output
 1 and 2), but its packets start with the FF 55 magic: the kernel's HID core
@@ -148,8 +153,7 @@ class Gadget:
                 usb.util.claim_interface(dev, 0)
                 self.usb = dev
                 # A read is kept pending on endpoint 0x81 all the time, as
-                # hidapi does: U-Boot sends the next report of a message only
-                # once the host takes the one before, and gives up quickly.
+                # hidapi does: U-Boot's report goes out only while one is.
                 self.queue = queue.Queue()
                 threading.Thread(target=self.reader, daemon=True).start()
                 print(f"U-Boot upgrade gadget on USB bus {dev.bus} device {dev.address} (libusb)")
@@ -174,10 +178,13 @@ class Gadget:
             os.write(self.fd, b"\0" + report)   # report ID 0, stripped by the kernel
 
     def reader(self):
+        # No timeout: a read that times out is cancelled, and after a few
+        # thousand cancels during an upload U-Boot can no longer send a single
+        # report ("Hid send timeout!" for every one).
         import usb.core
         while True:
             try:
-                self.queue.put(bytes(self.usb.read(0x81, MTU, timeout=100)))
+                self.queue.put(bytes(self.usb.read(0x81, MTU, timeout=0)))
             except usb.core.USBTimeoutError:
                 continue
             except usb.core.USBError:
@@ -284,8 +291,7 @@ def cmd_flash(a):
 
     deadline = time.time() + a.write_timeout
     while state.get("result") is None and time.time() < deadline:
-        if g.usb is None and time.time() > deadline - a.write_timeout + 120:
-            break   # hidraw: nothing will come; U-Boot writes in about a minute
+        print(f"\r  waiting for U-Boot's write, {deadline - time.time():3.0f} s ", end="", flush=True)
         try:
             report(g.poll(1.0), state)
         except Exception:
@@ -294,8 +300,8 @@ def cmd_flash(a):
     if state.get("result") is False:
         sys.exit("U-Boot reports the upgrade failed; the active slot is unchanged")
     if state.get("result") is None:
-        print("no completion message from U-Boot (hidraw, or none came): it wrote in under a "
-              "minute before; check its serial console, or wait a few minutes, before power-cycling")
+        print("U-Boot reports nothing over USB after a full upload, but writes in 10-20 s "
+              "(\"upgrade complete!\" on its serial console): power-cycle the board now")
     else:
         print("done: power-cycle the board, it boots the slot just written")
 
@@ -341,8 +347,8 @@ def main():
     p.add_argument("--from-stock", nargs="?", const="/dev/ttyACM0", metavar="TTY",
                    help="send stock's upgrade command first (default /dev/ttyACM0)")
     p.add_argument("--timeout", type=float, default=60, help="seconds to wait for the gadget")
-    p.add_argument("--write-timeout", type=float, default=600,
-                   help="seconds to wait for U-Boot's write after the upload")
+    p.add_argument("--write-timeout", type=float, default=60,
+                   help="seconds to wait for U-Boot's write after the upload (it takes 10-20)")
     p.add_argument("--debug", action="store_true", help="print every report U-Boot sends, raw")
     p.set_defaults(fn=cmd_flash)
     p = sub.add_parser("probe", help="U-Boot's status channel, with an image it rejects")
