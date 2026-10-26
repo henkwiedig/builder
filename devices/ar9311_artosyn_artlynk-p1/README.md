@@ -199,8 +199,10 @@ PA calibration. Things that matter:
   converted three in a row ran clean (18-19.5 dB, MCS 12). Bench power steps
   with the conversion: 25 and 100 mW about 5 ground AGC steps apart, SNR
   ~24 / 23 dB; 200 mW (22 dBm) ~19 dB, the PA's limit showing -- BetaFPV
-  caps QAM256 at 20 and QAM64 at 22 dBm, and lifecycled's 400 mW (26 dBm)
-  is past anything stock uses
+  caps QAM256 at 20 and QAM64 at 22 dBm. lifecycled's air top level,
+  400 mW (26 dBm), is past anything stock uses: `--max-power 200` drops it
+  (the goggles then offer 200/100/25 mW, a persisted 400 falls back to
+  200)
 
 Not working yet:
 
