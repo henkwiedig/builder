@@ -115,6 +115,34 @@ def extract_rootfs_files(userapp_img, out, tmp, host_dir):
         gz.unlink()
 
 
+# One power sub-band above the whole channel table (top entry 6395 MHz), in kHz.
+P1_CALI_SUB_BAND_KHZ = 7000000
+
+
+def ascent_power_calibration(p1_cali):
+    """The stock P1 PA calibration in the layout the Ascent air firmware parses.
+
+    The P1's table ("default", "closeloop" rows "5dbm".."32dbm") has one band:
+    {A gain, A fine, B gain, B fine} per row. The Ascent air firmware reads
+    "sub_bands" (kHz bounds) and rows "9dbm".."39dbm" of {gain, fine} per
+    sub-band and path into a buffer it never zeroes: without "sub_bands" the
+    sub-band count and bounds are heap leftovers (a P1 once ran with 89), and
+    every missing row or column is too. One sub-band covering every channel
+    makes the P1's four values columns 0 and 1, the only ones read; rows above
+    the P1's top one repeat it (the table is flat from 26 dBm up).
+    """
+    rows = p1_cali["default"]["closeloop"]
+    have = sorted(int(k[:-3]) for k in rows if k.endswith("dbm") and k[:-3].isdigit())
+    closeloop = {}
+    for dbm in range(9, 40):
+        below = [k for k in have if k <= dbm]
+        row = rows["%ddbm" % (below[-1] if below else have[0])]
+        if len(row) != 4:
+            warn("P1 power calibration row %ddbm has %d values, not 4" % (dbm, len(row)))
+        closeloop["%ddbm" % dbm] = row
+    return {"default": {"sub_bands": [P1_CALI_SUB_BAND_KHZ], "closeloop": closeloop}}
+
+
 def make_ap_config(out):
     """p1_ascent_air.json: the Ascent air config with the P1's own power setup.
 
@@ -123,10 +151,11 @@ def make_ap_config(out):
     the full 42-entry channel table (a shorter table shifts the channel
     indices against the ground's) and 2TX_STBC broadcast. Only the P1's
     own PA setup comes from the stock P1 config: the power section and the
-    PA calibration. Keep 2TX_STBC even though the P1 has one TX chain: the
-    P1 only has RF port A fitted, and under the Ascent firmware 1TX goes
-    out on port B. The stock "board" key is not carried over; the Ascent
-    firmware has no board profiles.
+    PA calibration (converted, see ascent_power_calibration()). Keep
+    2TX_STBC even though the P1 has one TX chain: the P1 only has RF port A
+    fitted, and under the Ascent firmware 1TX goes out on port B. The stock
+    "board" key is not carried over; the Ascent firmware has no board
+    profiles, the P1's board setup is the device's /usr/sbin/p1-fem.
     """
     import json
 
@@ -136,7 +165,7 @@ def make_ap_config(out):
         warn("no Ascent ar8030.json or stock bb_config_air.json - no p1_ascent_air.json")
         return
     p1, cfg = json.loads(stock.read_text()), json.loads(ascent.read_text())
-    cfg["baseband"]["power_calibration"] = p1["baseband"]["power_calibration"]
+    cfg["baseband"]["power_calibration"] = ascent_power_calibration(p1["baseband"]["power_calibration"])
     cfg["baseband"]["basic"]["power"] = p1["baseband"]["basic"]["power"]
     (out / "p1_ascent_air.json").write_text(json.dumps(cfg, indent=1))
 

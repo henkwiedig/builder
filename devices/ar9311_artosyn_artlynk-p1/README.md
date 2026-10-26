@@ -189,6 +189,18 @@ PA calibration. Things that matter:
   200 mW: ground SNR 1 -> 19.5 dB, downlink MCS 1 -> 12, ground AGC gain
   99 -> 40. Basement walk: as expected, the link drops out a little before
   an Ascent Lite's
+- the PA calibration is converted to the Ascent firmware's layout
+  (artlynk-p1-vendor-firmware `ascent_power_calibration()`): one sub-band
+  over the whole channel table and every row 9..39 dBm. Taken as is (one
+  band, no `sub_bands`, rows 5..32) the Ascent parser leaves the sub-band
+  count and bounds and the unread columns and rows to heap leftovers, which
+  differ from one chip start to the next: with the PA working, three starts
+  in a row ran a distorted TX (bench ground SNR flat at 8-9 dB, MCS 5),
+  converted three in a row ran clean (18-19.5 dB, MCS 12). Bench power steps
+  with the conversion: 25 and 100 mW about 5 ground AGC steps apart, SNR
+  ~24 / 23 dB; 200 mW (22 dBm) ~19 dB, the PA's limit showing -- BetaFPV
+  caps QAM256 at 20 and QAM64 at 22 dBm, and lifecycled's 400 mW (26 dBm)
+  is past anything stock uses
 
 Not working yet:
 
