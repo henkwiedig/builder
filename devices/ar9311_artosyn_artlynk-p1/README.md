@@ -177,6 +177,18 @@ PA calibration. Things that matter:
 - the stock P1 `bb_config_air.json` does not boot the Ascent firmware
 - startup power is capped to 200 mW (22 dBm) via `--default-power`, the
   stock P1 configs top out at 22-23 dBm
+- the P1's front end (GSR5755) is switched from the AR8030's GPIO port 2,
+  which only BetaFPV's baseband sets up (its config's `"board":
+  "fpv_air_1t"`): the Ascent air baseband never enables port 2's pads
+  (0x0A10A000 bit 1) and puts the Ascent board's pin functions on the P1's
+  FEM lines. PA and LNA then barely work and the link ends a few metres
+  away, while stock firmware does the same walk easily. `/usr/sbin/p1-fem`
+  does BetaFPV's setup after every chip start (lifecycled hooks `idle` and
+  `connected`): the pad bit through the chip console, pin 2.4 to the FEM
+  control function 73 and the other pins as stock through PRJ 0x0e. Bench at
+  200 mW: ground SNR 1 -> 19.5 dB, downlink MCS 1 -> 12, ground AGC gain
+  99 -> 40. Basement walk: as expected, the link drops out a little before
+  an Ascent Lite's
 
 Not working yet:
 
