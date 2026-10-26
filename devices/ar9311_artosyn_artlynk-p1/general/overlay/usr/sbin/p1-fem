@@ -1,0 +1,67 @@
+#!/bin/sh
+#
+# The P1's RF front end (GSR5755 FEM), set up on the AR8030 the way BetaFPV's
+# own baseband does for its board "fpv_air_1t" (stock bb_config_air.json
+# "board"). The Ascent air baseband this target runs only knows the Ascent's
+# board: it never enables the pads of GPIO port 2 (0x0A10A000 bit 1), where the
+# P1's FEM control lines are, and puts the Ascent's pin functions on them.
+# The P1's PA and LNA then barely work: the link ends a few metres away.
+# Bench, NAND unit at 200 mW: ground SNR 1 -> 19.5 dB, downlink MCS 1 -> 12,
+# ground AGC gain 99 -> 40.
+#
+# Chip state, lost on every chip reset. Run from the lifecycled hooks idle and
+# connected: one of the two fires on every lifecycled start, connected again on
+# every relink. Running it again changes nothing.
+#
+# Pins through PRJ 0x0e (prj_rpc_set_gpio, ar8030-linkctl prj-cmd). The pad bit
+# has no host request: it goes through the chip console's memory write (m).
+
+LOCK=/tmp/p1-fem.pid
+
+log() {
+	logger -t p1-fem "$*"
+}
+
+# One run at a time (idle and connected can fire close together); a lock left
+# by a killed run is taken over.
+i=0
+while [ -f $LOCK ] && kill -0 "$(cat $LOCK 2>/dev/null)" 2>/dev/null; do
+	i=$((i + 1))
+	[ $i -ge 30 ] && { log "another run still holds $LOCK, giving up"; exit 1; }
+	sleep 1
+done
+echo $$ > $LOCK
+trap 'rm -f $LOCK' EXIT
+
+# Port 2 pads on (bit 1). The write replaces the whole register: bit 2 (port 3,
+# the SDIO pads) is 0 once SDIO runs, and stays 0.
+ar8030-linkctl chip-cli -w 500 "m 0x0a10a000 32 2" >/dev/null 2>&1
+
+# port pin dir func level: dir 0 input, 1 output, 2 only the pin function.
+# Function 0x18 + pin index is the pin's plain GPIO (index: port 0 pins 0-4,
+# port 1 5-9, port 2 10-15, port 3 16-28).
+fail=0
+while read -r port pin dir func level what; do
+	[ -n "$port" ] || continue
+	w=$((port | pin << 3 | dir << 7 | func << 9 | level << 17))
+	if ! ar8030-linkctl prj-cmd 0x0e $((w & 255)) $((w >> 8 & 255)) $((w >> 16 & 255)) \
+		$((w >> 24 & 255)) >/dev/null 2>&1; then
+		log "pin $port.$pin ($what): PRJ 0x0e failed"
+		fail=1
+	fi
+done <<EOF
+2 4 2 73 0 FEM control, stock function 73 (Ascent: 0x9d)
+2 0 0 34 0 unused by stock: GPIO input (Ascent: RF control 75)
+2 1 0 35 0 unused by stock: GPIO input (Ascent: RF control 70)
+2 3 0 37 0 unused by stock: GPIO input (Ascent: 0x9e)
+3 0 1 40 0 GPIO low, as stock (Ascent: 0x5c)
+3 1 1 41 0 GPIO low, as stock (Ascent: 0x5e)
+3 2 1 42 0 GPIO low, as stock (Ascent: 0x5f)
+3 10 2 50 0 GPIO, as stock
+3 11 2 51 0 GPIO, as stock (Ascent: 0x9c)
+3 12 2 52 0 GPIO, as stock (Ascent: 0x9b)
+EOF
+
+pad=$(ar8030-linkctl chip-cli -w 800 "d 0x0a10a000 4" 2>/dev/null | tr -d '\r' | grep -m1 '^0A10A000:' | cut -c1-21)
+log "front end set up (pins ok: $([ $fail = 0 ] && echo yes || echo no)), ${pad:-pad register not read back}"
+exit $fail
