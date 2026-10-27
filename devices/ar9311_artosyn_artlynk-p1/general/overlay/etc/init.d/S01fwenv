@@ -15,6 +15,11 @@
 # every call re-read the NAND, and a P1 with flash stalled for many minutes in
 # S40network.
 #
+# The same search runs when /etc/fw_env.config holds no valid line, and rcS
+# calls fw_printenv twice before this script: a config left empty by a power
+# cut (UBIFS recovery) cost a slot boot ~9 minutes. So the config is replaced
+# by a rename after a sync, never rewritten in place.
+#
 # A slot boot that kept its variables in /etc/fw_env.bin before has them moved
 # into its environment once. The file gets an empty, valid environment when
 # it is needed and missing: the CRC32 of 0xfffc zero bytes, then the zeros
@@ -38,7 +43,8 @@ case "$1" in
 		if [ -n "$env" ] && [ -s /etc/fw_env.bin ]; then
 			vars=$(fw_printenv 2>/dev/null)
 		fi
-		{ echo "# Written by /etc/init.d/S01fwenv."; echo "$line"; } > /etc/fw_env.config
+		{ echo "# Written by /etc/init.d/S01fwenv."; echo "$line"; } > /etc/fw_env.config.new &&
+			sync && mv /etc/fw_env.config.new /etc/fw_env.config && sync
 		if [ -n "$vars" ]; then
 			echo "$vars" | sed 's/=/ /' | fw_setenv -s - && rm -f /etc/fw_env.bin
 		fi
