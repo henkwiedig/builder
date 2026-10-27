@@ -211,7 +211,9 @@ def check_image(path):
     body = 0x100 + hext + 0x120
     if hashlib.sha256(data[body:]).digest() != data[0x100 + hext:0x100 + hext + 32]:
         sys.exit(f"{path}: SHA-256 mismatch (damaged or truncated)")
-    if data[0x80:0xc0].split(b"\0")[0] != b"P1_SKY":
+    # P1_SKY up to 2.0.x, HM since 2.1.x; the P1 SKY AIO's say HM too, but are
+    # NOR images (flash type 0) with another layout
+    if data[0x80:0xc0].split(b"\0")[0] not in (b"P1_SKY", b"HM") or data[6] != 2:
         sys.exit(f"{path}: not a P1 SKY image")
     return data[0x2c:0x40].split(b"\0")[0].decode(errors="replace")
 
