@@ -250,7 +250,10 @@ fi
 
 arto check "$image" || die "$image: not a sound ARTO image"
 info=$(arto info "$image")
-echo "$info" | grep -q '^product P1_SKY,' || die "$image: not a P1 SKY image"
+# P1_SKY up to 2.0.x, HM since 2.1.x; the P1 SKY AIO's say HM too, but are NOR
+# images (flash type 0) with another layout
+echo "$info" | grep -Eq '^product (P1_SKY|HM),' && echo "$info" | grep -q '^flash type 2,' ||
+	die "$image: not a P1 SKY image"
 case "$info" in
 *"customer version OpenIPC,"*) kind=openipc ;;
 *) kind=stock ;;

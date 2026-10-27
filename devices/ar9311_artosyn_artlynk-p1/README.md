@@ -15,7 +15,7 @@ SDIO (mmc0, reset GPIO23), NT99235 camera, dwc2 USB, no Ethernet PHY.
 | Update image | `P1_SKY_<release>_OpenIPC_<builder sha>.img`: BetaFPV's update format with the stock SPL, vendor partition and U-Boot, and `uImage.ar9311`, `proxima-9311-air.dtb` (flash boot command line) and `rootfs.ubi`; for `sysupgrade` / `ar9311-install.py` (see below). Sizes are checked against the partitions |
 | AR8030 firmware | the **Caddx Ascent air** baseband image (`package/ascent-vendor-firmware`, from the Ascent vendor image), not the stock P1 one -- see "Radio link" below |
 | Video | waybeam's `ar9311` backend (NT99235 camera through the MissingLynk V4L2 chain, H.265 on wave5, into `frame-shm://venc_frames` for `ar8030-transport-tx`), from waybeam_venc's `ar9311` branch, which `package/waybeam/waybeam.mk` pins separately from the cv610 backend |
-| Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock `P1_SKY_*.img` (put it in `cache/vendor-images/` or point `ARTLYNK_P1_VENDOR_IMG` at it): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
+| Vendor blobs | `package/artlynk-p1-vendor-firmware` extracts them from the stock release its `.mk` pins, `P1_SKY_v2.1.2_20260817_1c34cf1.img` (from `cache/vendor-images/`, downloaded there when missing, or `ARTLYNK_P1_VENDOR_IMG`): the P1 RF power/PA calibration (for the generated `p1_ascent_air.json`), Wave521C codec firmware, NT99235 ISP tuning, stock SPL/U-Boot/DDR firmware for USB boot |
 
 ## RAM boot (no flash needed)
 

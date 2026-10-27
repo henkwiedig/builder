@@ -118,8 +118,9 @@ def check_image(data):
     if data[6] != 2:
         sys.exit(f"flash type {data[6]}, not NAND")
     product = data[0x80:0xc0].split(b"\0")[0].decode(errors="replace")
-    if product != "P1_SKY":
-        sys.exit(f"product {product!r}, not P1_SKY")
+    # P1_SKY up to 2.0.x, HM since 2.1.x (the AIO's too: refused as NOR above)
+    if product not in ("P1_SKY", "HM"):
+        sys.exit(f"product {product!r}, not P1_SKY (or HM): not a P1 SKY image")
     customer = data[0x2c:0x40].split(b"\0")[0].decode(errors="replace")
     return product, customer, any(data[0x100 + hext + 32:body])
 

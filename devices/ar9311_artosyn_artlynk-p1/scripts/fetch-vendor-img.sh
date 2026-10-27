@@ -12,17 +12,18 @@
 # fetch-vendor-img.sh (grab the hidden uuid form field, then GET
 # drive.usercontent.google.com/download with it). If Google changes that
 # page, this starts failing -- download the image by hand from DRIVE_URL
-# below and put it at cache/vendor-images/P1_SKY_*.img (or point
-# ARTLYNK_P1_VENDOR_IMG at it).
+# below and put it into cache/vendor-images/ under BetaFPV's file name
+# (P1_SKY_v<ver>_<date>_<sha>.img, the .mk's VENDOR_RELEASE), or point
+# ARTLYNK_P1_VENDOR_IMG at it.
 
 set -euo pipefail
 
 # Overridable via the environment -- package/artlynk-p1-vendor-firmware
 # owns the canonical value (ARTLYNK_P1_VENDOR_FIRMWARE_VENDOR_FILE_ID in its
 # .mk) and passes it through extract.py; this default only keeps the script
-# runnable by hand. v2.0.5 is the SPL version ar9311-usbboot.py's patches
-# were made against.
-FILE_ID="${FILE_ID:-1JZ17WKLQK0cysCFlLsHTg7nyBegQhUWG}"
+# runnable by hand. v2.1.2 (same SPL as v2.0.5, the version
+# ar9311-usbboot.py's patches were made against).
+FILE_ID="${FILE_ID:-13ZIuxdk9z28mb-lvGbnurUiUTMFCLZlp}"
 DRIVE_URL="https://drive.google.com/file/d/${FILE_ID}/view"
 
 OUT="${1:?usage: fetch-vendor-img.sh <output-path>}"
@@ -36,7 +37,7 @@ fail() {
     echo "$1" >&2
     echo "Download the stock image by hand from:" >&2
     echo "  $DRIVE_URL" >&2
-    echo "and put it at cache/vendor-images/P1_SKY_*.img (or set ARTLYNK_P1_VENDOR_IMG)." >&2
+    echo "and put it into cache/vendor-images/ under its own name (or set ARTLYNK_P1_VENDOR_IMG)." >&2
     exit 1
 }
 

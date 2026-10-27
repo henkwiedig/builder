@@ -26,11 +26,15 @@ BINARIES_DIR/artlynk-p1/:
   stock-image           the stock image's path and release name, one per line,
                         for the OpenIPC image post-image.sh builds in its layout
 
-Nothing is committed. The stock image is looked up locally first:
-$ARTLYNK_P1_VENDOR_IMG, else <builder>/cache/vendor-images/P1_SKY_*.img
-(newest match); if there is none, devices/ar9311_artosyn_artlynk-p1/scripts/
+Nothing is committed. The stock image is the release the .mk pins (argv[4]):
+$ARTLYNK_P1_VENDOR_IMG if set, else <builder>/cache/vendor-images/
+<release>.img; if that is missing, devices/ar9311_artosyn_artlynk-p1/scripts/
 fetch-vendor-img.sh downloads BetaFPV's Google Drive copy (file id from the
-.mk, passed as argv[3]) to cache/vendor-images/P1_SKY_vendor.img.
+.mk, argv[3]) to that name, and only if that fails the newest
+cache/vendor-images/P1_SKY_v*.img stands in. The image names the release
+(its file name). It has to be a P1 SKY image: header product "P1_SKY" (up to
+2.0.x) or "HM" (2.1.x), on NAND (flash type 2); the P1 SKY AIO's images say
+"HM" too, but are NOR ones (flash type 0, another partition layout).
 
 Best-effort throughout, same contract as ascent-vendor-firmware: a missing
 image or host tool prints a warning and leaves the artifact out; this script
@@ -39,7 +43,6 @@ python-lzo (pip install python-lzo), ubi_reader (pip install ubi_reader);
 unsquashfs comes from $HOST_DIR (host-squashfs).
 """
 import glob
-import re
 import gzip
 import os
 import shutil
@@ -51,6 +54,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FDT_MAGIC = b"\xd0\x0d\xfe\xed"
+ARTO_MAGIC = b"OTRA"  # 0x4152544f little-endian
+# header product: P1_SKY up to 2.0.x, HM since 2.1.x (the AIO's too, but NOR)
+SKY_PRODUCTS = (b"P1_SKY", b"HM")
+FLASH_NAND = 2
 
 # stock rootfs path -> output name
 ROOTFS_FILES = {
@@ -65,24 +72,38 @@ def warn(msg):
     print(f"artlynk-p1-vendor-firmware: WARNING: {msg}", file=sys.stderr)
 
 
-def find_image(binaries_dir, file_id=None):
+def sky_image(img):
+    """None if img is a stock P1 SKY image, else why not."""
+    with open(img, "rb") as f:
+        hdr = f.read(0x100)
+    if hdr[:4] != ARTO_MAGIC:
+        return "not an ARTO image"
+    product = hdr[0x80:0xc0].split(b"\0")[0]
+    if product not in SKY_PRODUCTS or hdr[6] != FLASH_NAND:
+        return f"product {product.decode(errors='replace')!r}, flash type {hdr[6]}: not a P1 SKY image"
+    return None
+
+
+def find_image(binaries_dir, file_id, release):
     env = os.environ.get("ARTLYNK_P1_VENDOR_IMG")
     if env:
         return Path(env) if Path(env).is_file() else None
     # BINARIES_DIR = <builder>/openipc/output/images
     builder = Path(binaries_dir).resolve().parents[2]
-    hits = sorted(glob.glob(str(builder / "cache/vendor-images/P1_SKY_*.img")), key=os.path.getmtime)
+    if release:
+        pinned = builder / f"cache/vendor-images/{release}.img"
+        if pinned.is_file():
+            return pinned
+        fetch = builder / "devices/ar9311_artosyn_artlynk-p1/scripts/fetch-vendor-img.sh"
+        env = dict(os.environ, **({"FILE_ID": file_id} if file_id else {}))
+        if fetch.is_file() and subprocess.run([str(fetch), str(pinned)], env=env).returncode == 0:
+            return pinned
+        warn(f"could not fetch {release}")
+    hits = sorted(glob.glob(str(builder / "cache/vendor-images/P1_SKY_v[0-9]*.img")), key=os.path.getmtime)
     if hits:
+        warn(f"using {hits[-1]} instead")
         return Path(hits[-1])
-    fetch = builder / "devices/ar9311_artosyn_artlynk-p1/scripts/fetch-vendor-img.sh"
-    dest = builder / "cache/vendor-images/P1_SKY_vendor.img"
-    if not fetch.is_file():
-        return None
-    env = dict(os.environ, **({"FILE_ID": file_id} if file_id else {}))
-    if subprocess.run([str(fetch), str(dest)], env=env).returncode != 0:
-        warn("could not fetch the stock P1 image")
-        return None
-    return dest if dest.is_file() else None
+    return None
 
 
 def extract_rootfs_files(userapp_img, out, tmp, host_dir):
@@ -178,17 +199,17 @@ def main():
     out = Path(binaries_dir, "artlynk-p1")
     out.mkdir(parents=True, exist_ok=True)
 
-    img = find_image(binaries_dir, file_id)
+    img = find_image(binaries_dir, file_id, release)
     if img is None:
-        warn("stock P1_SKY_*.img not found (set ARTLYNK_P1_VENDOR_IMG or put it in "
+        warn(f"stock P1 SKY image not found (set ARTLYNK_P1_VENDOR_IMG or put {release}.img in "
              "cache/vendor-images/) - building without AR8030/codec/ISP firmware")
         return 0
+    why = sky_image(img)
+    if why:
+        warn(f"{img}: {why} - building without AR8030/codec/ISP firmware")
+        return 0
     print(f"artlynk-p1-vendor-firmware: using {img}")
-    # The cache keeps a fetched image as P1_SKY_vendor.img; a P1_SKY_v<version> name is
-    # the release's own.
-    if re.match(r"P1_SKY_v\d", img.stem) or not release:
-        release = img.stem
-    (out / "stock-image").write_text(f"{img.resolve()}\n{release}\n")
+    (out / "stock-image").write_text(f"{img.resolve()}\n{img.stem}\n")
 
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
