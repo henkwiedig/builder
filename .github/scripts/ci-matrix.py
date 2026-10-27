@@ -68,10 +68,6 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 # leaves a name describing nothing and --self-test says so. Changes to these
 # narrow to nothing, exactly as they do today.
 NOT_BUILT = {
-    # BetaFPV P1: RAM boot over USB only, no NAND install yet, so no image
-    # worth publishing; its own Buildroot toolchain and 6.18 kernel would also
-    # be the one aarch64 smoke target.
-    "ar9311_artosyn_artlynk-p1",
     "gk7102ca_lite_umea-qc01x", "gk7102ca_lite_vstarcam-g8896wip",
     "gk7205v200_rubyfpv_generic", "hi3518ev200_lite_lenovo-snowman-1080p",
     "t31_lite_xiaomi-mjsxj05hl",
@@ -123,6 +119,7 @@ SMOKE_TARGETS = [
     "gk7205v200_otg_generic",            # otg
     "ssc338q_apfpv",                     # devices/apfpv
     "hi3516cv6xx_artosyn_caddx-ascent-lite",  # artosyn, the AR8030 link; NAND/FIT
+    "ar9311_artosyn_artlynk-p1",         # Artosyn SoC, the only aarch64, own toolchain
 ]
 
 # LICENSE and README anchored to whole filenames; unanchored they would also
