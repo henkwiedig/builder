@@ -1,0 +1,82 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: cvisp: hand frames back at depth 2
+
+The CVISP block takes new plane bases at a tick for the frame after the
+one starting then, so a buffer armed at tick k is written between ticks
+k+1 and k+2 and is complete just before k+2.  Depth 3 handed it back at
+k+3, one full frame period (16.7 ms at 1080p60) after the frame was in
+memory; depth 1 hands it back as the write starts, which is the cause of
+the torn frames the old comment attributes to a still-draining DMA.
+
+Measured on a P1 with a probe that marks rows at the top, middle and
+bottom of the luma plane and the last row of both chroma planes before
+QBUF and watches every queued buffer for the overwrite:
+
+  arm tick -> top row      +16.8 ms
+           -> middle row   +24.9 ms
+           -> last Y/U/V   +32.6 ms (0 to 1.6 ms before tick k+2)
+
+At depth 2, 0 of 598 buffers saw a write after hand-back (each held
+20 ms); at depth 1 all of them did, 14-15 ms into the hold.  On the
+air unit's video path at depth 2: 0 CVISP drops, 0 camera skips.
+
+The buffer timestamp is the hand-back time, so a capture-to-display
+figure built on it never showed the extra frame.
+
+Applied on top of the MissingLynk ml-kernel overlay.
+
+---
+--- a/drivers/media/artosyn/ar-cvisp.c
++++ b/drivers/media/artosyn/ar-cvisp.c
+@@ -197,32 +197,30 @@
+ /*
+  * Frame ticks a buffer is held before it is handed back.
+  *
+- * The tick is the ISP's statistics event, so the output DMA for a frame is not
+- * known to have drained when it fires. At 2 a
+- * buffer is held a further full frame period; the cost is a buffer, and the
+- * hardware holds one per unit of depth out of a pool of five.
++ * Plane bases written at a tick do not take the frame that starts with it:
++ * that one is already going to the buffer armed a tick earlier. A buffer armed
++ * at tick k is written during the next frame, between ticks k+1 and k+2.
++ * Measured on a P1 at 1080p60 by marking a stretch of the top, middle and last
++ * luma rows and the last row of each chroma plane before QBUF and watching all
++ * queued buffers for the overwrite: top +16.8 ms, middle +24.9 ms, the last
++ * rows of all three planes +32.6 ms after the arming tick (median; 0 to 1.6 ms
++ * ahead of tick k+2, the probe polling at under 1 ms).
+  *
+- * Measured at both settings with ml-v4l2grab -m, which fills a buffer with a
+- * position-keyed pattern before queueing it and reports what survived: at 1
+- * and at 2 alike a completed buffer carries 518400 luma words and 138240 per
+- * chroma plane, its full written extent, with no marker left at the bottom.
+- * The write has drained by the next tick.
++ * So 2 hands a buffer back as soon as it is written: over 598 frames held for
++ * 20 ms each, no write landed in one after hand-back. 1 hands it back at the
++ * tick the block starts writing it; a consumer reading it then, as the wave5
++ * encoder does through dmabuf, gets torn frames while the drop counter stays
++ * clean.
++ * 3, the original default, holds a finished frame one more period, 16.7 ms at
++ * 60 fps, for nothing. The hardware holds one buffer per unit of depth out of
++ * a pool of five.
+  *
+- * That measures the DMA, not the consumer. A consumer that still holds the
+- * buffer when the next tick re-arms it reads while the hardware writes: the
+- * wave5 encoder imports these buffers by dmabuf and does exactly that, so at
+- * depth 1 it encodes torn frames while the drop counter stays clean. The
+- * default is therefore 3, which is what the recorder and the air-unit video
+- * path are validated at; 1 remains selectable for the drain measurement above
+- * and costs a buffer less out of the pool of five.
+- *
+- * Take the measurement from a buffer marked while the stream is running. See
+- * the geometry block for what the first buffer of a stream reports instead.
++ * The timestamp is taken at hand-back, so at 2 it marks the end of the write.
+  */
+-static unsigned int depth = 3;
++static unsigned int depth = 2;
+ module_param(depth, uint, 0444);
+ MODULE_PARM_DESC(depth,
+-		 "frame ticks a buffer is held before completion, 1 to 4 (default 3)");
++		 "frame ticks a buffer is held before completion, 1 to 4 (default 2)");
+ 
+ /*
+  * Bring the sensor, input path and ISP up from STREAMON, so opening the node is
