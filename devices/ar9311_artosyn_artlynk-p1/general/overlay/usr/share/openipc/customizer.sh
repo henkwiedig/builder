@@ -17,4 +17,9 @@ fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/a
 # Wave521C encoder, both V4L2 devices on this kernel (/etc/waybeam.json).
 #
 
+#
+# Set root password
+#
+echo root:12345 | chpasswd
+
 exit 0
