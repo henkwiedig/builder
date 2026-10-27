@@ -103,6 +103,13 @@ Working (hardware-tested, RAM boot):
   unit (waybeam's `ar9311` backend: auto-exposure, cyclic intra refresh,
   picture controls on `/api/v1/iq`; restarts within a boot stream clean
   video since waybeam 0.86.1)
+- air-side latency: camera hand-back to the frame-shm ring 10 ms median,
+  12 ms p99 at ~22 Mbit/s (was 29 / 52 ms), with the camera handing frames
+  over one frame earlier as well. The CVISP holds a finished frame for
+  `depth` frame ticks; `ml-kernel-patches/0003` makes 2 the default
+  (3 cost 16.7 ms, 1 tears; measurements in the patch). Since waybeam
+  0.90.1 each access unit is copied out of wave5's uncached bitstream
+  buffer before it is parsed (66 % -> 4 % CPU)
 - bind button and status LED; msposd OSD forwarding with the SoC temperature
 
 - `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
