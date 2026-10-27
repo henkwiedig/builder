@@ -25,4 +25,9 @@ fw_setenv upgrade 'https://github.com/OpenIPC/builder/releases/download/latest/h
 # (gc4023, os04d10, sc4336p, sc450ai, sc500ai, sc431hai) is unrelated.
 #
 
+#
+# Set root password
+#
+echo root:12345 | chpasswd
+
 exit 0
