@@ -3,13 +3,17 @@
 Build an OpenIPC update image for the BetaFPV P1 (Artosyn PROXIMA 9311) in
 the layout of BetaFPV's stock ones (P1_SKY_*.img, Artosyn "ARTO"):
 
-  ar9311-image.py pack --base P1_SKY_v2.0.5_20260330_a22d901.img \\
+  ar9311-image.py pack --base P1_SKY_v2.1.2_20260817_1c34cf1.img \\
       --kernel uImage.ar9311 --dtb proxima-9311-air.dtb --userapp rootfs.ubi \\
-      --out P1_SKY_v2.0.5_20260330_a22d901_OpenIPC_<sha>.img
+      --out P1_SKY_v2.1.2_20260817_1c34cf1_OpenIPC_<sha>.img
 
 The stock image gives the header, the loader (the SPL), the partition table
 and the vendor, env and uboot segments, its stored bytes unchanged: the SPL
-and the signed stock U-Boot go on as they are. The kernel, dtb and userapp
+and the signed stock U-Boot go on as they are. Of the partition table only
+the flags change: 1 marks a partition the image writes, so it is set for
+those with segments here and cleared for the others (stock 2.0.6+ also
+writes usr_data, an empty volume that resets stock's settings; this image
+does not carry it). The kernel, dtb and userapp
 segments are this build's, LZO1X-compressed like the stock ones, in segments
 of at most 4 MiB as there. The header's customer version says "OpenIPC" (stock:
 "haming"), which is how /usr/sbin/sysupgrade tells the two apart; the SHA-256
@@ -98,7 +102,11 @@ def cmd_pack(a):
 
     loader = base[b["body"] + b["rom"]:b["body"] + b["rom"] + b["loader"]]
     rom = base[b["body"]:b["body"] + b["rom"]]
-    ptable = base[b["ptab"]:b["ptab"] + b["nparts"] * PART_ENTRY]
+    ptable = bytearray(base[b["ptab"]:b["ptab"] + b["nparts"] * PART_ENTRY])
+    written = {part_of(b["parts"], flash_off) for flash_off, _, _ in segs}
+    for i, name in enumerate(b["parts"]):
+        struct.pack_into("<I", ptable, i * PART_ENTRY + 0x30, int(name in written))
+    ptable = bytes(ptable)
     body = BASE_HDR + b["hext"] + 0x120
     data_off = body + len(rom) + len(loader) + len(ptable) + len(segs) * SEG_ENTRY
     stab, blobs, pos = b"", [], data_off

@@ -40,10 +40,11 @@ is retried on the next instance if the device vanishes mid-transfer.
 
 Getting DDR up without flash
 ----------------------------
-The stock SPL (loader.bin v2.0.5) has a USB path: booted from USB it copies
-an OTRA+uImage U-Boot from DDR (address in reg 0x0a10613c) to its entry and
-jumps -- but never trains DDR, and training needs PHY firmware read from the
-SPI-NAND "vendor" partition. So the SPL is patched:
+The stock SPL (loader.bin, the same from v2.0.5 to v2.1.2) has a USB path:
+booted from USB it copies an OTRA+uImage U-Boot from DDR (address in reg
+0x0a10613c) to its entry and jumps -- but never trains DDR, and training
+needs PHY firmware read from the SPI-NAND "vendor" partition. So the SPL is
+patched:
 
   0x110720  bl stub ; b 0x1104f0   (USB path) run the stub, then copy+jump
   0x111478  mov x0,#FAKE_DEV ; ret  get-spinand-device -> fake struct in SRAM
@@ -211,12 +212,12 @@ SPL_PATCHES = {  # addr: (original, patched)
 
 def patch_spl(payload):
     if len(payload) != SPL_SIZE:
-        sys.exit(f"SPL size {len(payload):#x}, the patch is for the v2.0.5 SPL ({SPL_SIZE:#x})")
+        sys.exit(f"SPL size {len(payload):#x}, the patch is for the v2.0.5-v2.1.2 SPL ({SPL_SIZE:#x})")
     p = bytearray(payload)
     for addr, (orig, new) in SPL_PATCHES.items():
         o, orig, new = addr - SPL_LOAD, bytes.fromhex(orig), bytes.fromhex(new)
         if p[o:o + len(orig)] != orig:
-            sys.exit(f"SPL bytes at {addr:#x} differ: not the v2.0.5 SPL")
+            sys.exit(f"SPL bytes at {addr:#x} differ: not the v2.0.5-v2.1.2 SPL")
         p[o:o + len(new)] = new
     return bytes(p) + SPL_STUB
 
@@ -322,7 +323,7 @@ def patch_uboot(img, env):
     for addr, (orig, new) in UBOOT_PATCHES.items():
         o, orig, new = addr - UBOOT_TEXT + UBOOT_PAYLOAD, bytes.fromhex(orig), bytes.fromhex(new)
         if u[o:o + len(orig)] != orig:
-            sys.exit(f"U-Boot bytes at {addr:#x} differ: not the P1 v2.0.5 U-Boot")
+            sys.exit(f"U-Boot bytes at {addr:#x} differ: not the P1 v2.0.5-v2.1.2 U-Boot")
         u[o:o + len(new)] = new
     start = u.find(ENV_FIRST)
     end = u.find(b"\0\0", start)
