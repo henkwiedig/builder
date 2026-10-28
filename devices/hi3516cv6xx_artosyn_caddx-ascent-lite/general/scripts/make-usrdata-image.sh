@@ -8,13 +8,13 @@
 # file to both usrdata0 and usrdata1 (it's bank-agnostic).
 #
 # This has to ship pre-formatted rather than being formatted at first
-# boot: the rootfs carries busybox's ubiattach/ubimkvol applets (via
-# BR2_TARGET_ROOTFS_UBI) but not mkfs.ubifs — busybox doesn't implement
+# boot: the rootfs carries busybox's ubiattach/ubimkvol applets but
+# not mkfs.ubifs — busybox doesn't implement
 # it, and it wasn't worth adding the real mtd-utils package just for a
 # one-time provisioning step. A raw UBI volume with no UBIFS superblock
 # ever written to it fails to mount ("Invalid argument"), so mkfs.ubifs
 # has to run somewhere — here, at build time, using the host tool
-# Buildroot already built for the rootfs.ubi step.
+# Buildroot already built for the rootfs.ubifs step.
 #
 # The image formats a single dynamic volume named "ubifs" — matching both
 # this board's own rootfs volume name (see ubinize-hi3516cv6xx.cfg's own
