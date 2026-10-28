@@ -70,16 +70,17 @@ BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMI
 # every hi3516cv6xx device builds against. See that fragment's own
 # comment for why.
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/tun.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/init.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/nand.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/usb-gadget.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/hrtimers.config $(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/fragments/cma.config"
-# Runs three scripts, space-separated, in order: this board's
+# Runs four scripts, space-separated, in order: this board's
 # board/hi3516cv6xx/post-image.sh (fitImage/firmware.bin -- firmware dropped
-# the shared cv6xx one with the split NOR layout), our own that builds the blank usrdata0/usrdata1
+# the shared cv6xx one with the split NOR layout), make-rootfs-ubi.sh
+# (rootfs.ubi, see the rootfs section below), our own that builds the blank usrdata0/usrdata1
 # UBI image (see general/scripts/make-usrdata-image.sh for why that has to
 # happen at build time rather than on first boot), and last, a hook that
 # repacks all three into the vendor's "ASW" container for the stock
 # CADDX_PCTool flasher (see general/scripts/pack-caddx-ascent-hook.sh) --
-# it's listed last because it needs fitImage and usrdata.ubi the first two
-# produce.
-BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh $(BR2_EXTERNAL)/scripts/make-usrdata-image.sh $(BR2_EXTERNAL)/scripts/pack-caddx-ascent-hook.sh"
+# it's listed last because it needs fitImage, rootfs.ubi and usrdata.ubi the
+# first three produce.
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/post-image.sh $(BR2_EXTERNAL)/scripts/make-rootfs-ubi.sh $(BR2_EXTERNAL)/scripts/make-usrdata-image.sh $(BR2_EXTERNAL)/scripts/pack-caddx-ascent-hook.sh"
 # general/scripts/embed-usrdata-blank.sh (which embeds a blank UBIFS image
 # into the rootfs for /init to self-heal a corrupted or never-provisioned
 # usrdataN overlay volume via ubiupdatevol — this board power-cuts by
@@ -130,14 +131,15 @@ BR2_TARGET_ROOTFS_SQUASHFS4_XZ=y
 # MTD_SPI_NAND/MTD_UBI/UBIFS_FS set (see that file's own comment for the
 # "VFS: Cannot open root device ubi0:ubifs ... error -19" boot failure it
 # fixes, and the vendor reference defconfig it was cross-checked against).
-# Board-specific ubinize config, NOT the shared scripts/ubifs/ubinize.cfg:
-# that one hardcodes vol_size=32MiB for the rootfs volume, but this board's
+# Buildroot builds rootfs.ubifs only; general/scripts/make-rootfs-ubi.sh (a
+# post-image hook above) ubinizes it into rootfs.ubi with the board-specific
+# scripts/ubifs/ubinize-hi3516cv6xx.cfg, NOT the shared ubinize.cfg: that one
+# hardcodes vol_size=32MiB for the rootfs volume, but this board's
 # rootfs0/rootfs1 NAND partitions are only 16MiB — see the .cfg's own header
 # comment for the "reserved_pebs 265 > good PEBs 128" attach failure it fixes.
-BR2_TARGET_ROOTFS_UBI=y
-BR2_TARGET_ROOTFS_UBI_SUBSIZE=2048
-BR2_TARGET_ROOTFS_UBI_USE_CUSTOM_CONFIG=y
-BR2_TARGET_ROOTFS_UBI_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL)/scripts/ubifs/ubinize-hi3516cv6xx.cfg"
+# Not BR2_TARGET_ROOTFS_UBI: firmware's repack then packages a uImage this
+# board doesn't have (see the script).
+BR2_TARGET_ROOTFS_UBIFS=y
 BR2_TARGET_ROOTFS_UBIFS_LEBSIZE=0x1f000
 # Space fixup, same reason as general/scripts/make-usrdata-image.sh: the rootfs
 # is flashed raw with flashcp, so its free-space pages are programmed and must
