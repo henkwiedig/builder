@@ -21,4 +21,7 @@
 /usr/lib/sensors/libsns_sc500ai.so
 /usr/lib/sensors/libsns_imx335.so
 /usr/lib/sensors/libsns_imx662.so
+/usr/lib/sensors/libsns_cv2003.so
+/usr/lib/sensors/libsns_gc4653.so
+/usr/lib/sensors/libsns_vs4388.so
 
