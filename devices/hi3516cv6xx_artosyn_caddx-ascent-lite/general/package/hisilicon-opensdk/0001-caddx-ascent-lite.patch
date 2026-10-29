@@ -101,16 +101,16 @@ diff -ru a/kernel/sys_config/hi3516cv6xx/pin_mux.c b/sys_config/hi3516cv6xx/pin_
 diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/sys_config/hi3516cv6xx/sys_cfg.c
 --- a/kernel/sys_config/hi3516cv6xx/sys_cfg.c
 +++ b/sys_config/hi3516cv6xx/sys_cfg.c
-@@ -32,6 +32,8 @@
- #define SENSOR_NAME_OS02M10 "os02m10"
- /* ipcinfo names chip ID 0x5302 SP2308, the same silicon as the OS02M10 */
- #define SENSOR_NAME_SP2308 "sp2308"
+@@ -43,6 +43,8 @@
+  * "24Minput"/"27Mclk" banner, the VS4388 is the one left in the 24 MHz group.
+  */
+ #define SENSOR_NAME_VS4388 "vs4388"
 +#define SENSOR_NAME_PS5280 "ps5280"
 +#define SENSOR_NAME_CV2004 "cv2004"
  #define MIPI_AD "mipi_ad"
  
  static void *g_reg_crg_base = NULL;
-@@ -199,6 +201,9 @@
+@@ -210,6 +212,9 @@
      } else if (strncmp(BOARD_NAME_KOLB, g_board_name, strlen(BOARD_NAME_KOLB)) == 0) {
          g_board  = BOARD_KOLB;
          sys_config_print("g_board %u\n", BOARD_KOLB);
@@ -120,8 +120,8 @@ diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/sys_config/hi3516cv6xx/sys_
      } else {
          g_board  = BOARD_SCK;
          sys_config_print("g_board default %u\n", BOARD_SCK);
-@@ -293,11 +298,13 @@
-         (strncmp(SENSOR_NAME_GC2083, name, len) == 0) ||
+@@ -305,13 +310,15 @@
+         (strncmp(SENSOR_NAME_GC4653, name, len) == 0) ||
          (strncmp(SENSOR_NAME_SC431HAI, name, len) == 0) ||
          (strncmp(SENSOR_NAME_SC450AI, name, len) == 0) ||
 -        (strncmp(SENSOR_NAME_SC500AI, name, len) == 0)) {
@@ -130,8 +130,10 @@ diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/sys_config/hi3516cv6xx/sys_
          clock = 0xA001;   /* 27M */
      } else if ((strncmp(SENSOR_NAME_OS04D10, name, len) == 0) ||
                 (strncmp(SENSOR_NAME_OS02M10, name, len) == 0) ||
--               (strncmp(SENSOR_NAME_SP2308, name, len) == 0)) {
-+               (strncmp(SENSOR_NAME_SP2308, name, len) == 0) ||
+                (strncmp(SENSOR_NAME_SP2308, name, len) == 0) ||
+                (strncmp(SENSOR_NAME_CV2003, name, len) == 0) ||
+-               (strncmp(SENSOR_NAME_VS4388, name, len) == 0)) {
++               (strncmp(SENSOR_NAME_VS4388, name, len) == 0) ||
 +               (strncmp(SENSOR_NAME_CV2004, name, len) == 0)) {
          clock = 0x4001;  /* 24M */
      } else if ((strncmp(SENSOR_NAME_IMX335, name, len) == 0) ||
