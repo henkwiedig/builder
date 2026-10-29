@@ -7,10 +7,11 @@
 /etc/init.d/S70vendor
 
 #
-/lib/modules/4.9.84/kernel/fs/lockd/*.ko
-/lib/modules/4.9.84/kernel/fs/nfs/*.ko
-/lib/modules/4.9.84/kernel/fs/nfs_common/*.ko
-/lib/modules/4.9.84/kernel/net/sunrpc/*.ko
+/lib/modules/5.10.221/kernel/fs/lockd/lockd.ko
+/lib/modules/5.10.221/kernel/fs/nfs/nfs.ko
+/lib/modules/5.10.221/kernel/fs/nfs/nfsv3.ko
+/lib/modules/5.10.221/kernel/fs/nfs_common/grace.ko
+/lib/modules/5.10.221/kernel/net/sunrpc/sunrpc.ko
 /usr/lib/sensors/libsns_gc4023.so
 /usr/lib/sensors/libsns_sc4336p.so
 /usr/lib/sensors/libsns_os04d10.so
