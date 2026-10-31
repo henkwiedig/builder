@@ -62,14 +62,46 @@ WAYBEAM_SOC_BUILD = cv610
 # `../openhisilicon` checkout and `../firmware/output/target/usr/lib`, neither
 # of which exist inside a buildroot build tree — that default is for building
 # waybeam_venc standalone against a manually-cloned SDK. Point both at this
-# build's actual hisilicon-opensdk package dir (headers) and the rootfs
-# staging dir (the closed-source .so blobs hisilicon-osdrv-hi3516cv6xx
-# installs), and depend on both so they exist before waybeam's build step
-# runs. Confirmed on the bench: without this, every cv610_*.c TU fails at
+# build's actual hisilicon-opensdk package dir (headers) and the target
+# dir's /usr/lib (the closed-source MPP .so blobs, installed below), and
+# depend on both so they exist before waybeam's build step runs. Confirmed
+# on the bench: without this, every cv610_*.c TU fails at
 # `#include "ot_common.h"` — waybeam falls back to its own default, which
 # 404s to a directory that was never created in this tree.
 WAYBEAM_DEPENDENCIES = hisilicon-opensdk hisilicon-osdrv-hi3516cv6xx \
 	$(call qstrip,$(BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_DEPENDENCY))
+
+# The vendor MPP userspace libraries waybeam links against (-lss_mpi ...) and
+# loads at runtime. hisilicon-osdrv-hi3516cv6xx stopped installing them in
+# firmware b34d2aa (#2734, 2026-10-31): majestic now links the SDK's static
+# archives, so upstream ships no vendor .so. The files are still in that
+# package's files/lib/, so install the set it used to, from there: the NEEDED
+# closure of the vendor majestic, which covers waybeam's -l list, minus
+# libopus.so (opus-openipc builds it). One install command on purpose: a
+# missing file fails the build, because an image without these streams
+# nothing.
+WAYBEAM_CV610_MPP_LIBS = \
+	libaac_comm.so libaac_dec.so libaac_enc.so \
+	libaac_sbr_dec.so libaac_sbr_enc.so \
+	libacs.so libaiisp.so libbnr.so libcalcflicker.so \
+	libdehaze.so libdnvqe.so libdrc.so \
+	libextend_stats.so libir_auto.so libldci.so \
+	libmp3_dec.so libmp3_enc.so libmp3_lame.so \
+	libot_mpi_isp.so libot_osal.so libsecurec.so \
+	libss_ivs_md.so \
+	libss_mpi.so libss_mpi_ae.so libss_mpi_audio.so libss_mpi_audio_adp.so \
+	libss_mpi_awb.so libss_mpi_isp.so libss_mpi_ive.so \
+	libss_mpi_sysbind.so libss_mpi_sysmem.so \
+	libsvp_acl.so libupvqe.so libvoice_engine.so \
+	libvqe_aec.so libvqe_agc.so libvqe_anr.so libvqe_eq.so \
+	libvqe_hpf.so libvqe_hs.so libvqe_record.so libvqe_res.so libvqe_talkv2.so
+
+define WAYBEAM_INSTALL_CV610_MPP_LIBS
+	$(INSTALL) -m 755 -d $(TARGET_DIR)/usr/lib
+	$(INSTALL) -m 644 -t $(TARGET_DIR)/usr/lib \
+		$(addprefix $(HISILICON_OSDRV_HI3516CV6XX_PKGDIR)/files/lib/,$(WAYBEAM_CV610_MPP_LIBS))
+endef
+WAYBEAM_PRE_BUILD_HOOKS += WAYBEAM_INSTALL_CV610_MPP_LIBS
 
 WAYBEAM_SENSOR_FETCH_SCRIPT = $(call qstrip,$(BR2_PACKAGE_WAYBEAM_SENSOR_FETCH_SCRIPT))
 ifneq ($(WAYBEAM_SENSOR_FETCH_SCRIPT),)

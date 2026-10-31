@@ -14,9 +14,10 @@ config BR2_PACKAGE_WAYBEAM
 	  enable majestic (or divinus) alongside it.
 
 	  Built here with SOC_BUILD=hi3516cv610, the Hi3516CV610 (Caddx
-	  Ascent) backend. The vendor MPP libraries it needs are dlopen'd
-	  at runtime and come from hisilicon-osdrv-hi3516cv6xx /
-	  hisilicon-opensdk, so there is no link-time dependency on them.
+	  Ascent) backend. It links against the vendor MPP libraries, which
+	  this package installs itself from hisilicon-osdrv-hi3516cv6xx's
+	  files/lib/ (upstream stopped installing them for majestic's
+	  sake); the headers come from hisilicon-opensdk.
 
 	  Installs /usr/bin/waybeam, /etc/init.d/S95waybeam and the
 	  default /etc/waybeam.json. Runtime config lives in that JSON
