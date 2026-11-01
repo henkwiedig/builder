@@ -49,4 +49,7 @@ AR8030_RESET_GPIO=23
 # artlynk-p1-vendor-firmware's make_ap_config()).
 # Not --fem-ctrl: its FEM bit (>= 24 dBm) is the Lite's FEM wiring; the P1
 # has a GSR5755. Only with an output-power measurement.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2 --rf-path-b-off"
+# --max-power 200: BetaFPV calibrates and uses the P1's PA up to 22 dBm
+# (stock pwr_range [5, 22]); the air's 400 mW is 26 dBm. Bench: 200 mW
+# already costs ~4 dB SNR against 100 mW. The goggles then offer 200/100/25.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2 --rf-path-b-off --max-power 200"
