@@ -67,8 +67,10 @@ The stock P1 baseband firmware (2026-03, unchanged up to P1 v2.1.2) cannot
 link with Ascent ground units: its MAC frame header is an older format
 (`0x58`, 8-bit checksum, ...) that the Ascent firmware rejects as
 `bb_mac_rx_proc: version <n>`. It also frames SDIO transfers with a
-`{ flags, type, len }` trailer (`artosyn_drv link_trailer=1`, package/
-ar8030-transport-tx `0002-*.patch`) and has no project dispatch layer
+`{ flags, type, len }` trailer, which artosyn_drv does not speak (a
+`link_trailer=1` mode for it was package/ar8030-transport-tx
+`0002-kmod-link-trailer-mode-for-sdio-framed-firmware.patch`, dropped once
+the P1 ran the Ascent firmware; see git history), and has no project dispatch layer
 (`BB_SET_PRJ_DISPATCH` -> -4; package/ar8030 `0036-*.patch` falls back to
 the standard pair API).
 
