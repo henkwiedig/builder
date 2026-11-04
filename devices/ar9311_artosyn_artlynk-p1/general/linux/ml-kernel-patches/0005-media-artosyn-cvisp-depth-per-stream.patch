@@ -1,0 +1,91 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: cvisp: depth per stream
+
+The hold depth was fixed at module load. Sub-frame sync (0004) needs
+depth 1, which hands a buffer back as the block starts writing it, and
+without it the encoder must get depth 2, which hands it back written.
+The consumer knows which it runs, so let it choose per stream: the
+parameter is writable and read at REQBUFS (never while streaming;
+CREATE_BUFS mid-stream leaves it alone), together with the queue's
+minimum of depth + 1 buffers. The default stays 2.
+
+Applied on top of the MissingLynk ml-kernel overlay and 0003.
+
+---
+diff --git a/drivers/media/artosyn/ar-cvisp.c b/drivers/media/artosyn/ar-cvisp.c
+index 9c4a6ff..13d94e8 100644
+--- a/drivers/media/artosyn/ar-cvisp.c
++++ b/drivers/media/artosyn/ar-cvisp.c
+@@ -216,11 +216,16 @@ MODULE_PARM_DESC(rotate,
+  * a pool of five.
+  *
+  * The timestamp is taken at hand-back, so at 2 it marks the end of the write.
++ * At 1 it marks the start: the wave5 encoder's sub-frame sync takes such a
++ * buffer while it is written, 64 lines at a time, timed from that timestamp.
++ *
++ * Read at REQBUFS, so a consumer picks the depth per stream: 1 with sub-frame
++ * sync, 2 without.
+  */
+ static unsigned int depth = 2;
+-module_param(depth, uint, 0444);
++module_param(depth, uint, 0644);
+ MODULE_PARM_DESC(depth,
+-		 "frame ticks a buffer is held before completion, 1 to 4 (default 2)");
++		 "frame ticks a buffer is held before completion, 1 to 4 (default 2), read at REQBUFS");
+ 
+ /*
+  * Bring the sensor, input path and ISP up from STREAMON, so opening the node is
+@@ -271,6 +276,7 @@ struct ar_cvisp {
+ 	 * enough to hand back; see ar_cvisp_frame_tick.
+ 	 */
+ 	struct ar_cvisp_buffer *held[AR_CVISP_MAX_DEPTH];
++	unsigned int depth;	/* the depth parameter, as of the last REQBUFS */
+ 	bool streaming;
+ 	bool chain_up;		/* the chain ahead of this block has been started */
+ 	unsigned int sequence;
+@@ -409,8 +415,8 @@ static void ar_cvisp_frame_tick(void *ctx)
+ 	list_del(&next->list);
+ 
+ 	/* Shift the pipeline: the oldest leaves, the new one enters at the front. */
+-	done = cv->held[depth - 1];
+-	for (unsigned int i = depth - 1; i > 0; i--)
++	done = cv->held[cv->depth - 1];
++	for (unsigned int i = cv->depth - 1; i > 0; i--)
+ 		cv->held[i] = cv->held[i - 1];
+ 
+ 	cv->held[0] = next;
+@@ -718,6 +724,7 @@ static int ar_cvisp_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
+ 		AR_CVISP_C_ALLOC,
+ 		AR_CVISP_C_ALLOC,
+ 	};
++	struct ar_cvisp *cv = vb2_get_drv_priv(q);
+ 
+ 	/* A non-zero plane count is a layout to validate, from CREATE_BUFS with a
+ 	 * format; zero is a request for the one layout this block produces.
+@@ -733,6 +740,16 @@ static int ar_cvisp_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
+ 		return 0;
+ 	}
+ 
++	/* REQBUFS: take the depth for the coming stream (never while one runs;
++	 * CREATE_BUFS above can arrive mid-stream and leaves it alone).
++	 */
++	if (!cv->streaming) {
++		if (depth < 1 || depth > AR_CVISP_MAX_DEPTH)
++			return -EINVAL;
++		cv->depth = depth;
++		q->min_queued_buffers = cv->depth + 1;
++	}
++
+ 	*num_planes = AR_CVISP_PLANES;
+ 	for (unsigned int i = 0; i < ARRAY_SIZE(plane_size); i++)
+ 		sizes[i] = plane_size[i];
+@@ -1048,7 +1065,8 @@ static int ar_cvisp_register_node(struct ar_cvisp *cv)
+ 	 * empty queue, which userspace can only refill from a buffer it has not
+ 	 * been given.
+ 	 */
+-	q->min_queued_buffers = depth + 1;
++	cv->depth = depth;
++	q->min_queued_buffers = cv->depth + 1;
+ 
+ 	ret = vb2_queue_init(q);
+ 	if (ret) {

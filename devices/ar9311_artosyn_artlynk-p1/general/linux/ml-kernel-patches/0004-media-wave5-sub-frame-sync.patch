@@ -1,0 +1,436 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: wave5: encoder sub-frame sync, register mode
+
+The WAVE521C encoder can start on a source frame that is still being
+written and follow the write 64 lines (one HEVC CTU row) at a time.
+Mainline writes 0 to the CREATE_INSTANCE option that turns this on and
+has no way to drive it. The protocol is Chips&Media's register-based
+sub-frame sync (vpuapi ENC_SET_SUB_FRAME_SYNC, as in sophgo/libsophon):
+W5_CMD_ENC_SRC_OPTIONS bit0 on, bit1 register mode; then per picture
+W5_ENC_PIC_SUB_FRAME_SYNC_IF = one-hot source slot << 2 | NEW_FRAME << 1
+| END_OF_ROW, where NEW_FRAME toggles at each frame and END_OF_ROW
+toggles once per 64 lines in memory. The firmware takes at most five
+source slots, so the V4L2 source buffers run through slots 0..4 in turn
+and the slot it reports back is translated to the V4L2 index.
+
+Nothing on the Proxima-9311 reports how far the camera has written (the
+wired mode's sources are only fed by the VIF bypass view), so the bands
+are released on a schedule from the source buffer's timestamp, which
+userspace knows for its camera:
+
+  V4L2_CID_WAVE5_SFS_START_US  band 0 is in memory this long after the
+                               timestamp (may be negative)
+  V4L2_CID_WAVE5_SFS_ROW_US    each further band; 0 = sub-frame sync off
+
+Both are latched at stream start. A hard absolute hrtimer releases each
+band when due (all at once if already past); completion, job timeout and
+release cancel it, stream-off releases the rest so a queued picture can
+still finish.
+
+Measured on a P1 (NT99235 1080p60) with the CVISP handing buffers back as
+its write starts (0005) and band n released at ts + 1458 + 948 n us: the
+encoder finishes 0.8-1.1 ms after the last band, ~1.7 ms after the frame's
+last line is in memory instead of ~8 ms; 60 fps, no firmware errors.
+
+Applied on top of the MissingLynk ml-kernel wave5 patches and 0001.
+
+---
+diff --git a/drivers/media/platform/chips-media/wave5/wave5-hw.c b/drivers/media/platform/chips-media/wave5/wave5-hw.c
+index aac3e91..04196a4 100644
+--- a/drivers/media/platform/chips-media/wave5/wave5-hw.c
++++ b/drivers/media/platform/chips-media/wave5/wave5-hw.c
+@@ -1649,8 +1649,12 @@ int wave5_vpu_build_up_enc_param(struct device *dev, struct vpu_instance *inst,
+ 	vpu_write_reg(inst->dev, W5_CMD_EXT_ADDR, 0);
+ 	vpu_write_reg(inst->dev, W5_CMD_NUM_CQ_DEPTH_M1, WAVE521_COMMAND_QUEUE_DEPTH - 1);
+ 
+-	/* This register must be reset explicitly */
+-	vpu_write_reg(inst->dev, W5_CMD_ENC_SRC_OPTIONS, 0);
++	/* This register must be reset explicitly. Its sub-frame sync bits are the
++	 * vendor's W5_CMD_CREATE_INST_SUB_FRAME_SYNC; register mode only, nothing
++	 * on this SoC drives the wires from the camera.
++	 */
++	vpu_write_reg(inst->dev, W5_CMD_ENC_SRC_OPTIONS,
++		      open_param->sub_frame_sync ? W5_SFS_ENABLE | W5_SFS_REGISTER_MODE : 0);
+ 	vpu_write_reg(inst->dev, W5_CMD_ENC_VCORE_INFO, 1);
+ 
+ 	ret = send_firmware_command(inst, W5_CREATE_INSTANCE, true, NULL, NULL);
+diff --git a/drivers/media/platform/chips-media/wave5/wave5-regdefine.h b/drivers/media/platform/chips-media/wave5/wave5-regdefine.h
+index 5573447..20c6117 100644
+--- a/drivers/media/platform/chips-media/wave5/wave5-regdefine.h
++++ b/drivers/media/platform/chips-media/wave5/wave5-regdefine.h
+@@ -733,5 +733,12 @@ enum query_opt {
+ #define W5_RET_RELEASED_SRC_INSTANCE            (W5_REG_BASE + 0x1EC)
+ 
+ #define W5_ENC_PIC_SUB_FRAME_SYNC_IF            (W5_REG_BASE + 0x0300)
++/* W5_CMD_ENC_SRC_OPTIONS at CREATE_INSTANCE (Chips&Media: SUB_FRAME_SYNC) */
++#define W5_SFS_ENABLE                           BIT(0)
++#define W5_SFS_REGISTER_MODE                    BIT(1)	/* 0 = wired */
++/* W5_ENC_PIC_SUB_FRAME_SYNC_IF, register mode: both flags are toggles */
++#define W5_SFS_END_OF_ROW                       BIT(0)	/* 64 more lines in memory */
++#define W5_SFS_NEW_FRAME                        BIT(1)	/* a new frame starts */
++#define W5_SFS_FRAME_SHIFT                      2	/* one-hot source slot */
+ 
+ #endif /* __WAVE5_REGISTER_DEFINE_H__ */
+diff --git a/drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c b/drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c
+index f46c3cc..34c1f49 100644
+--- a/drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c
++++ b/drivers/media/platform/chips-media/wave5/wave5-vpu-enc.c
+@@ -7,10 +7,126 @@
+ 
+ #include <linux/pm_runtime.h>
+ #include "wave5-helper.h"
++#include "wave5-regdefine.h"
+ 
+ #define VPU_ENC_DEV_NAME "C&M Wave5 VPU encoder"
+ #define VPU_ENC_DRV_NAME "wave5-enc"
+ 
++/* Sub-frame sync: see struct wave5_sfs. */
++#define WAVE5_SFS_BAND_LINES 64
++
++static u64 wave5_sfs_due(const struct wave5_sfs *sfs, u32 band)
++{
++	s64 due = (s64)sfs->ts + ((s64)sfs->start_us + (s64)band * sfs->row_us) * NSEC_PER_USEC;
++
++	return due > 0 ? due : 0;
++}
++
++static void wave5_sfs_write(const struct wave5_sfs *sfs)
++{
++	vpu_write_reg(sfs->dev, W5_ENC_PIC_SUB_FRAME_SYNC_IF,
++		      (sfs->frame_bit << W5_SFS_FRAME_SHIFT) |
++		      (sfs->new_frame ? W5_SFS_NEW_FRAME : 0) |
++		      (sfs->end_of_row ? W5_SFS_END_OF_ROW : 0));
++}
++
++/* Release every band that is due, then sleep until the next one. */
++static enum hrtimer_restart wave5_sfs_release(struct hrtimer *timer)
++{
++	struct wave5_sfs *sfs = container_of(timer, struct wave5_sfs, timer);
++	enum hrtimer_restart ret = HRTIMER_NORESTART;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&sfs->lock, flags);
++	while (sfs->active && sfs->released < sfs->rows) {
++		u64 due = wave5_sfs_due(sfs, sfs->released);
++
++		if (ktime_get_ns() < due) {
++			hrtimer_set_expires(timer, ns_to_ktime(due));
++			ret = HRTIMER_RESTART;
++			break;
++		}
++		sfs->end_of_row ^= 1;
++		wave5_sfs_write(sfs);
++		sfs->released++;
++	}
++	raw_spin_unlock_irqrestore(&sfs->lock, flags);
++
++	return ret;
++}
++
++static void wave5_sfs_init(struct vpu_instance *inst)
++{
++	raw_spin_lock_init(&inst->sfs.lock);
++	hrtimer_setup(&inst->sfs.timer, wave5_sfs_release, CLOCK_MONOTONIC,
++		      HRTIMER_MODE_ABS_HARD);
++}
++
++/* The firmware slot a source buffer is encoded from: the V4L2 index itself unless sub-frame
++ * sync is on.
++ */
++static u32 wave5_sfs_slot(struct vpu_instance *inst, u32 src_idx)
++{
++	struct wave5_sfs *sfs = &inst->sfs;
++	u32 slot;
++
++	if (!sfs->on)
++		return src_idx;
++	slot = sfs->next_slot;
++	sfs->next_slot = (slot + 1) % WAVE5_SFS_SLOTS;
++	sfs->slot_src[slot] = src_idx;
++	return slot;
++}
++
++/* ENC_PIC for @slot is queued: announce the new frame and start releasing its bands. */
++static void wave5_sfs_begin(struct vpu_instance *inst, u32 slot, u64 ts)
++{
++	struct wave5_sfs *sfs = &inst->sfs;
++	unsigned long flags;
++
++	if (!sfs->on)
++		return;
++	raw_spin_lock_irqsave(&sfs->lock, flags);
++	sfs->ts = ts;
++	sfs->released = 0;
++	sfs->frame_bit = BIT(slot);
++	sfs->new_frame ^= 1;
++	sfs->end_of_row = 0;
++	sfs->active = true;
++	wave5_sfs_write(sfs);
++	raw_spin_unlock_irqrestore(&sfs->lock, flags);
++	hrtimer_start(&sfs->timer, ns_to_ktime(wave5_sfs_due(sfs, 0)), HRTIMER_MODE_ABS_HARD);
++}
++
++/* The picture is done or abandoned: stop releasing bands for it. @flush releases the rest at
++ * once, so a picture still in the firmware can finish (stream-off drains the queue).
++ */
++static void wave5_sfs_end(struct vpu_instance *inst, bool flush)
++{
++	struct wave5_sfs *sfs = &inst->sfs;
++	unsigned long flags;
++
++	if (!sfs->on)
++		return;
++	raw_spin_lock_irqsave(&sfs->lock, flags);
++	while (flush && sfs->active && sfs->released < sfs->rows) {
++		sfs->end_of_row ^= 1;
++		wave5_sfs_write(sfs);
++		sfs->released++;
++	}
++	sfs->active = false;
++	raw_spin_unlock_irqrestore(&sfs->lock, flags);
++	hrtimer_cancel(&sfs->timer);
++}
++
++/* The V4L2 source index behind the slot the firmware reports. */
++static s32 wave5_sfs_src_index(struct vpu_instance *inst, s32 idx)
++{
++	if (!inst->sfs.on || idx < 0 || idx >= WAVE5_SFS_SLOTS)
++		return idx;
++	return inst->sfs.slot_src[idx];
++}
++
+ static const struct v4l2_frmsize_stepwise enc_frmsize[FMT_TYPES] = {
+ 	[VPU_FMT_TYPE_CODEC] = {
+ 		.min_width = W5_MIN_ENC_PIC_WIDTH,
+@@ -261,7 +377,7 @@ static int start_encode(struct vpu_instance *inst, u32 *fail_res)
+ 				planes[2].data_offset;
+ 		}
+ 		frame_buf.stride = stride;
+-		pic_param.src_idx = src_buf->vb2_buf.index;
++		pic_param.src_idx = wave5_sfs_slot(inst, src_buf->vb2_buf.index);
+ 	}
+ 
+ 	pic_param.source_frame = &frame_buf;
+@@ -303,6 +419,7 @@ static int start_encode(struct vpu_instance *inst, u32 *fail_res)
+ 		 */
+ 		if (src_buf) {
+ 			inst->active_enc_src_idx = src_buf->vb2_buf.index;
++			wave5_sfs_begin(inst, pic_param.src_idx, src_buf->vb2_buf.timestamp);
+ 			v4l2_m2m_src_buf_remove_by_idx(m2m_ctx, src_buf->vb2_buf.index);
+ 		} else {
+ 			inst->active_enc_src_idx = -1;
+@@ -349,6 +466,7 @@ static void wave5_vpu_enc_job_timeout(struct work_struct *work)
+ 	struct vb2_v4l2_buffer *src_buf;
+ 	struct vb2_v4l2_buffer *dst_buf;
+ 
++	wave5_sfs_end(inst, false);
+ 	mutex_lock(&inst->dev->irq_lock);
+ 
+ 	inst->job_timeout_count++;
+@@ -389,6 +507,7 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
+ 	enum vb2_buffer_state src_state;
+ 
+ 	cancel_delayed_work(&inst->job_timeout_work);
++	wave5_sfs_end(inst, false);
+ 
+ 	ret = wave5_vpu_enc_get_output_info(inst, &enc_output_info);
+ 	if (ret) {
+@@ -448,6 +567,7 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
+ 	 * dropped after sending of the encode firmware command, locate it in
+ 	 * the videobuf2 queue directly
+ 	 */
++	enc_output_info.enc_src_idx = wave5_sfs_src_index(inst, enc_output_info.enc_src_idx);
+ 	if (enc_output_info.enc_src_idx >= 0) {
+ 		struct vb2_buffer *vb = vb2_get_buffer(v4l2_m2m_get_src_vq(m2m_ctx),
+ 						       enc_output_info.enc_src_idx);
+@@ -1191,6 +1311,12 @@ static int wave5_vpu_enc_s_ctrl(struct v4l2_ctrl *ctrl)
+ 		inst->enc_param.intra_refresh_mode = ctrl->val ? REFRESH_MODE_CTU_ROWS : 0;
+ 		inst->enc_param.intra_refresh_arg = ctrl->val;
+ 		break;
++	case V4L2_CID_WAVE5_SFS_START_US:
++		inst->sfs_start_us = ctrl->val;
++		break;
++	case V4L2_CID_WAVE5_SFS_ROW_US:
++		inst->sfs_row_us = ctrl->val;
++		break;
+ 	case V4L2_CID_MPEG_VIDEO_HEVC_LOSSLESS_CU:
+ 		inst->enc_param.lossless_enable = ctrl->val;
+ 		break;
+@@ -1374,6 +1500,26 @@ static const struct v4l2_ctrl_ops wave5_vpu_enc_ctrl_ops = {
+ 	.s_ctrl = wave5_vpu_enc_s_ctrl,
+ };
+ 
++static const struct v4l2_ctrl_config wave5_sfs_start_ctrl = {
++	.ops = &wave5_vpu_enc_ctrl_ops,
++	.id = V4L2_CID_WAVE5_SFS_START_US,
++	.name = "Sub-Frame Sync Start (us)",
++	.type = V4L2_CTRL_TYPE_INTEGER,
++	.min = -1000000,
++	.max = 1000000,
++	.step = 1,
++};
++
++static const struct v4l2_ctrl_config wave5_sfs_row_ctrl = {
++	.ops = &wave5_vpu_enc_ctrl_ops,
++	.id = V4L2_CID_WAVE5_SFS_ROW_US,
++	.name = "Sub-Frame Sync Row (us)",
++	.type = V4L2_CTRL_TYPE_INTEGER,
++	.min = 0,
++	.max = 100000,
++	.step = 1,
++};
++
+ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
+ 				     unsigned int *num_planes, unsigned int sizes[],
+ 				     struct device *alloc_devs[])
+@@ -1477,6 +1623,16 @@ static int wave5_set_enc_openparam(struct enc_open_param *open_param,
+ 	open_param->wave_param.max_num_merge = 2;
+ 
+ 	open_param->line_buf_int_en = true;
++
++	/* Latched for the stream; a new firmware instance starts with NEW_FRAME at 0. */
++	inst->sfs.on = inst->sfs_row_us > 0;
++	inst->sfs.start_us = inst->sfs_start_us;
++	inst->sfs.row_us = inst->sfs_row_us;
++	inst->sfs.rows = DIV_ROUND_UP(inst->conf_win.height, WAVE5_SFS_BAND_LINES);
++	inst->sfs.dev = inst->dev;
++	inst->sfs.next_slot = 0;
++	inst->sfs.new_frame = 0;
++	open_param->sub_frame_sync = inst->sfs.on;
+ 	open_param->pic_width = inst->conf_win.width;
+ 	open_param->pic_height = inst->conf_win.height;
+ 	open_param->frame_rate_info = inst->frame_rate;
+@@ -1789,6 +1945,8 @@ static void wave5_vpu_enc_stop_streaming(struct vb2_queue *q)
+ 	unsigned int drain_ms = enc_drain_timeout_ms ? enc_drain_timeout_ms : VPU_ENC_TIMEOUT;
+ 	unsigned long drain_deadline = jiffies + msecs_to_jiffies(drain_ms);
+ 
++	wave5_sfs_end(inst, true);
++
+ 	/*
+ 	 * Note that we don't need m2m_ctx->next_buf_last for this driver, so we
+ 	 * don't call v4l2_m2m_update_stop_streaming_state().
+@@ -1973,6 +2131,7 @@ static int wave5_vpu_open_enc(struct file *filp)
+ 
+ 	INIT_LIST_HEAD(&inst->list);
+ 	INIT_DELAYED_WORK(&inst->job_timeout_work, wave5_vpu_enc_job_timeout);
++	wave5_sfs_init(inst);
+ 
+ 	inst->v4l2_m2m_dev = inst->dev->v4l2_m2m_enc_dev;
+ 	inst->v4l2_fh.m2m_ctx =
+@@ -2133,6 +2292,8 @@ static int wave5_vpu_open_enc(struct file *filp)
+ 			  0, 1, 1, 0);
+ 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
+ 			  V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 0, 0, 0, 0);
++	v4l2_ctrl_new_custom(v4l2_ctrl_hdl, &wave5_sfs_start_ctrl, NULL);
++	v4l2_ctrl_new_custom(v4l2_ctrl_hdl, &wave5_sfs_row_ctrl, NULL);
+ 
+ 	if (v4l2_ctrl_hdl->error) {
+ 		ret = -ENODEV;
+@@ -2191,6 +2352,7 @@ static int wave5_vpu_enc_release(struct file *filp)
+ 			 "encoder instance closing after %u firmware error(s) and %u timed-out job(s)\n",
+ 			 inst->enc_fault_count, inst->job_timeout_count);
+ 
++	wave5_sfs_end(inst, false);
+ 	return wave5_vpu_release_device(filp, wave5_vpu_enc_close, "encoder");
+ }
+ 
+diff --git a/drivers/media/platform/chips-media/wave5/wave5-vpuapi.h b/drivers/media/platform/chips-media/wave5/wave5-vpuapi.h
+index 197bc36..8c81c00 100644
+--- a/drivers/media/platform/chips-media/wave5/wave5-vpuapi.h
++++ b/drivers/media/platform/chips-media/wave5/wave5-vpuapi.h
+@@ -12,6 +12,7 @@
+ #include <linux/workqueue.h>
+ #include <linux/idr.h>
+ #include <linux/genalloc.h>
++#include <linux/hrtimer.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-mem2mem.h>
+ #include <media/v4l2-ctrls.h>
+@@ -585,6 +586,7 @@ struct enc_open_param {
+ 	enum packed_format_num packed_format; /* <<vpuapi_h_packed_format_num>> */
+ 	enum frame_buffer_format src_format;
+ 	bool line_buf_int_en;
++	bool sub_frame_sync; /* register-mode sub-frame sync, see struct wave5_sfs */
+ 	u32 rc_enable : 1; /* rate control */
+ };
+ 
+@@ -785,6 +787,43 @@ struct vpu_instance_ops {
+ 	void (*finish_process)(struct vpu_instance *inst);
+ };
+ 
++/*
++ * Encoder sub-frame sync, register mode (Chips&Media vpuapi ENC_SET_SUB_FRAME_SYNC).
++ *
++ * The source buffer is queued while the camera still writes it. The encoder
++ * starts on it at once and works through it 64 picture lines (one HEVC CTU
++ * row) at a time: before each band it waits until W5_SFS_END_OF_ROW in
++ * W5_ENC_PIC_SUB_FRAME_SYNC_IF has toggled once more. A new frame toggles
++ * W5_SFS_NEW_FRAME and names its source slot one-hot; the firmware takes at
++ * most WAVE5_SFS_SLOTS slots, so the V4L2 source buffers are run through slots
++ * 0..4 in turn and the slot is translated back at completion.
++ *
++ * Nothing in the SoC tells the driver how far the camera has got, so the bands
++ * are released on a schedule from the source buffer's timestamp: band n at
++ * timestamp + start_us + n * row_us (userspace knows its camera). A band
++ * released too early is encoded from stale memory; too late only costs
++ * latency.
++ */
++#define WAVE5_SFS_SLOTS 5
++
++struct wave5_sfs {
++	bool on;		/* latched at stream start */
++	s32 start_us;
++	u32 row_us;
++	u32 rows;		/* bands in the picture */
++	raw_spinlock_t lock;	/* the fields below, against the timer */
++	struct hrtimer timer;
++	struct vpu_device *dev;
++	bool active;		/* a picture is releasing bands */
++	u64 ts;			/* its source timestamp, ns */
++	u32 released;		/* bands released for it */
++	u32 frame_bit;		/* its slot, one-hot */
++	u32 new_frame;		/* the two toggles as last written */
++	u32 end_of_row;
++	u32 next_slot;
++	s32 slot_src[WAVE5_SFS_SLOTS]; /* V4L2 source index behind each slot */
++};
++
+ struct vpu_instance {
+ 	struct list_head list;
+ 	struct v4l2_fh v4l2_fh;
+@@ -845,6 +884,9 @@ struct vpu_instance {
+ 	bool enc_fault_warned;      /* latch for the firmware's own error reports */
+ 	u32 job_timeout_count;      /* jobs finished by the timeout above */
+ 	u32 enc_fault_count;        /* completions that carried a firmware error */
++	s32 sfs_start_us;           /* V4L2_CID_WAVE5_SFS_START_US */
++	u32 sfs_row_us;             /* V4L2_CID_WAVE5_SFS_ROW_US, 0 = off */
++	struct wave5_sfs sfs;
+ 
+ 	unsigned int min_src_buf_count;
+ 	unsigned int rot_angle;
+diff --git a/include/uapi/linux/v4l2-controls.h b/include/uapi/linux/v4l2-controls.h
+index 2d30107..0a494f2 100644
+--- a/include/uapi/linux/v4l2-controls.h
++++ b/include/uapi/linux/v4l2-controls.h
+@@ -228,6 +228,21 @@ enum v4l2_colorfx {
+  */
+ #define V4L2_CID_USER_RKISP1_BASE		(V4L2_CID_USER_BASE + 0x1220)
+ 
++/*
++ * The base for the Chips&Media wave5 driver controls.
++ * We reserve 16 controls for this driver.
++ */
++#define V4L2_CID_USER_WAVE5_BASE		(V4L2_CID_USER_BASE + 0x1300)
++/*
++ * Sub-frame sync for the encoder: the source buffer is still being written
++ * when it is queued, and the encoder takes it 64 picture lines at a time.
++ * Band n is taken to be in memory START_US + n * ROW_US microseconds after
++ * the source buffer's timestamp. ROW_US 0 turns sub-frame sync off. Both
++ * are latched when the stream starts.
++ */
++#define V4L2_CID_WAVE5_SFS_START_US		(V4L2_CID_USER_WAVE5_BASE + 0)
++#define V4L2_CID_WAVE5_SFS_ROW_US		(V4L2_CID_USER_WAVE5_BASE + 1)
++
+ /* MPEG-class control IDs */
+ /* The MPEG controls are applicable to all codec controls
+  * and the 'MPEG' part of the define is historical */

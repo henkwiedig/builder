@@ -110,6 +110,13 @@ Working (hardware-tested, RAM boot):
   (3 cost 16.7 ms, 1 tears; measurements in the patch). Since waybeam
   0.90.1 each access unit is copied out of wave5's uncached bitstream
   buffer before it is parsed (66 % -> 4 % CPU)
+- sub-frame sync (waybeam 0.93.0 `video0.subFrameSync`, on by default): the
+  encoder follows the camera's write 64 lines at a time instead of waiting
+  for the whole frame, ~6 ms less (ar8030-transport-tx capture -> write
+  start 8.8-9.4 -> 2.5-3.0 ms). `ml-kernel-patches/0004` drives the wave5
+  firmware's register-mode sub-frame sync, releasing bands on a schedule
+  from the buffer timestamp (no line counter exists on this SoC); `0005`
+  lets waybeam pick the CVISP depth per stream (1 with it, 2 without)
 - bind button and status LED; msposd OSD forwarding with the SoC temperature
 
 - `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
