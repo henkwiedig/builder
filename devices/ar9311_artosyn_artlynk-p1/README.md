@@ -117,6 +117,15 @@ Working (hardware-tested, RAM boot):
   firmware's register-mode sub-frame sync, releasing bands on a schedule
   from the buffer timestamp (no line counter exists on this SoC); `0005`
   lets waybeam pick the CVISP depth per stream (1 with it, 2 without)
+- strips (waybeam 0.94.0 `video0.strips`, 2 by default, 0 = off): the frame
+  is encoded as horizontal strips on separate wave5 instances, each queued
+  as soon as the camera has written it, and joined into one picture of as
+  many slices; each slice goes out while the rest is still being encoded.
+  P1 -> VRX Pro at ~22 Mbit/s: capture -> ground receiver 28.7 -> 23.4 ms,
+  vsync-locked display 47.8 -> 37.5 ms (3/4 strips lower the median
+  further, not the displayed latency). Needs sub-frame sync. The seams are
+  not bit-exact: up to ~0.1 % of the pixels near them can drift until the
+  intra refresh passes
 - bind button and status LED; msposd OSD forwarding with the SoC temperature
 
 - `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
