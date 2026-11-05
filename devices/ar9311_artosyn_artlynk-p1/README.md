@@ -124,8 +124,15 @@ Working (hardware-tested, RAM boot):
   P1 -> VRX Pro at ~22 Mbit/s: capture -> ground receiver 28.7 -> 23.4 ms,
   vsync-locked display 47.8 -> 37.5 ms (3/4 strips lower the median
   further, not the displayed latency). Needs sub-frame sync. The seams are
-  not bit-exact: up to ~0.1 % of the pixels near them can drift until the
-  intra refresh passes
+  not bit-exact: a motion vector past a seam reads padding while encoding
+  and the other strip while decoding, which a tilt across the seam spreads
+  over the picture until the intra refresh passes
+- strip overlap (waybeam 0.95.0 `video0.stripOverlap`, 1 by default, 0 =
+  off): each strip also encodes one 64-line row past its seam, sliced off
+  and dropped, and the loop filter runs across slice edges. Hand-tilted P1:
+  pixels off by 8 levels or more ~28k -> 0.3-2.9k a frame, the worst frames
+  29 -> 36-43 dB from what the encoders meant; costs the first part +1.4
+  ms, the whole picture +1.8 ms
 - bind button and status LED; msposd OSD forwarding with the SoC temperature
 
 - `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
