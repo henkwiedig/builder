@@ -234,8 +234,11 @@ PA calibration. Things that matter:
   (the goggles then offer 200/100/25 mW, a persisted 400 falls back to
   200)
 
-Not working yet:
-
-- a warm `reboot` resets the SoC, but the SPL then often hangs reading the
-  kernel (`spi_load_image_os 114`, no `Uncompressing Firmware`) until a power
-  cycle; not analysed yet
+Warm reboots: the dw-wdt restart handler armed the reset with its shortest
+timeout, 2^16 cycles (2.7 ms), and from that the SoC nearly never came back
+(the SPL stopped after `spi_load_image_os 114`, or nothing ran at all) until
+a power cycle. Stock reboots the same way. `ml-kernel-patches/0006` arms it
+with the shortest timeout of at least a second (1.4 s), which comes back
+every time, also with every CPU stopped as in the restart path. An image
+without the patch still hangs on its own reboot, so the first update from
+one needs a power cycle.
