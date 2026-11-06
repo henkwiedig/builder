@@ -17,8 +17,9 @@
 # "openipc-bsel switch" goes back to it.
 #
 # An OpenIPC image also gets this system's settings: the U-Boot environment's
-# variables and, from the overlay, $OVERLAY_CARRY (passwords, ssh keys, the
-# AR8030 pairing, /etc/default). -n starts the new slot clean instead.
+# variables and, from the overlay, $OVERLAY_CARRY (passwords, ssh keys,
+# /etc/default, and lifecycled's state: the AR8030 pairing, its paired marker
+# and the power level set). -n starts the new slot clean instead.
 #
 # --set-password sets root's password on what is flashed: in the new slot's
 # overlay for OpenIPC. Stock keeps its password in /etc/passwd on a read-only
@@ -28,7 +29,7 @@
 # the new hash, then runs stock's run.sh with the hook check disabled.
 
 OVERLAY_CARRY="etc/shadow etc/passwd etc/group etc/hostname etc/TZ etc/custom.ok
-etc/default etc/dropbear root/.ssh lib/firmware/ar8030/ar8030.json"
+etc/default etc/dropbear root/.ssh lib/firmware/ar8030"
 WORK=/tmp/sysupgrade
 UBI_DEV=7
 UBI_USRDATA=8
