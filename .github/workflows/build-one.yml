@@ -244,6 +244,12 @@ jobs:
             mv ${STOCKFW} ../${STOCKIMG}
             echo STOCKIMG=${STOCKIMG} >> ${GITHUB_ENV}
           fi
+          EXTRAFW=$(find output/images -maxdepth 1 -name 'SinYine_F1_TX_*_OpenIPC_*.bin' | head -1)
+          if [ ! -z ${EXTRAFW} ]; then
+            EXTRAIMG=$(basename ${EXTRAFW} | sed 's/_OpenIPC_[^_]*\.bin$/_OpenIPC.bin/')
+            mv ${EXTRAFW} ../${EXTRAIMG}
+            echo EXTRAIMG=${EXTRAIMG} >> ${GITHUB_ENV}
+          fi
 
           if [ -z ${NORFW} ] && [ -z ${NANDFW} ] && [ -z ${STOCKFW} ]; then
             exit 1
@@ -283,6 +289,7 @@ jobs:
             ${{env.NORFW}}
             ${{env.NANDFW}}
             ${{env.STOCKIMG}}
+            ${{env.EXTRAIMG}}
 
       - name: Reply on the build request
         if: always() && inputs.request_issue != ''

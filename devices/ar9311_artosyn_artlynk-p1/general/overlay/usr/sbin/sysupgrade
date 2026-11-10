@@ -12,6 +12,12 @@
 # stock flasher is for that). factory, usr_data and usr_log stay as they are,
 # so stock comes back with its own settings and pairing.
 #
+# SinYine's F1 TX is the same board with Artosyn's reference firmware
+# (SinYine_F1_TX_*.bin); its stock image goes back in the same way. Its SPL is
+# not BetaFPV's, and a unit that took OpenIPC through SinYine's goggles runs
+# BetaFPV's (that update rewrites the SPL): the installed SPL stays, both are
+# Artosyn's code with the same DDR setup.
+#
 # Slots: the stock SPL boots the env/uboot/kernel/dtb/userapp set the GPT marks
 # active (openipc-bsel); the other slot keeps the previous firmware, and
 # "openipc-bsel switch" goes back to it.
@@ -61,9 +67,10 @@ print_usage() {
 	echo "
 Usage: $0 --image=FILE | --url=URL [options]
 
-Flashes a P1 update image -- BetaFPV's stock P1_SKY_*.img or an OpenIPC
-P1_SKY_*_OpenIPC_*.img -- into the slot that is not running, then makes it
-the active one. The running slot is never touched.
+Flashes a P1 update image -- BetaFPV's stock P1_SKY_*.img, SinYine's stock
+SinYine_F1_TX_*.bin or an OpenIPC P1_SKY_*_OpenIPC_*.img -- into the slot that
+is not running, then makes it the active one. The running slot is never
+touched.
 
   --image=FILE          The update image (--archive=FILE works too).
   --url=URL             Download it first.
@@ -90,6 +97,19 @@ nand_md5() {
 
 bank() {
 	openipc-bsel "$1" 2>/dev/null | sed -n 's/.*bank=\([01]\)$/\1/p'
+}
+
+# Node names (and other strings) of the image's dtb, one per line.
+dtb_strings() {
+	arto cat "$image" dtb0 | tr '\000\001' '\n\n'
+}
+
+# A stock image of SinYine's F1 TX: Artosyn's reference firmware says its SDK
+# release as the product and no customer version; the dtb tells the air unit
+# (gpio_keys, as BetaFPV's P1 SKY) from SinYine's VRX (adc0-keys, adc1-keys).
+sinyine_tx() {
+	echo "$info" | grep -Eq '^product [0-9]+\.[0-9]+\.[0-9]+-[0-9]+, customer version , ' &&
+		dtb_strings | grep -qx gpio_keys && ! dtb_strings | grep -qxE 'adc[0-9]*-keys'
 }
 
 # The image carries $1: its data length, empty if not.
@@ -251,14 +271,17 @@ fi
 
 arto check "$image" || die "$image: not a sound ARTO image"
 info=$(arto info "$image")
-# P1_SKY up to 2.0.x, HM since 2.1.x; the P1 SKY AIO's say HM too, but are NOR
-# images (flash type 0) with another layout
-echo "$info" | grep -Eq '^product (P1_SKY|HM),' && echo "$info" | grep -q '^flash type 2,' ||
-	die "$image: not a P1 SKY image"
+# BetaFPV's: P1_SKY up to 2.0.x, HM since 2.1.x; the P1 SKY AIO's say HM too,
+# but are NOR images (flash type 0) with another layout
+echo "$info" | grep -q '^flash type 2,' || die "$image: not a P1 SKY image (not for NAND)"
 case "$info" in
 *"customer version OpenIPC,"*) kind=openipc ;;
 *) kind=stock ;;
 esac
+if ! echo "$info" | grep -Eq '^product (P1_SKY|HM),'; then
+	[ "$kind" = stock ] && sinyine_tx || die "$image: not a P1 SKY image"
+	kind=sinyine
+fi
 parts=$(arto parts "$image")
 for p in uboot0 kernel0 dtb0 userapp0; do
 	[ -n "$(img_len $p)" ] || die "$image: no $p"
@@ -273,7 +296,11 @@ fi
 target=$((1 - ${running:-$active}))
 log "$kind image, writing slot $target (running: ${running:-RAM})"
 
-check_shared loader "$(mtd spl0)"
+if [ "$kind" = sinyine ]; then
+	log "keeping this unit's SPL (the image carries SinYine's; sysupgrade never writes it)"
+else
+	check_shared loader "$(mtd spl0)"
+fi
 check_shared vendor "$(mtd vendor)"
 
 userapp=$(mtd userapp$target)

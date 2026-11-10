@@ -15,7 +15,11 @@
 # The NAND install: P1_SKY_<release>_OpenIPC_<builder sha>.img, BetaFPV's
 # update image layout (scripts/ar9311-image.py) with this build's kernel, dtb
 # and rootfs.ubi (ubinize.cfg) in it, which /usr/sbin/sysupgrade flashes into
-# the slot not running. The stock SPL boots the active slot itself (Falcon):
+# the slot not running. SinYine_F1_TX_99991231_OpenIPC_<sha>.bin is the same
+# file for SinYine's F1 TX (the same board): its stock goggles' update takes
+# SinYine_F1_TX_<date>_* from the card's root, the newest date (the fourth
+# field) first, so 99991231 wins over every stock release on the card. The
+# stock SPL boots the active slot itself (Falcon):
 # it loads kernelN and dtbN and takes the kernel command line from the dtb,
 # rewriting ubi.mtd= to the slot's userapp (17 for userapp0, 18 for userapp1)
 # in place, so the number must stay numeric.
@@ -82,13 +86,17 @@ check rootfs.ubi $((336 * 0x20000))
 # release name in artlynk-p1/stock-image). Best-effort like those blobs:
 # without the stock image or python-lzo there is no update image.
 BUILDER_DIR=$(cd "${BINARIES_DIR}/../../.." && pwd)
-rm -f P1_SKY_*_OpenIPC_*.img
+rm -f P1_SKY_*_OpenIPC_*.img SinYine_F1_TX_*_OpenIPC_*.bin
 if [ -f artlynk-p1/stock-image ]; then
 	sha=$(git -C "${BUILDER_DIR}" rev-parse --short HEAD 2>/dev/null)
-	python3 "${BUILDER_DIR}/devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-image.py" pack \
+	out="$(sed -n 2p artlynk-p1/stock-image)_OpenIPC_${sha:-unknown}.img"
+	if python3 "${BUILDER_DIR}/devices/ar9311_artosyn_artlynk-p1/scripts/ar9311-image.py" pack \
 		--base "$(sed -n 1p artlynk-p1/stock-image)" --kernel uImage.${SOC} --dtb ${DTB} \
-		--userapp rootfs.ubi --out "$(sed -n 2p artlynk-p1/stock-image)_OpenIPC_${sha:-unknown}.img" ||
+		--userapp rootfs.ubi --out "$out"; then
+		cp "$out" "SinYine_F1_TX_99991231_OpenIPC_${sha:-unknown}.bin"
+	else
 		echo "post-image: WARNING: no OpenIPC update image (python-lzo installed?)"
+	fi
 else
 	echo "post-image: WARNING: no stock P1 image to build the OpenIPC update image on"
 fi

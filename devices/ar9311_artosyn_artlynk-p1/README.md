@@ -90,6 +90,27 @@ partition, the unit's RF calibration), uploads the image and runs the board's
 `ar9311-usbboot.py linux --nand-root` boots the RAM kernel against slot B's
 rootfs.
 
+### SinYine F1 TX
+
+SinYine's F1 TX is the P1 SKY's board (byte-identical kernel dtb and vendor
+partition, the same AR8030 front-end pin setup) with Artosyn's reference
+firmware instead of BetaFPV's, so it runs this build as it is. The build
+writes the update image a second time as
+`SinYine_F1_TX_99991231_OpenIPC_<sha>.bin` for SinYine's own goggles: on the
+goggles' SD card (root directory) it shows up in their firmware update, which
+takes `SinYine_F1_TX_<date>_*` files and the newest date (the fourth field)
+first, so 99991231 wins over every stock release on the card. That update
+checks the image's structure and segment hashes but no signature, writes the
+slot not running, and rewrites all four SPL copies with the image's (stale
+ones first, then the others one by one, each read back), so the unit ends up
+with BetaFPV's SPL. Power-cycle the goggles before a second attempt (they
+skip an air unit they have just updated). Afterwards SinYine's goggles cannot
+talk to it: it speaks this build's link, not SinYine's.
+
+Back to SinYine's firmware: `sysupgrade --image=/tmp/SinYine_F1_TX_<date>_V<x>.bin
+--set-password=PASS` on the unit (the stock image's SDK-release product and
+its air-unit dtb identify it; the installed SPL stays).
+
 ## Status
 
 Working (hardware-tested, RAM boot):

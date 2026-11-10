@@ -388,6 +388,14 @@ jobs:
             mv ${STOCKFW} ../${STOCKIMG}
             echo STOCKIMG=${STOCKIMG} >> ${GITHUB_ENV}
           fi
+          # The P1's again for SinYine's F1 TX (same board), named for its
+          # goggles' update (SinYine_F1_TX_<date>_*, newest date first).
+          EXTRAFW=$(find output/images -maxdepth 1 -name 'SinYine_F1_TX_*_OpenIPC_*.bin' | head -1)
+          if [ ! -z ${EXTRAFW} ]; then
+            EXTRAIMG=$(basename ${EXTRAFW} | sed 's/_OpenIPC_[^_]*\.bin$/_OpenIPC.bin/')
+            mv ${EXTRAFW} ../${EXTRAIMG}
+            echo EXTRAIMG=${EXTRAIMG} >> ${GITHUB_ENV}
+          fi
 
           if [ -z ${NORFW} ] && [ -z ${NANDFW} ] && [ -z ${STOCKFW} ]; then
             exit 1
@@ -476,7 +484,7 @@ jobs:
               cp -a "$f" reports/
             fi
           done
-          for f in "${NORFW:-}" "${NANDFW:-}" "${STOCKIMG:-}"; do
+          for f in "${NORFW:-}" "${NANDFW:-}" "${STOCKIMG:-}" "${EXTRAIMG:-}"; do
             # An `if` rather than a `&&` chain: the step runs under `bash -e`,
             # where a trailing `&&` that tests false is only harmless because
             # something after it resets the status.
@@ -692,9 +700,10 @@ jobs:
           # openipc.org once, from the report job below, out of their own
           # reports-* artifacts. The Caddx Ascent Lite also ships its image for
           # the stock CADDX_PCTool flasher (Ascent_H_Sky_*.img), the BetaFPV P1
-          # only its stock-format image (P1_SKY_*.img).
+          # only its stock-format image (P1_SKY_*.img), also as SinYine's F1 TX
+          # takes it (SinYine_F1_TX_*.bin).
           mapfile -t IMAGES < <(find dist -maxdepth 1 -type f \( -name '*.tgz' -o -name 'Ascent_H_Sky_*.img' \
-            -o -name 'P1_SKY_*.img' \) | sort)
+            -o -name 'P1_SKY_*.img' -o -name 'SinYine_F1_*.bin' \) | sort)
 
           # Nothing moves when there is no firmware to move it to. A dated
           # release with nothing in it, or the two tags users flash from
