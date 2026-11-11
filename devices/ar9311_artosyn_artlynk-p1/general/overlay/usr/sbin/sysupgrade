@@ -95,6 +95,20 @@ nand_md5() {
 	nanddump --bb=skipbad --omitoob -q -l "$2" "$1" 2>/dev/null | head -c "$2" | md5sum | cut -d' ' -f1
 }
 
+bad_blocks() {
+	cat /sys/class/mtd/${1#/dev/}/bad_blocks
+}
+
+# Whether $2 bytes fit the good blocks of /dev/mtdN $1. nandwrite skips the
+# bad ones, and so does the SPL when it loads uboot, kernel or dtb: its code
+# is the VR04's byte for byte (only the header and its board dtb differ),
+# and there kernel1's bad block at 3.5 MiB sits under a 5.9 MB kernel that
+# boots.
+fits() {
+	local m=/sys/class/mtd/${1#/dev/}
+	[ "$2" -le $(($(cat $m/size) - $(bad_blocks "$1") * $(cat $m/erasesize))) ]
+}
+
 bank() {
 	openipc-bsel "$1" 2>/dev/null | sed -n 's/.*bank=\([01]\)$/\1/p'
 }
@@ -139,10 +153,21 @@ write_raw() {
 		log "$dst: already the image's"
 		return 0
 	fi
-	[ "$(cat /sys/class/mtd/${dev#/dev/}/bad_blocks)" = 0 ] ||
-		die "$dst has a bad block: not written (the SPL may not skip it)"
+	case $dst in
+	env*)
+		# the SPL reads the bootargs from here with code of its own, not
+		# known to skip a bad block
+		[ "$(bad_blocks "$dev")" = 0 ] ||
+			die "$dst has a bad block: not written (the SPL may not skip it there)"
+		;;
+	*) fits "$dev" "$len" || die "$dst: $len bytes do not fit its good blocks" ;;
+	esac
 	log "writing $dst ($len bytes) ..."
-	flash_erase -q "$dev" 0 0 && nandwrite -p -q "$dev" "$WORK/part" || die "writing $dst failed"
+	# flash_erase first erases the whole partition in one go, which a bad
+	# block fails with error messages, then goes block by block, skipping it;
+	# a block it cannot erase it reports only that way, so the readback is
+	# the check
+	flash_erase -q "$dev" 0 0 2>/dev/null && nandwrite -p -q "$dev" "$WORK/part" || die "writing $dst failed"
 	[ "$(nand_md5 "$dev" "$len")" = "$want" ] || die "$dst: readback differs -- the slot is not usable"
 	rm -f "$WORK/part"
 }
