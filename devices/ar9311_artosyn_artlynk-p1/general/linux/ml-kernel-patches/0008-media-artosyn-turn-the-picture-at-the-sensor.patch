@@ -1,0 +1,394 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: turn the picture at the sensor, Bayer order from the bus format
+
+Mirror and flip done in the wave5 encoder read the frame bottom-up, which
+neither sub-frame sync nor strips can follow. Both P1 sensors can turn
+their readout instead; the frame still arrives top-down.
+
+- nt99235: an orientation parameter (bit 0 mirror, bit 1 flip), written
+  before stream-on and live through a short standby (SMIA 0x0101 only
+  latches at a stream start; written live it is ignored). The sensor does
+  not move its readout window, so each bit shifts the Bayer phase; the bus
+  format now reports the resulting order (RGGB, GRBG, GBRG, BGGR).
+- sc231ai: reports GBRG, the order the ISP actually receives (the vendor
+  library says BGGR; its readout starts one column on). Its orientation
+  keeps the phase, so the code does not change with it.
+- ar-isp: the cfa order (0x082c bits 1:0) comes from the input's bus
+  format, 0 RGGB, 1 GRBG, 2 GBRG, 3 BGGR, for RAW12 and RAW10 alike, and a
+  debugfs file "bayer" re-reads it while the chain runs, for a sensor
+  turned without a restart.
+
+Measured on a P1: the NT99235 renders in its own colours in each of the
+four orientations only with the matching order (the wrong phase swaps red
+and blue or demosaics green as red and blue); through waybeam's
+image.mirror / image.flip all four turn with sub-frame sync and strips
+running, 60 fps, no extra latency.
+
+---
+diff --git a/drivers/media/artosyn/ar-isp-main.c b/drivers/media/artosyn/ar-isp-main.c
+index e592a56..0876139 100644
+--- a/drivers/media/artosyn/ar-isp-main.c
++++ b/drivers/media/artosyn/ar-isp-main.c
+@@ -781,26 +781,71 @@ static void ar_isp_wb_write(struct ar_isp *isp, u32 red, u32 green, u32 blue)
+ 	writel(AR_ISP_WB_LATCH, isp->base + AR_ISP_WB_UPDATE);
+ }
+ 
+-/* The input formats the block has a setup for: the P1's two sensors. */
++/*
++ * The ISP's Bayer order for an input format (ar-isp-regs.h), and from that
++ * whether the block has a setup for it: 12-bit for the NT99235, in any of its
++ * orientations, 10-bit for the SC231AI. -1 for anything else.
++ */
++static int ar_isp_bayer_order(u32 code, bool *raw10)
++{
++	*raw10 = false;
++	switch (code) {
++	case MEDIA_BUS_FMT_SRGGB10_1X10:
++		*raw10 = true;
++		fallthrough;
++	case MEDIA_BUS_FMT_SRGGB12_1X12:
++		return 0;
++	case MEDIA_BUS_FMT_SGRBG10_1X10:
++		*raw10 = true;
++		fallthrough;
++	case MEDIA_BUS_FMT_SGRBG12_1X12:
++		return 1;
++	case MEDIA_BUS_FMT_SGBRG10_1X10:
++		*raw10 = true;
++		fallthrough;
++	case MEDIA_BUS_FMT_SGBRG12_1X12:
++		return 2;
++	case MEDIA_BUS_FMT_SBGGR10_1X10:
++		*raw10 = true;
++		fallthrough;
++	case MEDIA_BUS_FMT_SBGGR12_1X12:
++		return 3;
++	}
++	return -1;
++}
++
+ static bool ar_isp_input_supported(u32 code)
+ {
+-	return code == MEDIA_BUS_FMT_SRGGB12_1X12 ||	/* NT99235 */
+-	       code == MEDIA_BUS_FMT_SBGGR10_1X10;	/* SC231AI */
++	bool raw10;
++
++	return ar_isp_bayer_order(code, &raw10) >= 0;
++}
++
++static void ar_isp_set_bayer_order(struct ar_isp *isp, int order)
++{
++	u32 val = readl(isp->base + AR_ISP_CFA_GEOMETRY);
++
++	val = (val & ~AR_ISP_CFA_GEOMETRY_ORDER) |
++	      FIELD_PREP(AR_ISP_CFA_GEOMETRY_ORDER, order);
++	writel(val, isp->base + AR_ISP_CFA_GEOMETRY);
+ }
+ 
+ /*
+  * The input-dependent part of the setup, after the output arm. The replay is
+- * the NT99235's, so that sensor needs nothing here. The SC231AI sends RAW10 at
+- * exactly its 1920x1080 active area, which needs the borderless input mode,
+- * its own Bayer order and the second DRC length; all three found by fpvOS.
+- * Without the input mode every frame aborts in the ISP.
++ * the NT99235's as mounted, so that sensor needs only its Bayer order, which
++ * moves when it is turned. The SC231AI sends RAW10 at exactly its 1920x1080
++ * active area, which needs the borderless input mode, the cfa mode and the
++ * second DRC length; all found by fpvOS. Without the input mode every frame
++ * aborts in the ISP.
+  */
+ static void ar_isp_input_setup(struct ar_isp *isp,
+ 			       const struct v4l2_mbus_framefmt *fmt)
+ {
++	bool raw10;
++	int order = ar_isp_bayer_order(fmt->code, &raw10);
+ 	u32 val;
+ 
+-	if (fmt->code == MEDIA_BUS_FMT_SBGGR10_1X10) {
++	if (raw10) {
+ 		val = readl(isp->base + AR_ISP_INPUT_SIZE);
+ 		val &= ~(AR_ISP_INPUT_MODE | AR_ISP_INPUT_HEIGHT | AR_ISP_INPUT_WIDTH);
+ 		val |= FIELD_PREP(AR_ISP_INPUT_MODE, AR_ISP_INPUT_MODE_NO_BORDER) |
+@@ -808,7 +853,7 @@ static void ar_isp_input_setup(struct ar_isp *isp,
+ 		       FIELD_PREP(AR_ISP_INPUT_WIDTH, fmt->width);
+ 		writel(val, isp->base + AR_ISP_INPUT_SIZE);
+ 
+-		writel(fmt->width << 15 | fmt->height << 2 | 2,
++		writel(fmt->width << 15 | fmt->height << 2,
+ 		       isp->base + AR_ISP_CFA_GEOMETRY);
+ 		val = readl(isp->base + AR_ISP_CFA_ORDER);
+ 		val = (val & ~AR_ISP_CFA_ORDER_MASK) | 2;
+@@ -820,6 +865,7 @@ static void ar_isp_input_setup(struct ar_isp *isp,
+ 		writel(AR_ISP_TABLE_COMMIT_ENABLE | AR_ISP_TABLE_GAMMA_BITS |
+ 		       AR_ISP_TABLE_DRC_BIT, isp->base + AR_ISP_TABLE_COMMIT);
+ 	}
++	ar_isp_set_bayer_order(isp, order);
+ 
+ 	/* The output arm's control word clears the black level enable; put
+ 	 * back what the tuning file asks for.
+@@ -835,8 +881,8 @@ static void ar_isp_input_setup(struct ar_isp *isp,
+ 
+ 	ar_isp_wb_write(isp, wb_red, wb_green, wb_blue);
+ 
+-	dev_info(isp->dev, "input 0x%04x %ux%u: size 0x%08x, control 0x%08x, wb %u/%u/%u\n",
+-		 fmt->code, fmt->width, fmt->height,
++	dev_info(isp->dev, "input 0x%04x %ux%u: order %d, size 0x%08x, control 0x%08x, wb %u/%u/%u\n",
++		 fmt->code, fmt->width, fmt->height, order,
+ 		 readl(isp->base + AR_ISP_INPUT_SIZE),
+ 		 readl(isp->base + AR_ISP_CONTROL),
+ 		 readl(isp->base + AR_ISP_WB_GAIN_R),
+@@ -924,6 +970,34 @@ static ssize_t ar_isp_wb_store(struct file *file, const char __user *ubuf,
+ 	return len;
+ }
+ 
++/*
++ * Re-read the input's Bayer order and apply it, for a sensor turned while the
++ * chain runs (the NT99235's orientation moves its phase, and its bus format
++ * reports the new one). Write anything. -EPIPE before the block is
++ * configured, where a register access could hang the SoC; -EINVAL for an
++ * input the block has no setup for.
++ */
++static int ar_isp_bayer_set(void *data, u64 val)
++{
++	struct ar_isp *isp = data;
++	struct v4l2_mbus_framefmt fmt;
++	bool raw10;
++	int order, ret;
++
++	if (!isp->configured)
++		return -EPIPE;
++	ret = ar_vif_source_format(&fmt);
++	if (ret)
++		return ret;
++	order = ar_isp_bayer_order(fmt.code, &raw10);
++	if (order < 0)
++		return -EINVAL;
++	ar_isp_set_bayer_order(isp, order);
++
++	return 0;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(ar_isp_bayer_fops, NULL, ar_isp_bayer_set, "%llu\n");
++
+ static const struct file_operations ar_isp_wb_fops = {
+ 	.owner = THIS_MODULE,
+ 	.open = ar_isp_wb_open,
+@@ -1412,6 +1486,8 @@ static int ar_isp_probe(struct platform_device *pdev)
+ 				   &ar_isp_ladders_fops);
+ 	debugfs_create_file("white_balance", 0600, isp->debugfs, isp,
+ 			    &ar_isp_wb_fops);
++	debugfs_create_file_unsafe("bayer", 0200, isp->debugfs, isp,
++				   &ar_isp_bayer_fops);
+ 	debugfs_create_file("ladder_banks", 0400, isp->debugfs, isp,
+ 			    &ar_isp_ladder_banks_fops);
+ 	debugfs_create_file_unsafe("tone", 0600, isp->debugfs, isp,
+diff --git a/drivers/media/artosyn/ar-isp-regs.h b/drivers/media/artosyn/ar-isp-regs.h
+index 0ce58aa..000d233 100644
+--- a/drivers/media/artosyn/ar-isp-regs.h
++++ b/drivers/media/artosyn/ar-isp-regs.h
+@@ -48,13 +48,14 @@
+ 
+ /*
+  * The cfa stage's frame geometry and Bayer order: (width << 15) |
+- * (height << 2) | order at 0x082c, and the order again in 0x0858 bits 1:0
+- * (see ar-isp-cfa.h). The NT99235 runs order 0. The SC231AI's frames need
+- * order 2: 0 and 3 demosaic green as red and blue, 1 swaps red and blue. Its
+- * mirror and flip keep that order, because the sensor moves its readout
+- * window to hold the Bayer phase.
++ * (height << 2) | order at 0x082c, and a mode in 0x0858 bits 1:0 (see
++ * ar-isp-cfa.h). The order is the input's, 0 RGGB, 1 GRBG, 2 GBRG, 3 BGGR,
++ * measured on a P1 with the NT99235 in all four orientations (each renders in
++ * its own colours only with its order; the wrong phase swaps red and blue or
++ * demosaics green as red and blue). The SC231AI arrives as GBRG.
+  */
+ #define AR_ISP_CFA_GEOMETRY		0x082c
++#define AR_ISP_CFA_GEOMETRY_ORDER	GENMASK(1, 0)
+ #define AR_ISP_CFA_ORDER		0x0858
+ #define AR_ISP_CFA_ORDER_MASK		GENMASK(1, 0)
+ 
+diff --git a/drivers/media/artosyn/nt99235.c b/drivers/media/artosyn/nt99235.c
+index 9898781..d3d01d8 100644
+--- a/drivers/media/artosyn/nt99235.c
++++ b/drivers/media/artosyn/nt99235.c
+@@ -513,12 +513,27 @@ static const struct nt99235_mode nt99235_modes[] = {
+ };
+ 
+ /*
+- * Bayer order is unconfirmed: it is not recoverable from the vendor library
+- * (the ISP is told the order out of band) and is cheapest to settle by looking
+- * at a captured frame. SRGGB12 is the placeholder, matching the order the
+- * vendor raw-dump API names in STREAM_FORMAT_RAW_UNPACKED_12BIT_RGGB.
++ * Orientation: SMIA image_orientation, bit 0 mirror, bit 1 flip. The sensor
++ * latches it only when streaming starts, so a change while streaming goes
++ * through a short standby. Unlike the SC231AI it does not move its readout
++ * window, so each bit shifts the Bayer phase; the reported bus format follows
++ * (nt99235_mbus_code), and the ISP takes its order from that.
+  */
+-#define NT99235_MBUS_CODE	MEDIA_BUS_FMT_SRGGB12_1X12
++#define NT99235_REG_ORIENTATION		0x0101
++#define NT99235_ORIENTATION_STANDBY_MS	50
++
++/*
++ * The Bayer order of the frame, by orientation. RGGB unturned, as the vendor
++ * raw-dump API names it (STREAM_FORMAT_RAW_UNPACKED_12BIT_RGGB); the other
++ * three measured on a P1, as the ISP order that renders a turned picture in
++ * its own colours.
++ */
++static const u32 nt99235_mbus_codes[] = {
++	MEDIA_BUS_FMT_SRGGB12_1X12,	/* as mounted */
++	MEDIA_BUS_FMT_SGRBG12_1X12,	/* mirrored */
++	MEDIA_BUS_FMT_SGBRG12_1X12,	/* flipped */
++	MEDIA_BUS_FMT_SBGGR12_1X12,	/* turned 180 degrees */
++};
+ 
+ /*
+  * The link rate comes from the sensor's PLL, not from the frame timing. The
+@@ -924,6 +939,53 @@ module_param_cb(gain, &nt99235_param_ops, &gain, 0644);
+ MODULE_PARM_DESC(gain,
+ 		 "analogue gain code 0x00-0x60, gain = 2^(code>>4) * (16 + (code&15)) / 16, so 1x to 64x; writable while streaming");
+ 
++static int orientation;
++
++static u32 nt99235_mbus_code(void)
++{
++	return nt99235_mbus_codes[orientation & 3];
++}
++
++static int nt99235_orientation_set(const char *val, const struct kernel_param *kp)
++{
++	struct nt99235 *nt99235;
++	int ret = param_set_int(val, kp);
++
++	if (ret)
++		return ret;
++	orientation &= 3;
++
++	guard(mutex)(&nt99235_bound_lock);
++
++	nt99235 = nt99235_bound;
++	if (!nt99235 || !pm_runtime_get_if_in_use(nt99235->dev))
++		return 0;
++
++	/* Streaming: the register only takes effect from a stream start. */
++	ret = nt99235_write(nt99235, NT99235_REG_MODE_SELECT,
++			    NT99235_MODE_STANDBY);
++	if (!ret) {
++		msleep(NT99235_ORIENTATION_STANDBY_MS);
++		ret = nt99235_write(nt99235, NT99235_REG_ORIENTATION,
++				    orientation);
++	}
++	if (!ret)
++		ret = nt99235_write(nt99235, NT99235_REG_MODE_SELECT,
++				    NT99235_MODE_STREAMING);
++	pm_runtime_put(nt99235->dev);
++
++	return ret;
++}
++
++static const struct kernel_param_ops nt99235_orientation_ops = {
++	.set = nt99235_orientation_set,
++	.get = param_get_int,
++};
++
++module_param_cb(orientation, &nt99235_orientation_ops, &orientation, 0644);
++MODULE_PARM_DESC(orientation,
++		 "bit 0 mirror, bit 1 flip, 3 = turned 180 degrees (default 0); writable while streaming (a short standby), the bus format reports the Bayer order that results");
++
+ static int nt99235_s_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct nt99235 *nt99235 =
+@@ -1046,6 +1108,10 @@ static int nt99235_start_stream(struct nt99235 *nt99235)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = nt99235_write(nt99235, NT99235_REG_ORIENTATION, orientation & 3);
++	if (ret)
++		return ret;
++
+ 	return nt99235_write(nt99235, NT99235_REG_MODE_SELECT,
+ 			     NT99235_MODE_STREAMING);
+ }
+@@ -1079,7 +1145,7 @@ static void nt99235_fill_format(const struct nt99235_mode *mode,
+ {
+ 	format->width = mode->width;
+ 	format->height = mode->height;
+-	format->code = NT99235_MBUS_CODE;
++	format->code = nt99235_mbus_code();
+ 	format->field = V4L2_FIELD_NONE;
+ 	format->colorspace = V4L2_COLORSPACE_RAW;
+ 	format->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+@@ -1107,7 +1173,7 @@ static int nt99235_enum_mbus_code(struct v4l2_subdev *sd,
+ 	if (code->index > 0)
+ 		return -EINVAL;
+ 
+-	code->code = NT99235_MBUS_CODE;
++	code->code = nt99235_mbus_code();
+ 
+ 	return 0;
+ }
+@@ -1119,7 +1185,7 @@ static int nt99235_enum_frame_size(struct v4l2_subdev *sd,
+ 	struct nt99235 *nt99235 = to_nt99235(sd);
+ 	unsigned int seen = 0;
+ 
+-	if (fse->code != NT99235_MBUS_CODE)
++	if (fse->code != nt99235_mbus_code())
+ 		return -EINVAL;
+ 
+ 	for (unsigned int i = 0; i < ARRAY_SIZE(nt99235_modes); i++) {
+@@ -1197,6 +1263,21 @@ static int nt99235_set_pad_format(struct v4l2_subdev *sd,
+ 	return 0;
+ }
+ 
++/* The stored format, with the Bayer order of the current orientation, which
++ * can change while the format stays.
++ */
++static int nt99235_get_pad_format(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_format *fmt)
++{
++	int ret = v4l2_subdev_get_fmt(sd, sd_state, fmt);
++
++	if (!ret)
++		fmt->format.code = nt99235_mbus_code();
++
++	return ret;
++}
++
+ static int nt99235_init_state(struct v4l2_subdev *sd,
+ 			      struct v4l2_subdev_state *sd_state)
+ {
+@@ -1215,7 +1296,7 @@ static const struct v4l2_subdev_video_ops nt99235_video_ops = {
+ static const struct v4l2_subdev_pad_ops nt99235_pad_ops = {
+ 	.enum_mbus_code = nt99235_enum_mbus_code,
+ 	.enum_frame_size = nt99235_enum_frame_size,
+-	.get_fmt = v4l2_subdev_get_fmt,
++	.get_fmt = nt99235_get_pad_format,
+ 	.set_fmt = nt99235_set_pad_format,
+ };
+ 
+diff --git a/drivers/media/artosyn/sc231ai.c b/drivers/media/artosyn/sc231ai.c
+index e168965..60cb747 100644
+--- a/drivers/media/artosyn/sc231ai.c
++++ b/drivers/media/artosyn/sc231ai.c
+@@ -119,13 +119,16 @@
+ #define SC231AI_PIXEL_RATE		148500000ULL
+ 
+ /*
+- * The vendor library calls the sensor BGGR. The receiver only needs "10-bit
+- * Bayer" from the code, and the ISP keys its input setup on it. The sensor
+- * sends exactly the 1920x1080 it reports, the vendor's window at offset 4,4
+- * of the 1928x1088 array, with no border around it: a 1924-pixel RAW10 line
+- * would be 2405 bytes, which two lanes cannot carry without CRC errors.
++ * The vendor library calls the sensor BGGR, but the frame reaches the ISP as
++ * GBRG, one column on: on a P1 the ISP renders it in its own colours only
++ * with its GBRG order, the order that also renders the NT99235 flipped, and
++ * the zone statistics put green on the diagonal. The ISP takes its order from
++ * this code. The sensor sends exactly the 1920x1080 it reports, the vendor's
++ * window at offset 4,4 of the 1928x1088 array, with no border around it: a
++ * 1924-pixel RAW10 line would be 2405 bytes, which two lanes cannot carry
++ * without CRC errors.
+  */
+-#define SC231AI_MBUS_CODE		MEDIA_BUS_FMT_SBGGR10_1X10
++#define SC231AI_MBUS_CODE		MEDIA_BUS_FMT_SGBRG10_1X10
+ #define SC231AI_WIDTH			1920
+ #define SC231AI_HEIGHT			1080
+ 

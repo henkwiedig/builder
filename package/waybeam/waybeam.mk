@@ -61,7 +61,7 @@ WAYBEAM_SOC_BUILD = ar9311
 # The ar9311 backend lives on the fork's `ar9311` branch (the CV610 pin above
 # plus the backend) until it is merged, so it has its own pin; the CV610 one
 # stays where the Ascent needs it.
-WAYBEAM_VERSION = 4f255cd3417e1eb356ed61ab8a3c3ced5b72e346
+WAYBEAM_VERSION = 540007cee0ed77360e4f5bf448ba37db642bd363
 else
 WAYBEAM_SOC_BUILD = cv610
 endif
