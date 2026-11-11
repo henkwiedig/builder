@@ -26,7 +26,7 @@
 # module the loader warns about re-probing.
 
 STILL=/usr/bin/ar8030-still
-CAMERA_MODULES="ar_cvisp ar_isp ar_vif ar_csi2 nt99235"
+CAMERA_MODULES="ar_cvisp ar_isp ar_vif ar_csi2 nt99235 sc231ai"
 FRAME=/usr/share/ar8030/overheat.h265
 PIDFILE=/var/run/ar8030-still.pid
 

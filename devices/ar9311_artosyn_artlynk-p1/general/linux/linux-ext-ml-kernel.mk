@@ -5,7 +5,8 @@
 # Applies MissingLynk's Proxima-9311 BSP (package/ml-kernel) to a mainline
 # 6.18.36 tree, reproducing ml-kernel's scripts/container-build.sh:
 #   1. copy overlay/ (Artosyn drivers) in and register their Kconfig/Makefile
-#   2. apply patches/ (series order == file name order)
+#   2. apply patches/ (series order == file name order); the board's DTS is
+#      installed first (step 4), so a builder patch can change it too
 #   3. write arch/arm64/configs/ml_defconfig = arm64 defconfig + artosyn +
 #      trim + the board's fragments list, in order (a later assignment wins
 #      when kconfig loads it, the same result as merge_config.sh +
@@ -42,6 +43,14 @@ define ML_KERNEL_PREPARE_KERNEL
 	grep -q "spi-ar9301.o" $(@D)/drivers/spi/Makefile || \
 		echo "obj-y += spi-ar9301.o" >> $(@D)/drivers/spi/Makefile
 
+	mkdir -p $(@D)/arch/arm64/boot/dts/artosyn
+	cp $(ML_KERNEL_DIR)/devices/$(ML_KERNEL_BOARD)/*.dts $(@D)/arch/arm64/boot/dts/artosyn/
+	for f in $(ML_KERNEL_DIR)/devices/$(ML_KERNEL_BOARD)/*.dts; do \
+		echo "dtb-y += $$(basename $$f .dts).dtb"; \
+	done > $(@D)/arch/arm64/boot/dts/artosyn/Makefile
+	grep -q "subdir-y += artosyn" $(@D)/arch/arm64/boot/dts/Makefile || \
+		echo "subdir-y += artosyn" >> $(@D)/arch/arm64/boot/dts/Makefile
+
 	$(APPLY_PATCHES) $(@D) $(ML_KERNEL_DIR)/patches \*.patch
 	$(APPLY_PATCHES) $(@D) $(BR2_EXTERNAL_GENERAL_PATH)/linux/ml-kernel-patches \*.patch
 
@@ -51,14 +60,6 @@ define ML_KERNEL_PREPARE_KERNEL
 		$$(sed -e 's/#.*//' $(ML_KERNEL_DIR)/devices/$(ML_KERNEL_BOARD)/fragments | \
 			awk 'NF { print "$(ML_KERNEL_DIR)/configs/" $$1 ".config" }') \
 		> $(@D)/arch/arm64/configs/ml_defconfig
-
-	mkdir -p $(@D)/arch/arm64/boot/dts/artosyn
-	cp $(ML_KERNEL_DIR)/devices/$(ML_KERNEL_BOARD)/*.dts $(@D)/arch/arm64/boot/dts/artosyn/
-	for f in $(ML_KERNEL_DIR)/devices/$(ML_KERNEL_BOARD)/*.dts; do \
-		echo "dtb-y += $$(basename $$f .dts).dtb"; \
-	done > $(@D)/arch/arm64/boot/dts/artosyn/Makefile
-	grep -q "subdir-y += artosyn" $(@D)/arch/arm64/boot/dts/Makefile || \
-		echo "subdir-y += artosyn" >> $(@D)/arch/arm64/boot/dts/Makefile
 endef
 LINUX_PRE_PATCH_HOOKS += ML_KERNEL_PREPARE_KERNEL
 

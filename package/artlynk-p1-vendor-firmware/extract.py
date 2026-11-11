@@ -16,9 +16,10 @@ BINARIES_DIR/artlynk-p1/:
   wave521c_k3_codec_fw.bin
                         Wave521C codec firmware (stock /usr/bin/chagall.bin.gz),
                         requested by the wave5 V4L2 driver as cnm/...
-  nt99235-tuning-preview-fpv.bin
-                        NT99235 ISP tuning (stock usr/usrdata/tunning/),
-                        requested by the Artosyn ISP drivers as artosyn/...
+  nt99235-tuning-preview-fpv.bin, sc231ai-tuning-preview-fpv.bin
+                        ISP tuning for the P1's two cameras, the NT99235 and
+                        the SC231AI (stock usr/usrdata/tunning/), requested by
+                        the Artosyn ISP drivers as artosyn/...
   loader.bin, uboot0.img, vendor.img, p1.dtb
                         stock SPL, U-Boot, DDR training firmware and DT, for
                         booting a board over USB (devices/ar9311_artosyn_artlynk-p1/
@@ -65,6 +66,7 @@ ROOTFS_FILES = {
     "usr/usrdata/ar813x/bb_config_air.json": "bb_config_air.json",
     "usr/bin/chagall.bin.gz": "chagall.bin.gz",
     "usr/usrdata/tunning/nt99235_tuning_preview_fpv.bin": "nt99235-tuning-preview-fpv.bin",
+    "usr/usrdata/tunning/sc231_tuning_preview_fpv.bin": "sc231ai-tuning-preview-fpv.bin",
 }
 
 

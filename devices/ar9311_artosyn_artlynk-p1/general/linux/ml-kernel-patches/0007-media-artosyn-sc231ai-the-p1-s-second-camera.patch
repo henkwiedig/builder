@@ -1,0 +1,1766 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: SC231AI, the P1's second camera
+
+BetaFPV fits either an NT99235 or a SmartSens SC231AI to the P1 air unit,
+on the same connector, power and reset lines and master clock (the stock
+sensor_board_cfg.cjson lists both). This adds the SC231AI and makes the
+capture chain take its RAW10 frames.
+
+- sc231ai: a V4L2 subdev for the vendor's linear 1080p60 two-lane RAW10
+  mode (742.5 Mbps a lane, 24 MHz MCLK), exposure and gain as writable
+  module parameters on the NT99235's gain code scale, mirror/flip as a
+  live parameter (default off, as the vendor; the ISP's Bayer phase stays
+  in all four orientations, so this is where a picture is turned), and the
+  sensor's test pattern
+  (0x4501 bit 3, a ramp with all four Bayer channels equal) as a
+  parameter. The sensor sends exactly
+  1920x1080; a bordered 1924-pixel RAW10 line would be 2405 bytes and
+  breaks the two-lane CSI-2 packing with CRC errors.
+- One DT node for either sensor: both compatibles, both addresses by
+  reg-names. Each driver reads the chip ID at probe and returns -ENODEV
+  when its sensor is absent (the NT99235 now probes to stage 3 by
+  default), so the fitted one binds.
+- ar-csi2, ar-vif: the CSI-2 data type follows the sensor's bus format;
+  RAW10 gets its own IPI timing, no border in the VIF margin, and the line
+  blanking follows the arriving width (the NT99235's 0x282 unchanged).
+- ar-isp: ar_isp_pipeline_start takes the input format. The SC231AI needs
+  the borderless input mode, its Bayer order and the second DRC length;
+  the black level enable follows the tuning file (no change for the
+  NT99235, whose tuning has it clear). White balance gains are new module
+  parameters plus a white_balance debugfs file, unset by default so the
+  NT99235 keeps its current state. A tuning= parameter on ar-isp and
+  ar-cvisp picks the bound sensor's tuning file.
+- ar-vif: stop no longer clears the AXI interface's enable and run bits,
+  and the global init keeps them. Clearing them wedges the ISP's pixel
+  output until the SoC is reset: every frame then aborts with NR3D AXI
+  and DMA errors. A boot-time start that fails (e.g. the image's camera
+  start with the other sensor fitted) is enough to wedge it.
+
+The RAW10 input mode, Bayer order, DRC lengths, IPI timing and the AXI
+behaviour were found by the fpvOS project (github.com/gehee/fpvOS), whose
+SC231AI support runs on the same ml-kernel; reimplemented here from those
+register facts. Tested on a P1 with an SC231AI (RAM boot): ISP statistics
+826 zones, no ISP error interrupts, AE live, stream stop/restart and a
+module reload without the wedge.
+
+---
+diff --git a/arch/arm64/boot/dts/artosyn/proxima-9311-air.dts b/arch/arm64/boot/dts/artosyn/proxima-9311-air.dts
+index 4ef1a4a..a3a38ae 100644
+--- a/arch/arm64/boot/dts/artosyn/proxima-9311-air.dts
++++ b/arch/arm64/boot/dts/artosyn/proxima-9311-air.dts
+@@ -331,10 +331,18 @@
+ 			 * Two lanes: the four sensor modes split into 4-lane (720p90, 1080p60) and
+ 			 * 2-lane (540p120, 1080p60-2lane) variants selected by sensor register
+ 			 * 0x0114, and the unit was captured running the 2-lane 1080p60 mode.
+-			 * Whether the board routes more than two lanes is unresolved. */
++			 * Whether the board routes more than two lanes is unresolved.
++			 *
++			 * Other P1 units carry a SmartSens SC231AI instead (I2C 0x30, RAW10,
++			 * two lanes) on the same connector, lines and clock; the stock
++			 * sensor_board_cfg.cjson lists both. One node serves either: each
++			 * driver reads the chip ID at probe and steps aside with -ENODEV
++			 * when its sensor is not fitted, and the SC231AI driver claims its
++			 * own address through reg-names. */
+ 			nt99235: camera-sensor@1a {
+-				compatible = "novatek,nt99235";
+-				reg = <0x1a>;
++				compatible = "novatek,nt99235", "smartsens,sc231ai";
++				reg = <0x1a>, <0x30>;
++				reg-names = "nt99235", "sc231ai";
+ 				reset-gpios = <&gpio 107 GPIO_ACTIVE_LOW>;
+ 				enable-gpios = <&gpio 104 GPIO_ACTIVE_LOW>;
+ 				clocks = <&pixclk 35>;		/* cgu_sensor_mclk0 */
+diff --git a/drivers/media/artosyn/Kconfig b/drivers/media/artosyn/Kconfig
+index 7ee843e..086c636 100644
+--- a/drivers/media/artosyn/Kconfig
++++ b/drivers/media/artosyn/Kconfig
+@@ -13,6 +13,19 @@ config VIDEO_ARTOSYN_NT99235
+ 	  To compile this driver as a module, choose M here: the module will be
+ 	  called nt99235.
+ 
++config VIDEO_ARTOSYN_SC231AI
++	tristate "SmartSens SC231AI sensor support"
++	depends on OF && I2C && VIDEO_DEV
++	select MEDIA_CONTROLLER
++	select VIDEO_V4L2_SUBDEV_API
++	select V4L2_FWNODE
++	help
++	  Subdev driver for the SmartSens SC231AI MIPI CSI-2 image sensor,
++	  the second camera BetaFPV fits to the P1 air unit.
++
++	  To compile this driver as a module, choose M here: the module will be
++	  called sc231ai.
++
+ config VIDEO_ARTOSYN_CSI2
+ 	tristate "Artosyn MIPI CSI-2 receiver"
+ 	depends on OF && VIDEO_DEV
+diff --git a/drivers/media/artosyn/Makefile b/drivers/media/artosyn/Makefile
+index 40e697f..d32ab2f 100644
+--- a/drivers/media/artosyn/Makefile
++++ b/drivers/media/artosyn/Makefile
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: GPL-2.0
+ 
+ obj-$(CONFIG_VIDEO_ARTOSYN_NT99235) += nt99235.o
++obj-$(CONFIG_VIDEO_ARTOSYN_SC231AI) += sc231ai.o
+ obj-$(CONFIG_VIDEO_ARTOSYN_CSI2) += ar-csi2.o
+ obj-$(CONFIG_VIDEO_ARTOSYN_VIF) += ar-vif.o
+ obj-$(CONFIG_VIDEO_ARTOSYN_ISP) += ar-isp.o
+diff --git a/drivers/media/artosyn/ar-camera-hook.h b/drivers/media/artosyn/ar-camera-hook.h
+index 47b03bd..627d6cc 100644
+--- a/drivers/media/artosyn/ar-camera-hook.h
++++ b/drivers/media/artosyn/ar-camera-hook.h
+@@ -44,9 +44,17 @@ int ar_vif_input_start(void);
+ void ar_vif_input_stop(void);
+ 
+ /*
+- * Configure the ISP and arm its output. Must be called with the input path
+- * already live. -ENODEV if the ISP has not probed.
++ * The format the sensor delivers, as the VIF sees it on its sink. -ENODEV if
++ * the VIF has not probed or its source never bound.
+  */
+-int ar_isp_pipeline_start(void);
++struct v4l2_mbus_framefmt;
++int ar_vif_source_format(struct v4l2_mbus_framefmt *fmt);
++
++/*
++ * Configure the ISP for the input format and arm its output. Must be called
++ * with the input path already live. -ENODEV if the ISP has not probed,
++ * -EINVAL for a format it has no input setup for.
++ */
++int ar_isp_pipeline_start(const struct v4l2_mbus_framefmt *fmt);
+ 
+ #endif /* AR_CAMERA_HOOK_H */
+diff --git a/drivers/media/artosyn/ar-csi2.c b/drivers/media/artosyn/ar-csi2.c
+index 0d23d5b..c49a1a9 100644
+--- a/drivers/media/artosyn/ar-csi2.c
++++ b/drivers/media/artosyn/ar-csi2.c
+@@ -130,12 +130,17 @@
+ 
+ /* IPI horizontal timings. In camera timing mode these set the blanking the IPI
+  * inserts; they are a property of the sensor mode rather than of the receiver.
+- * Vendor values for the 1920x1080 two-lane RAW12 mode, read back from
+- * hardware.
++ * The P1's two sensors each have one mode and differ in data type, so the
++ * data type selects them: the NT99235's 1920x1080 two-lane RAW12 values were
++ * read back from the vendor's hardware, the SC231AI's 1920x1080 two-lane
++ * RAW10 values are the ones fpvOS measured for it.
+  */
+ #define AR_CSI_IPI_HSA_TIME		0x1c
+ #define AR_CSI_IPI_HBP_TIME		0x1c
+ #define AR_CSI_IPI_HSD_TIME		0x39
++#define AR_CSI_IPI_HSA_TIME_RAW10	16
++#define AR_CSI_IPI_HBP_TIME_RAW10	16
++#define AR_CSI_IPI_HSD_TIME_RAW10	33
+ 
+ /* The version this driver has been checked against. */
+ #define DW_CSI2_VERSION_1_20		0x3132302a
+@@ -503,7 +508,7 @@ static void ar_csi2_phy_power_off(struct ar_csi2 *csi2)
+ }
+ 
+ /* Program the wrapper and the core for one CSI-2 link. data_type is the CSI-2
+- * data type the sensor emits (0x2c for RAW12).
++ * data type the sensor emits (0x2b for RAW10, 0x2c for RAW12).
+  */
+ static void ar_csi2_configure(struct ar_csi2 *csi2, u8 data_type)
+ {
+@@ -557,9 +562,15 @@ static void ar_csi2_configure(struct ar_csi2 *csi2, u8 data_type)
+ 	ar_csi2_write(csi2->core, DW_CSI2_IPI_VCID, 0);
+ 	ar_csi2_write(csi2->core, DW_CSI2_IPI_DATA_TYPE, data_type);
+ 	ar_csi2_write(csi2->core, DW_CSI2_IPI_MEM_FLUSH, DW_CSI2_IPI_MEM_AUTO_FLUSH);
+-	ar_csi2_write(csi2->core, DW_CSI2_IPI_HSA_TIME, AR_CSI_IPI_HSA_TIME);
+-	ar_csi2_write(csi2->core, DW_CSI2_IPI_HBP_TIME, AR_CSI_IPI_HBP_TIME);
+-	ar_csi2_write(csi2->core, DW_CSI2_IPI_HSD_TIME, AR_CSI_IPI_HSD_TIME);
++	if (data_type == MIPI_CSI2_DT_RAW10) {
++		ar_csi2_write(csi2->core, DW_CSI2_IPI_HSA_TIME, AR_CSI_IPI_HSA_TIME_RAW10);
++		ar_csi2_write(csi2->core, DW_CSI2_IPI_HBP_TIME, AR_CSI_IPI_HBP_TIME_RAW10);
++		ar_csi2_write(csi2->core, DW_CSI2_IPI_HSD_TIME, AR_CSI_IPI_HSD_TIME_RAW10);
++	} else {
++		ar_csi2_write(csi2->core, DW_CSI2_IPI_HSA_TIME, AR_CSI_IPI_HSA_TIME);
++		ar_csi2_write(csi2->core, DW_CSI2_IPI_HBP_TIME, AR_CSI_IPI_HBP_TIME);
++		ar_csi2_write(csi2->core, DW_CSI2_IPI_HSD_TIME, AR_CSI_IPI_HSD_TIME);
++	}
+ 
+ 	/* Route the IPI output. Both mux registers read zero on a running
+ 	 * vendor link with this single-instance configuration.
+@@ -623,6 +634,31 @@ static void ar_csi2_report_lanes(struct ar_csi2 *csi2)
+ 	}
+ }
+ 
++/* The CSI-2 data type the sensor emits, from its active pad format. The P1
++ * fits either an NT99235 (RAW12) or an SC231AI (RAW10); anything that does not
++ * name a 10-bit Bayer code keeps the RAW12 the receiver was brought up on.
++ */
++static u8 ar_csi2_source_data_type(struct ar_csi2 *csi2)
++{
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.pad = csi2->sensor_source_pad,
++	};
++
++	if (v4l2_subdev_call_state_active(csi2->sensor, pad, get_fmt, &format))
++		return MIPI_CSI2_DT_RAW12;
++
++	switch (format.format.code) {
++	case MEDIA_BUS_FMT_SBGGR10_1X10:
++	case MEDIA_BUS_FMT_SGBRG10_1X10:
++	case MEDIA_BUS_FMT_SGRBG10_1X10:
++	case MEDIA_BUS_FMT_SRGGB10_1X10:
++		return MIPI_CSI2_DT_RAW10;
++	default:
++		return MIPI_CSI2_DT_RAW12;
++	}
++}
++
+ static int ar_csi2_set_stream(struct v4l2_subdev *sd, int enable)
+ {
+ 	struct ar_csi2 *csi2 = to_ar_csi2(sd);
+@@ -643,10 +679,7 @@ static int ar_csi2_set_stream(struct v4l2_subdev *sd, int enable)
+ 	if (ret)
+ 		return ret;
+ 
+-	/* RAW12 is the only format the sensor emits, so the data type is
+-	 * fixed; a multi-format sensor would derive it from the pad format.
+-	 */
+-	ar_csi2_configure(csi2, MIPI_CSI2_DT_RAW12);
++	ar_csi2_configure(csi2, ar_csi2_source_data_type(csi2));
+ 
+ 	ret = v4l2_subdev_call(csi2->sensor, video, s_stream, 1);
+ 	if (ret) {
+diff --git a/drivers/media/artosyn/ar-cvisp.c b/drivers/media/artosyn/ar-cvisp.c
+index 13d94e8..4ed766d 100644
+--- a/drivers/media/artosyn/ar-cvisp.c
++++ b/drivers/media/artosyn/ar-cvisp.c
+@@ -169,7 +169,15 @@ module_param(fpn, bool, 0644);
+ MODULE_PARM_DESC(fpn,
+ 		 "clear fpn's enable bit as the vendor's tuning apply does (default on)");
+ 
+-/* Reads AR_CVISP_TUNING_FIRMWARE. */
++/* The sensor tuning file BLC reads its ladder from: AR_CVISP_TUNING_FIRMWARE,
++ * or the bound sensor's file on boards that fit either of two sensors.
++ */
++static char *tuning;
++module_param(tuning, charp, 0444);
++MODULE_PARM_DESC(tuning,
++		 "tuning file BLC reads instead of " AR_CVISP_TUNING_FIRMWARE);
++
++/* Reads the tuning file (see tuning). */
+ static bool blc = true;
+ module_param(blc, bool, 0644);
+ MODULE_PARM_DESC(blc,
+@@ -499,11 +507,12 @@ static void ar_cvisp_blc_apply(struct ar_cvisp *cv)
+ 	if (!blc)
+ 		return;
+ 
+-	int ret = request_firmware(&fw, AR_CVISP_TUNING_FIRMWARE, cv->dev);
++	const char *name = tuning && *tuning ? tuning : AR_CVISP_TUNING_FIRMWARE;
++	int ret = request_firmware(&fw, name, cv->dev);
+ 
+ 	if (ret) {
+ 		dev_info(cv->dev, "blc: no %s (%d), leaving the replayed constants\n",
+-			 AR_CVISP_TUNING_FIRMWARE, ret);
++			 name, ret);
+ 		return;
+ 	}
+ 
+@@ -864,7 +873,15 @@ static int ar_cvisp_chain_start(struct ar_cvisp *cv)
+ 		return ret;
+ 	}
+ 
+-	ret = ar_isp_pipeline_start();
++	struct v4l2_mbus_framefmt fmt;
++
++	ret = ar_vif_source_format(&fmt);
++	if (ret) {
++		dev_err(cv->dev, "cannot read the input format (%d)\n", ret);
++		return ret;
++	}
++
++	ret = ar_isp_pipeline_start(&fmt);
+ 	if (ret) {
+ 		dev_err(cv->dev, "cannot start the isp (%d)\n", ret);
+ 		return ret;
+diff --git a/drivers/media/artosyn/ar-isp-main.c b/drivers/media/artosyn/ar-isp-main.c
+index b5c849b..e592a56 100644
+--- a/drivers/media/artosyn/ar-isp-main.c
++++ b/drivers/media/artosyn/ar-isp-main.c
+@@ -33,6 +33,7 @@
+  * records the remaining device-sourced groups.
+  */
+ 
++#include <linux/bitfield.h>
+ #include <linux/clk.h>
+ #include <linux/debugfs.h>
+ #include <linux/delay.h>
+@@ -43,7 +44,10 @@
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/seq_file.h>
+ #include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <media/v4l2-mediabus.h>
+ 
+ #include "vendor-tables/ar-isp-defaults.h"
+ #include "vendor-tables/ar-isp-gates.h"
+@@ -743,6 +747,103 @@ DEFINE_DEBUGFS_ATTRIBUTE(ar_isp_tone_fops, NULL, ar_isp_tone_set, "%llu\n");
+  */
+ static struct ar_isp *ar_isp_instance;
+ 
++/*
++ * White balance gains, Q8 (256 is 1.0), written at every pipeline start. 0
++ * leaves a gain as the replay left it, which is 1.0. They depend on the sensor
++ * and the light, so the camera loader passes the bound sensor's values; the
++ * white_balance debugfs file changes them on a running pipeline.
++ */
++static unsigned int wb_red;
++module_param(wb_red, uint, 0644);
++MODULE_PARM_DESC(wb_red, "red gain, Q8 (256 = 1.0), 0 to leave the replayed 1.0");
++
++static unsigned int wb_green;
++module_param(wb_green, uint, 0644);
++MODULE_PARM_DESC(wb_green, "green gain, Q8 (256 = 1.0), 0 to leave the replayed 1.0");
++
++static unsigned int wb_blue;
++module_param(wb_blue, uint, 0644);
++MODULE_PARM_DESC(wb_blue, "blue gain, Q8 (256 = 1.0), 0 to leave the replayed 1.0");
++
++static void ar_isp_wb_write(struct ar_isp *isp, u32 red, u32 green, u32 blue)
++{
++	if (!red && !green && !blue)
++		return;
++	if (red)
++		writel(clamp(red, AR_ISP_WB_GAIN_MIN, AR_ISP_WB_GAIN_MAX),
++		       isp->base + AR_ISP_WB_GAIN_R);
++	if (green)
++		writel(clamp(green, AR_ISP_WB_GAIN_MIN, AR_ISP_WB_GAIN_MAX),
++		       isp->base + AR_ISP_WB_GAIN_G);
++	if (blue)
++		writel(clamp(blue, AR_ISP_WB_GAIN_MIN, AR_ISP_WB_GAIN_MAX),
++		       isp->base + AR_ISP_WB_GAIN_B);
++	writel(AR_ISP_WB_LATCH, isp->base + AR_ISP_WB_UPDATE);
++}
++
++/* The input formats the block has a setup for: the P1's two sensors. */
++static bool ar_isp_input_supported(u32 code)
++{
++	return code == MEDIA_BUS_FMT_SRGGB12_1X12 ||	/* NT99235 */
++	       code == MEDIA_BUS_FMT_SBGGR10_1X10;	/* SC231AI */
++}
++
++/*
++ * The input-dependent part of the setup, after the output arm. The replay is
++ * the NT99235's, so that sensor needs nothing here. The SC231AI sends RAW10 at
++ * exactly its 1920x1080 active area, which needs the borderless input mode,
++ * its own Bayer order and the second DRC length; all three found by fpvOS.
++ * Without the input mode every frame aborts in the ISP.
++ */
++static void ar_isp_input_setup(struct ar_isp *isp,
++			       const struct v4l2_mbus_framefmt *fmt)
++{
++	u32 val;
++
++	if (fmt->code == MEDIA_BUS_FMT_SBGGR10_1X10) {
++		val = readl(isp->base + AR_ISP_INPUT_SIZE);
++		val &= ~(AR_ISP_INPUT_MODE | AR_ISP_INPUT_HEIGHT | AR_ISP_INPUT_WIDTH);
++		val |= FIELD_PREP(AR_ISP_INPUT_MODE, AR_ISP_INPUT_MODE_NO_BORDER) |
++		       FIELD_PREP(AR_ISP_INPUT_HEIGHT, fmt->height) |
++		       FIELD_PREP(AR_ISP_INPUT_WIDTH, fmt->width);
++		writel(val, isp->base + AR_ISP_INPUT_SIZE);
++
++		writel(fmt->width << 15 | fmt->height << 2 | 2,
++		       isp->base + AR_ISP_CFA_GEOMETRY);
++		val = readl(isp->base + AR_ISP_CFA_ORDER);
++		val = (val & ~AR_ISP_CFA_ORDER_MASK) | 2;
++		writel(val, isp->base + AR_ISP_CFA_ORDER);
++
++		/* A command, not a status: no completion to wait for. */
++		writel(AR_ISP_TABLE_DRC_LEN_VALUE, isp->base + AR_ISP_TABLE_DRC_LEN0);
++		writel(AR_ISP_TABLE_DRC_LEN_VALUE, isp->base + AR_ISP_TABLE_DRC_LEN1);
++		writel(AR_ISP_TABLE_COMMIT_ENABLE | AR_ISP_TABLE_GAMMA_BITS |
++		       AR_ISP_TABLE_DRC_BIT, isp->base + AR_ISP_TABLE_COMMIT);
++	}
++
++	/* The output arm's control word clears the black level enable; put
++	 * back what the tuning file asks for.
++	 */
++	if (isp->tuning) {
++		val = readl(isp->base + AR_ISP_CONTROL);
++		if (ar_isp_get_le32(isp->tuning->data + AR_ISP_BLOB_BLC_ENABLE))
++			val |= AR_ISP_CONTROL_BLC;
++		else
++			val &= ~AR_ISP_CONTROL_BLC;
++		writel(val, isp->base + AR_ISP_CONTROL);
++	}
++
++	ar_isp_wb_write(isp, wb_red, wb_green, wb_blue);
++
++	dev_info(isp->dev, "input 0x%04x %ux%u: size 0x%08x, control 0x%08x, wb %u/%u/%u\n",
++		 fmt->code, fmt->width, fmt->height,
++		 readl(isp->base + AR_ISP_INPUT_SIZE),
++		 readl(isp->base + AR_ISP_CONTROL),
++		 readl(isp->base + AR_ISP_WB_GAIN_R),
++		 readl(isp->base + AR_ISP_WB_GAIN_G),
++		 readl(isp->base + AR_ISP_WB_GAIN_B));
++}
++
+ /*
+  * Configure the block and arm its output, as one call for a driver that is
+  * bringing the whole chain up.
+@@ -754,20 +855,84 @@ static struct ar_isp *ar_isp_instance;
+  *
+  * The caller must have the pixel domain live already: this reads registers back.
+  */
+-int ar_isp_pipeline_start(void)
++int ar_isp_pipeline_start(const struct v4l2_mbus_framefmt *fmt)
+ {
+ 	struct ar_isp *isp = READ_ONCE(ar_isp_instance);
+ 
+ 	if (!isp)
+ 		return -ENODEV;
+ 
++	if (!ar_isp_input_supported(fmt->code)) {
++		dev_err(isp->dev, "no input setup for bus format 0x%04x\n",
++			fmt->code);
++		return -EINVAL;
++	}
++
+ 	ar_isp_configure_prefix(isp, setup_entries);
+ 	ar_isp_arm_output(isp);
++	ar_isp_input_setup(isp, fmt);
+ 
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(ar_isp_pipeline_start);
+ 
++/*
++ * Live white balance for a running pipeline: "red green blue" in Q8, 0 to
++ * leave a gain alone; reads back the three registers. For a userspace AWB
++ * loop. -EPIPE before the block is configured, where a register access could
++ * hang the SoC.
++ */
++static int ar_isp_wb_show(struct seq_file *s, void *unused)
++{
++	struct ar_isp *isp = s->private;
++
++	if (!isp->configured)
++		return -EPIPE;
++
++	seq_printf(s, "%u %u %u\n", readl(isp->base + AR_ISP_WB_GAIN_R),
++		   readl(isp->base + AR_ISP_WB_GAIN_G),
++		   readl(isp->base + AR_ISP_WB_GAIN_B));
++
++	return 0;
++}
++
++static int ar_isp_wb_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, ar_isp_wb_show, inode->i_private);
++}
++
++static ssize_t ar_isp_wb_store(struct file *file, const char __user *ubuf,
++			       size_t len, loff_t *ppos)
++{
++	struct ar_isp *isp = ((struct seq_file *)file->private_data)->private;
++	unsigned int red, green, blue;
++	char buf[48];
++
++	if (len >= sizeof(buf))
++		return -EINVAL;
++	if (copy_from_user(buf, ubuf, len))
++		return -EFAULT;
++	buf[len] = '\0';
++
++	if (sscanf(buf, "%u %u %u", &red, &green, &blue) != 3)
++		return -EINVAL;
++	if (!isp->configured)
++		return -EPIPE;
++
++	ar_isp_wb_write(isp, red, green, blue);
++
++	return len;
++}
++
++static const struct file_operations ar_isp_wb_fops = {
++	.owner = THIS_MODULE,
++	.open = ar_isp_wb_open,
++	.read = seq_read,
++	.write = ar_isp_wb_store,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
+ DEFINE_DEBUGFS_ATTRIBUTE(ar_isp_prefix_fops, ar_isp_prefix_get,
+ 			 ar_isp_prefix_set, "%llu\n");
+ 
+@@ -1245,6 +1410,8 @@ static int ar_isp_probe(struct platform_device *pdev)
+ 				   &ar_isp_arm_fops);
+ 	debugfs_create_file_unsafe("ladders", 0600, isp->debugfs, isp,
+ 				   &ar_isp_ladders_fops);
++	debugfs_create_file("white_balance", 0600, isp->debugfs, isp,
++			    &ar_isp_wb_fops);
+ 	debugfs_create_file("ladder_banks", 0400, isp->debugfs, isp,
+ 			    &ar_isp_ladder_banks_fops);
+ 	debugfs_create_file_unsafe("tone", 0600, isp->debugfs, isp,
+diff --git a/drivers/media/artosyn/ar-isp-regs.h b/drivers/media/artosyn/ar-isp-regs.h
+index b35b770..0ce58aa 100644
+--- a/drivers/media/artosyn/ar-isp-regs.h
++++ b/drivers/media/artosyn/ar-isp-regs.h
+@@ -25,8 +25,38 @@
+  */
+ #define AR_ISP_CONTROL			0x0000
+ 
+-/* Input geometry, width in the low half. */
++/*
++ * Control bit 2 enables the black level stage. The vendor sets it from a flag
++ * in the tuning file (u32 at AR_ISP_BLOB_BLC_ENABLE): the NT99235's tuning has
++ * it clear, as the replay does, the SC231AI's has it set.
++ */
++#define AR_ISP_CONTROL_BLC		BIT(2)
++#define AR_ISP_BLOB_BLC_ENABLE		0x24
++
++/*
++ * Input geometry: width in bits 12:0, height in bits 25:13, and in bits 27:26
++ * how the frame arrives. The replay programs the NT99235's 1924x1084 with mode
++ * 0, a two-pixel border the block crops. A source that sends exactly its
++ * active area, the SC231AI, needs mode 2 (found by fpvOS); with mode 0 every
++ * frame aborts.
++ */
+ #define AR_ISP_INPUT_SIZE		0x0004
++#define AR_ISP_INPUT_WIDTH		GENMASK(12, 0)
++#define AR_ISP_INPUT_HEIGHT		GENMASK(25, 13)
++#define AR_ISP_INPUT_MODE		GENMASK(27, 26)
++#define AR_ISP_INPUT_MODE_NO_BORDER	2
++
++/*
++ * The cfa stage's frame geometry and Bayer order: (width << 15) |
++ * (height << 2) | order at 0x082c, and the order again in 0x0858 bits 1:0
++ * (see ar-isp-cfa.h). The NT99235 runs order 0. The SC231AI's frames need
++ * order 2: 0 and 3 demosaic green as red and blue, 1 swaps red and blue. Its
++ * mirror and flip keep that order, because the sensor moves its readout
++ * window to hold the Bayer phase.
++ */
++#define AR_ISP_CFA_GEOMETRY		0x082c
++#define AR_ISP_CFA_ORDER		0x0858
++#define AR_ISP_CFA_ORDER_MASK		GENMASK(1, 0)
+ 
+ /*
+  * Indirect access port. The vendor writes an address to 0x00cc and a value to
+@@ -143,6 +173,28 @@
+ #define AR_ISP_TABLE_DRC		0x0060
+ #define AR_ISP_TABLE_DRC_BIT		0x00000010
+ 
++/*
++ * The DRC table's two length words. The replay sets the first to 0x100 and
++ * leaves the second at 0; fpvOS found a cold ISP fed by the SC231AI needs both,
++ * committed together with the gamma tables.
++ */
++#define AR_ISP_TABLE_DRC_LEN0		0x0064
++#define AR_ISP_TABLE_DRC_LEN1		0x0068
++#define AR_ISP_TABLE_DRC_LEN_VALUE	0x100
++
++/*
++ * White balance: red, green and blue gains in Q8 (0x100 is 1.0), latched by
++ * writing AR_ISP_WB_LATCH to AR_ISP_WB_UPDATE. The setup the driver replays
++ * leaves all three at 1.0.
++ */
++#define AR_ISP_WB_GAIN_R		0x5004
++#define AR_ISP_WB_GAIN_G		0x5008
++#define AR_ISP_WB_GAIN_B		0x500c
++#define AR_ISP_WB_UPDATE		0x5034
++#define AR_ISP_WB_LATCH			2
++#define AR_ISP_WB_GAIN_MIN		64
++#define AR_ISP_WB_GAIN_MAX		4095
++
+ /*
+  * The HDR page and the compander share one allocation, in the vendor's layout.
+  *
+diff --git a/drivers/media/artosyn/ar-isp-tables.c b/drivers/media/artosyn/ar-isp-tables.c
+index 21417d2..0e33d41 100644
+--- a/drivers/media/artosyn/ar-isp-tables.c
++++ b/drivers/media/artosyn/ar-isp-tables.c
+@@ -1806,6 +1806,11 @@ static void *ar_isp_alloc(struct ar_isp *isp, const char *name, size_t size,
+ 	return NULL;
+ }
+ 
++static char *tuning;
++module_param(tuning, charp, 0444);
++MODULE_PARM_DESC(tuning,
++		 "tuning file to load instead of the device tree's artosyn,tuning-firmware, e.g. artosyn/sc231ai-tuning-preview-fpv.bin");
++
+ void ar_isp_tables_prepare(struct ar_isp *isp)
+ {
+ 	struct device *dev = isp->dev;
+@@ -1909,8 +1914,13 @@ void ar_isp_tables_prepare(struct ar_isp *isp)
+ 						    &isp->de3d_dma[i]);
+ 	}
+ 
+-	/* The layout is the same for all three sensors; the values are the board's. */
+-	if (of_property_read_string(dev->of_node, "artosyn,tuning-firmware", &fw))
++	/* The layout is the same for all three sensors; the values are the board's.
++	 * The module parameter names the bound sensor's file on boards that fit
++	 * either of two sensors, and wins over the device tree.
++	 */
++	if (tuning && *tuning)
++		fw = tuning;
++	else if (of_property_read_string(dev->of_node, "artosyn,tuning-firmware", &fw))
+ 		fw = AR_ISP_TUNING_FIRMWARE;
+ 
+ 	ret = request_firmware(&isp->tuning, fw, dev);
+diff --git a/drivers/media/artosyn/ar-vif.c b/drivers/media/artosyn/ar-vif.c
+index 10b92f8..ffd3386 100644
+--- a/drivers/media/artosyn/ar-vif.c
++++ b/drivers/media/artosyn/ar-vif.c
+@@ -221,7 +221,6 @@
+ #define AR_VIF_FE_CONTROL_VALUE		0x00061588
+ #define AR_VIF_FE_TIMING_VALUE		0x00640064
+ #define AR_VIF_FE_FORMAT_VALUE		0x00d6002c
+-#define AR_VIF_FE_HBLANK_VALUE		0x00000282
+ #define AR_VIF_FE_VBLANK_VALUE		0x000000d6
+ #define AR_VIF_FE_LIMIT_VALUE		0x000005ff
+ #define AR_VIF_FE_EXTRA_VALUE		0x00008000
+@@ -441,6 +440,16 @@ struct ar_vif {
+ 	u32 last_status;
+ 
+ 	struct v4l2_pix_format format;
++	/* CSI-2 data type of the source, RAW12 unless it reports a 10-bit code. */
++	u8 data_type;
++	/*
++	 * Pixels and lines the source sends beyond its pad format, split over
++	 * both edges. The NT99235 (RAW12) sends a 1924x1084 frame for its
++	 * 1920x1080 format and the ISP crops the border; the SC231AI (RAW10)
++	 * sends exactly its format. An odd RAW10 line length would also break
++	 * the CSI-2 packing, so a 10-bit source never carries a border here.
++	 */
++	u8 border;
+ 
+ 	/*
+ 	 * Liveness counters, exported through debugfs.
+@@ -541,8 +550,15 @@ static void ar_vif_update(struct ar_vif *vif, u32 offset, u32 clear, u32 set)
+ static void ar_vif_global_init(struct ar_vif *vif)
+ {
+ 	for (unsigned int i = 0; i < ARRAY_SIZE(ar_vif_init_table); i++) {
+-		ar_vif_write(vif, ar_vif_init_table[i].offset,
+-			     ar_vif_init_table[i].value);
++		u32 value = ar_vif_init_table[i].value;
++
++		/* The AXI interface is shared with the ISP path: once its run
++		 * state is up, keep it (see ar_vif_stop).
++		 */
++		if (ar_vif_init_table[i].offset == AR_VIF_AXI_CONFIG)
++			value |= ar_vif_read(vif, AR_VIF_AXI_CONFIG) &
++				 (AR_VIF_AXI_RUN | AR_VIF_AXI_ENABLE);
++		ar_vif_write(vif, ar_vif_init_table[i].offset, value);
+ 	}
+ 
+ 	/* Software reset pulse. */
+@@ -649,18 +665,27 @@ static void ar_vif_configure(struct ar_vif *vif)
+ 	/* Front end: input format, geometry and blanking. */
+ 	ar_vif_write(vif, AR_VIF_FE_CONTROL, AR_VIF_FE_CONTROL_VALUE);
+ 	ar_vif_write(vif, AR_VIF_FE_TIMING, AR_VIF_FE_TIMING_VALUE);
+-	ar_vif_write(vif, AR_VIF_FE_FORMAT, AR_VIF_FE_FORMAT_VALUE);
+-	ar_vif_write(vif, AR_VIF_FE_DATATYPE0, MIPI_CSI2_DT_RAW12);
+-	ar_vif_write(vif, AR_VIF_FE_DATATYPE1, MIPI_CSI2_DT_RAW12);
++	/* The low byte of the format word and both data-type fields carry the
++	 * CSI-2 data type (vif_isp_config_path, vif_mipidatatype_config). The
++	 * vendor groups RAW10 like RAW12, three pixels a group, and hands the
++	 * ISP 12 bits either way, so the rest of the front end is unchanged.
++	 */
++	ar_vif_write(vif, AR_VIF_FE_FORMAT,
++		     (AR_VIF_FE_FORMAT_VALUE & ~0xffu) | vif->data_type);
++	ar_vif_write(vif, AR_VIF_FE_DATATYPE0, vif->data_type);
++	ar_vif_write(vif, AR_VIF_FE_DATATYPE1, vif->data_type);
+ 
+-	/* The margin register carries the same geometry plus four pixels and
+-	 * four lines, matching the vendor's configuration.
++	/* The margin register carries the frame as it arrives, border included;
++	 * the geometry register the format.
+ 	 */
+ 	ar_vif_write(vif, AR_VIF_FE_GEOMETRY_MARGIN,
+-		     ((width + 4) << 16) | (height + 4));
++		     ((width + vif->border) << 16) | (height + vif->border));
+ 	ar_vif_write(vif, AR_VIF_FE_GEOMETRY, (width << 16) | height);
+ 
+-	ar_vif_write(vif, AR_VIF_FE_HBLANK, AR_VIF_FE_HBLANK_VALUE);
++	/* A third of the arriving line, rounded up: 0x282 for the NT99235's
++	 * 1924 pixels, the vendor's value, and 0x280 for the SC231AI's 1920.
++	 */
++	ar_vif_write(vif, AR_VIF_FE_HBLANK, DIV_ROUND_UP(width + vif->border, 3));
+ 	ar_vif_write(vif, AR_VIF_FE_VBLANK, AR_VIF_FE_VBLANK_VALUE);
+ 	ar_vif_write(vif, AR_VIF_FE_LIMIT, AR_VIF_FE_LIMIT_VALUE);
+ 	ar_vif_write(vif, AR_VIF_FE_EXTRA, AR_VIF_FE_EXTRA_VALUE);
+@@ -813,13 +838,13 @@ static void ar_vif_stop(struct ar_vif *vif)
+ 	ar_vif_update(vif, AR_VIF_FE_EXTRA, BIT(15), 0);
+ 	ar_vif_update(vif, AR_VIF_ISPIF_ENABLE, AR_VIF_ISPIF_RUN, 0);
+ 
+-	/* Stop the AXI master and assert the block reset so no write is
+-	 * outstanding on the interconnect when the clock gates. An armed view
+-	 * whose DMA never completed otherwise leaves the master mid-transaction
+-	 * across the clock gate.
++	/* Reset the stopped input, but leave the AXI interface's enable and
++	 * run bits alone. It is shared with the ISP path, and clearing them
++	 * wedges the ISP's pixel output until the SoC is reset: interrupts keep
++	 * coming, every frame aborts with NR3D AXI and DMA errors, and
++	 * restoring the bits does not recover it. The vendor's teardown
++	 * disables the input and views and leaves this interface enabled too.
+ 	 */
+-	ar_vif_update(vif, AR_VIF_AXI_CONFIG,
+-		      AR_VIF_AXI_RUN | AR_VIF_AXI_ENABLE, 0);
+ 	ar_vif_write(vif, AR_VIF_SOFT_RESET, 0);
+ 	ar_vif_update(vif, AR_VIF_SOFT_RESET, 0, BIT(0));
+ 	ar_vif_update(vif, AR_VIF_SOFT_RESET, BIT(0), 0);
+@@ -1221,6 +1246,29 @@ void ar_vif_input_stop(void)
+ }
+ EXPORT_SYMBOL_GPL(ar_vif_input_stop);
+ 
++int ar_vif_source_format(struct v4l2_mbus_framefmt *fmt)
++{
++	struct ar_vif *vif = ar_vif_instance;
++	struct v4l2_subdev_format source_format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	int ret;
++
++	if (!vif || !vif->source)
++		return -ENODEV;
++
++	source_format.pad = vif->source_pad;
++	ret = v4l2_subdev_call_state_active(vif->source, pad, get_fmt,
++					    &source_format);
++	if (ret)
++		return ret;
++
++	*fmt = source_format.format;
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(ar_vif_source_format);
++
+ static void ar_vif_sync_format(struct ar_vif *vif)
+ {
+ 	struct v4l2_subdev_format source_format = {
+@@ -1241,6 +1289,20 @@ static void ar_vif_sync_format(struct ar_vif *vif)
+ 
+ 	vif->format.width = source_format.format.width;
+ 	vif->format.height = source_format.format.height;
++
++	switch (source_format.format.code) {
++	case MEDIA_BUS_FMT_SBGGR10_1X10:
++	case MEDIA_BUS_FMT_SGBRG10_1X10:
++	case MEDIA_BUS_FMT_SGRBG10_1X10:
++	case MEDIA_BUS_FMT_SRGGB10_1X10:
++		vif->data_type = MIPI_CSI2_DT_RAW10;
++		vif->border = 0;
++		break;
++	default:
++		vif->data_type = MIPI_CSI2_DT_RAW12;
++		vif->border = 4;
++		break;
++	}
+ 	vif->format.bytesperline = vif->format.width * AR_VIF_BYTES_PER_PIXEL;
+ 	vif->format.sizeimage = vif->format.bytesperline * vif->format.height;
+ }
+@@ -1352,6 +1414,8 @@ static void ar_vif_set_default_format(struct ar_vif *vif)
+ 	vif->format.colorspace = V4L2_COLORSPACE_RAW;
+ 	vif->format.bytesperline = AR_VIF_WIDTH * AR_VIF_BYTES_PER_PIXEL;
+ 	vif->format.sizeimage = vif->format.bytesperline * AR_VIF_HEIGHT;
++	vif->data_type = MIPI_CSI2_DT_RAW12;
++	vif->border = 4;
+ }
+ 
+ /* Undo the v4l2 and media device registration, in reverse order. */
+diff --git a/drivers/media/artosyn/nt99235.c b/drivers/media/artosyn/nt99235.c
+index 86f2def..9898781 100644
+--- a/drivers/media/artosyn/nt99235.c
++++ b/drivers/media/artosyn/nt99235.c
+@@ -141,20 +141,25 @@ static int gain = NT99235_AGAIN_DEFAULT;
+  * explicitly, so a hang identifies its own cause without needing a bisect
+  * across reboots.
+  *
+- *   0  register the subdev only, touch no hardware (default)
++ *   0  register the subdev only, touch no hardware
+  *   1  additionally enable the master clock
+  *   2  additionally drive the power and reset lines
+- *   3  additionally read the chip id over i2c
++ *   3  additionally read the chip id over i2c (default)
+  *
+  * Streaming always performs the full sequence regardless of this setting; it
+  * only governs what probe does.
++ *
++ * Stage 3 is the default because the P1 is built with either this sensor or
++ * an SC231AI on the same connector, described by one device tree node that
++ * both drivers match. The driver whose chip answers binds; this one steps
++ * aside with -ENODEV when nothing answers at its address.
+  */
+ #define NT99235_BRINGUP_NONE		0
+ #define NT99235_BRINGUP_CLOCK		1
+ #define NT99235_BRINGUP_GPIO		2
+ #define NT99235_BRINGUP_DETECT		3
+ 
+-static int bringup = NT99235_BRINGUP_NONE;
++static int bringup = NT99235_BRINGUP_DETECT;
+ module_param(bringup, int, 0444);
+ MODULE_PARM_DESC(bringup,
+ 		 "probe-time hardware bring-up stage: 0 none, 1 clock, 2 gpio, 3 detect");
+@@ -1318,7 +1323,14 @@ static int nt99235_probe_bringup(struct nt99235 *nt99235)
+ 
+ 	nt99235_power_off(dev);
+ 
+-	return ret;
++	/* No NT99235 here: leave the node to the other sensor's driver. */
++	if (ret) {
++		dev_info(dev, "no NT99235 at 0x%02x\n",
++			 to_i2c_client(dev)->addr);
++		return -ENODEV;
++	}
++
++	return 0;
+ }
+ 
+ /*
+diff --git b/drivers/media/artosyn/sc231ai.c b/drivers/media/artosyn/sc231ai.c
+new file mode 100644
+index 0000000..e168965
+--- /dev/null
++++ b/drivers/media/artosyn/sc231ai.c
+@@ -0,0 +1,940 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * sc231ai.c - SmartSens SC231AI MIPI CSI-2 image sensor subdev.
++ *
++ * BetaFPV builds the P1 air unit with one of two camera modules on the same
++ * connector: an NT99235 at i2c 0x1a or an SC231AI at i2c 0x30. Both share the
++ * connector's power-enable and reset lines and the 24 MHz master clock, and the
++ * vendor firmware probes for each in turn. This driver covers the SC231AI.
++ *
++ * Everything sensor-specific comes from the vendor sensor library
++ * libsns_sc231ai.so (P1_SKY v1.0.36 to v2.0.5): the one mode it supports
++ * (linear 1920x1080 at 60 fps, 10-bit, two lanes), the power sequence, the
++ * exposure, gain and frame-length registers its AE writes, and the chip id its
++ * probe checks. The library programs the mode as inline register writes; the
++ * table below is a mechanical transcription in program order.
++ *
++ * The device tree node may carry this sensor alone (reg = <0x30>) or be shared
++ * with the NT99235 (compatible lists both, reg = <0x1a>, <0x30> with reg-names).
++ * In the shared case the client the core creates sits at the NT99235 address
++ * and this driver talks to its own address through an ancillary client. Probe
++ * reads the chip id so that whichever driver finds its sensor binds the node
++ * and the other steps aside with -ENODEV.
++ */
++
++#include <linux/cleanup.h>
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/pm_runtime.h>
++
++#include <media/v4l2-async.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-fwnode.h>
++#include <media/v4l2-subdev.h>
++
++#define SC231AI_I2C_ADDR		0x30
++
++/* Chip id, as the vendor probe checks it: 0x3107 = 0xcb, 0x3108 = 0x6a. */
++#define SC231AI_REG_CHIP_ID_HI		0x3107
++#define SC231AI_REG_CHIP_ID_LO		0x3108
++#define SC231AI_CHIP_ID			0xcb6a
++
++#define SC231AI_REG_MODE_SELECT		0x0100
++#define SC231AI_MODE_STANDBY		0x00
++#define SC231AI_MODE_STREAMING		0x01
++
++/*
++ * The registers the vendor AE commits (cmos_get_sns_regs_info).
++ *
++ * Exposure is counted in half lines: the vendor clamps the line count to
++ * [1, frame length - 11], doubles it and spreads the 16-bit result as
++ * 0x3e00[3:0] = bits 15:12, 0x3e01 = bits 11:4, 0x3e02[7:4] = bits 3:0.
++ *
++ * Analogue gain is a coarse/fine pair at 0x3e08/0x3e09, digital gain another
++ * pair at 0x3e06/0x3e07 (1x is 0x00/0x80). The frame length is 0x320e/0x320f.
++ */
++#define SC231AI_REG_EXPOSURE_H		0x3e00
++#define SC231AI_REG_EXPOSURE_M		0x3e01
++#define SC231AI_REG_EXPOSURE_L		0x3e02
++#define SC231AI_REG_DGAIN_COARSE	0x3e06
++#define SC231AI_REG_DGAIN_FINE		0x3e07
++#define SC231AI_REG_AGAIN_COARSE	0x3e08
++#define SC231AI_REG_AGAIN_FINE		0x3e09
++#define SC231AI_DGAIN_COARSE_1X		0x00
++#define SC231AI_DGAIN_FINE_1X		0x80
++
++/*
++ * Mirror and flip, 0x3221: the vendor's sensor control 7 writes 0x00, 0x06,
++ * 0x60 or 0x66 for its four orientations. The ISP sees the same Bayer order
++ * in all four (tested on a P1): the sensor moves its readout to hold the
++ * phase, and the frame still arrives top-down. So this is where a picture is
++ * turned, rather than in the encoder.
++ */
++#define SC231AI_REG_ORIENTATION		0x3221
++
++/*
++ * Test pattern: 0x4501 bit 3, as Rockchip's driver for this chip (SC231HAI,
++ * same chip ID) switches it; the vendor library never does. On a P1 it is a
++ * ramp across the width with all four Bayer channels equal, which makes it a
++ * neutral reference for the ISP: with unity white balance it must come out
++ * grey at every level.
++ */
++#define SC231AI_REG_TEST_PATTERN	0x4501
++#define SC231AI_TEST_PATTERN_ENABLE	BIT(3)
++#define SC231AI_ORIENTATION_MIRROR	0x06
++#define SC231AI_ORIENTATION_FLIP	0x60
++
++/* Frame length of the mode: 0x320e/0x320f = 0x0465. */
++#define SC231AI_VTS			1125
++#define SC231AI_EXPOSURE_MARGIN		11
++#define SC231AI_EXPOSURE_MIN		1
++#define SC231AI_EXPOSURE_MAX		(SC231AI_VTS - SC231AI_EXPOSURE_MARGIN)
++
++/*
++ * The gain parameter uses the NT99235 driver's code scale, so one AE loop
++ * drives either sensor: gain = 2^(code >> 4) * (16 + (code & 15)) / 16, 1x at
++ * 0x00 to 64x at 0x60. The driver converts it to the nearest analogue setting
++ * at or below that gain. The SC231AI's analogue range reaches 116x, so the
++ * whole code range is analogue and digital gain stays at 1x.
++ */
++#define SC231AI_GAIN_CODE_MIN		0x00
++#define SC231AI_GAIN_CODE_MAX		0x60
++#define SC231AI_GAIN_CODE_DEFAULT	0x3c
++
++#define SC231AI_MCLK_RATE		24000000
++#define SC231AI_RESET_SETTLE_US		10000
++
++/*
++ * Per-lane rate 742.5 Mbit/s: the mode's frame is 2240 x 1125 at 60 fps and
++ * moves 1920 10-bit pixels a line over two lanes. The link frequency is half
++ * the per-lane rate (both clock edges carry data); the pixel rate follows from
++ * it the usual way, link_freq * 2 * lanes / bits per pixel.
++ */
++#define SC231AI_LANES			2
++#define SC231AI_LINK_FREQ		371250000LL
++#define SC231AI_PIXEL_RATE		148500000ULL
++
++/*
++ * The vendor library calls the sensor BGGR. The receiver only needs "10-bit
++ * Bayer" from the code, and the ISP keys its input setup on it. The sensor
++ * sends exactly the 1920x1080 it reports, the vendor's window at offset 4,4
++ * of the 1928x1088 array, with no border around it: a 1924-pixel RAW10 line
++ * would be 2405 bytes, which two lanes cannot carry without CRC errors.
++ */
++#define SC231AI_MBUS_CODE		MEDIA_BUS_FMT_SBGGR10_1X10
++#define SC231AI_WIDTH			1920
++#define SC231AI_HEIGHT			1080
++
++struct sc231ai_reg {
++	u16 address;
++	u8 value;
++};
++
++/*
++ * Linear 1920x1080 at 60 fps, 10-bit, two lanes: 152 writes, verbatim from
++ * libsns_sc231ai.so (sc231ai_linear_1080p60_init). The library's last write,
++ * 0x0100 = 0x01, is issued by stream-on after the exposure commit instead.
++ */
++static const struct sc231ai_reg sc231ai_regs_1920x1080p60[] = {
++	{ 0x0103, 0x01 }, { 0x36e9, 0x80 }, { 0x37f9, 0x80 }, { 0x301f, 0x43 },
++	{ 0x3058, 0x21 }, { 0x3059, 0x53 }, { 0x305a, 0x40 }, { 0x3200, 0x00 },
++	{ 0x3201, 0x00 }, { 0x3202, 0x00 }, { 0x3203, 0x00 }, { 0x3204, 0x07 },
++	{ 0x3205, 0x87 }, { 0x3206, 0x04 }, { 0x3207, 0x3f }, { 0x3208, 0x07 },
++	{ 0x3209, 0x80 }, { 0x320a, 0x04 }, { 0x320b, 0x38 }, { 0x320c, 0x08 },
++	{ 0x320d, 0xc0 }, { 0x320e, 0x04 }, { 0x320f, 0x65 }, { 0x3210, 0x00 },
++	{ 0x3211, 0x04 }, { 0x3212, 0x00 }, { 0x3213, 0x04 }, { 0x3250, 0x00 },
++	{ 0x3301, 0x0a }, { 0x3302, 0x20 }, { 0x3304, 0x90 }, { 0x3305, 0x00 },
++	{ 0x3306, 0x78 }, { 0x3309, 0xd0 }, { 0x330b, 0xe8 }, { 0x330d, 0x08 },
++	{ 0x331c, 0x04 }, { 0x331e, 0x81 }, { 0x331f, 0xc1 }, { 0x3323, 0x06 },
++	{ 0x3333, 0x10 }, { 0x3334, 0x40 }, { 0x3364, 0x5e }, { 0x336c, 0x8c },
++	{ 0x337f, 0x13 }, { 0x338f, 0x80 }, { 0x3390, 0x08 }, { 0x3391, 0x18 },
++	{ 0x3392, 0xb8 }, { 0x3393, 0x10 }, { 0x3394, 0x14 }, { 0x3395, 0x10 },
++	{ 0x3396, 0x88 }, { 0x3397, 0x98 }, { 0x3398, 0xf8 }, { 0x3399, 0x0a },
++	{ 0x339a, 0x0e }, { 0x339b, 0x10 }, { 0x339c, 0x14 }, { 0x33ae, 0x80 },
++	{ 0x33af, 0xc0 }, { 0x33b2, 0x50 }, { 0x33b3, 0x08 }, { 0x33f8, 0x00 },
++	{ 0x33f9, 0x78 }, { 0x33fa, 0x00 }, { 0x33fb, 0x78 }, { 0x33fc, 0x48 },
++	{ 0x33fd, 0x78 }, { 0x349f, 0x03 }, { 0x34a6, 0x40 }, { 0x34a7, 0x58 },
++	{ 0x34a8, 0x08 }, { 0x34a9, 0x0c }, { 0x34f8, 0x78 }, { 0x34f9, 0x18 },
++	{ 0x3619, 0x20 }, { 0x361a, 0x90 }, { 0x3633, 0x44 }, { 0x3637, 0x5c },
++	{ 0x363c, 0xc0 }, { 0x363d, 0x02 }, { 0x3660, 0x80 }, { 0x3661, 0x81 },
++	{ 0x3662, 0x8f }, { 0x3663, 0x81 }, { 0x3664, 0x81 }, { 0x3665, 0x82 },
++	{ 0x3666, 0x8f }, { 0x3667, 0x08 }, { 0x3668, 0x80 }, { 0x3669, 0x88 },
++	{ 0x366a, 0x98 }, { 0x366b, 0xb8 }, { 0x366c, 0xf8 }, { 0x3670, 0xc2 },
++	{ 0x3671, 0xc2 }, { 0x3672, 0x98 }, { 0x3680, 0x43 }, { 0x3681, 0x54 },
++	{ 0x3682, 0x54 }, { 0x36c0, 0x80 }, { 0x36c1, 0x88 }, { 0x36c8, 0x88 },
++	{ 0x36c9, 0xb8 }, { 0x36ea, 0xc7 }, { 0x36eb, 0x04 }, { 0x36ec, 0x4c },
++	{ 0x36ed, 0x04 }, { 0x3718, 0x04 }, { 0x3722, 0x8b }, { 0x3724, 0xd1 },
++	{ 0x3741, 0x08 }, { 0x3770, 0x17 }, { 0x3771, 0x9b }, { 0x3772, 0x9b },
++	{ 0x37c0, 0x88 }, { 0x37c1, 0xb8 }, { 0x37fa, 0xc7 }, { 0x37fc, 0x00 },
++	{ 0x37fd, 0x04 }, { 0x3902, 0xc0 }, { 0x3903, 0x40 }, { 0x3909, 0x00 },
++	{ 0x391f, 0x41 }, { 0x3926, 0xe0 }, { 0x3933, 0x80 }, { 0x3934, 0x02 },
++	{ 0x3937, 0x6f }, { 0x3e00, 0x00 }, { 0x3e01, 0x8b }, { 0x3e02, 0xf0 },
++	{ 0x3e05, 0x40 }, { 0x3e08, 0x00 }, { 0x4509, 0x20 }, { 0x450d, 0x07 },
++	{ 0x4837, 0x1a }, { 0x5780, 0x76 }, { 0x5784, 0x10 }, { 0x5787, 0x0a },
++	{ 0x5788, 0x0a }, { 0x5789, 0x08 }, { 0x578a, 0x0a }, { 0x578b, 0x0a },
++	{ 0x578c, 0x08 }, { 0x578d, 0x40 }, { 0x5792, 0x04 }, { 0x5795, 0x04 },
++	{ 0x57ac, 0x00 }, { 0x57ad, 0x00 }, { 0x36e9, 0x23 }, { 0x37f9, 0x23 },
++};
++
++/*
++ * The vendor's analogue gain table (cmos_again_calc_table): gain in Q10 and
++ * the 0x3e08/0x3e09 pair for it, 1x to 116.5x in 220 steps. The coarse
++ * register selects a base (1, 2, 3.7, 7.4, 14.8, 29.6, 59.2) that the fine
++ * register scales by fine / 32; the vendor rounds the entries slightly
++ * differently from that product, so the table is carried as it is.
++ */
++static const struct {
++	u32 gain;
++	u8 coarse;
++	u8 fine;
++} sc231ai_again[] = {
++	{   1024, 0x00, 0x20 }, {   1055, 0x00, 0x21 }, {   1088, 0x00, 0x22 },
++	{   1120, 0x00, 0x23 }, {   1152, 0x00, 0x24 }, {   1183, 0x00, 0x25 },
++	{   1216, 0x00, 0x26 }, {   1248, 0x00, 0x27 }, {   1280, 0x00, 0x28 },
++	{   1311, 0x00, 0x29 }, {   1344, 0x00, 0x2a }, {   1376, 0x00, 0x2b },
++	{   1408, 0x00, 0x2c }, {   1439, 0x00, 0x2d }, {   1472, 0x00, 0x2e },
++	{   1504, 0x00, 0x2f }, {   1536, 0x00, 0x30 }, {   1567, 0x00, 0x31 },
++	{   1600, 0x00, 0x32 }, {   1632, 0x00, 0x33 }, {   1664, 0x00, 0x34 },
++	{   1695, 0x00, 0x35 }, {   1728, 0x00, 0x36 }, {   1760, 0x00, 0x37 },
++	{   1792, 0x00, 0x38 }, {   1823, 0x00, 0x39 }, {   1856, 0x00, 0x3a },
++	{   1888, 0x00, 0x3b }, {   1920, 0x00, 0x3c }, {   1951, 0x00, 0x3d },
++	{   1984, 0x00, 0x3e }, {   2016, 0x00, 0x3f }, {   2048, 0x01, 0x20 },
++	{   2112, 0x01, 0x21 }, {   2176, 0x01, 0x22 }, {   2240, 0x01, 0x23 },
++	{   2304, 0x01, 0x24 }, {   2368, 0x01, 0x25 }, {   2432, 0x01, 0x26 },
++	{   2496, 0x01, 0x27 }, {   2560, 0x01, 0x28 }, {   2624, 0x01, 0x29 },
++	{   2688, 0x01, 0x2a }, {   2752, 0x01, 0x2b }, {   2816, 0x01, 0x2c },
++	{   2880, 0x01, 0x2d }, {   2944, 0x01, 0x2e }, {   3008, 0x01, 0x2f },
++	{   3072, 0x01, 0x30 }, {   3136, 0x01, 0x31 }, {   3200, 0x01, 0x32 },
++	{   3264, 0x01, 0x33 }, {   3328, 0x01, 0x34 }, {   3392, 0x01, 0x35 },
++	{   3456, 0x01, 0x36 }, {   3520, 0x01, 0x37 }, {   3584, 0x01, 0x38 },
++	{   3648, 0x01, 0x39 }, {   3712, 0x01, 0x3a }, {   3776, 0x01, 0x3b },
++	{   3788, 0x80, 0x20 }, {   3907, 0x80, 0x21 }, {   4025, 0x80, 0x22 },
++	{   4144, 0x80, 0x23 }, {   4262, 0x80, 0x24 }, {   4380, 0x80, 0x25 },
++	{   4499, 0x80, 0x26 }, {   4617, 0x80, 0x27 }, {   4736, 0x80, 0x28 },
++	{   4854, 0x80, 0x29 }, {   4972, 0x80, 0x2a }, {   5091, 0x80, 0x2b },
++	{   5210, 0x80, 0x2c }, {   5327, 0x80, 0x2d }, {   5446, 0x80, 0x2e },
++	{   5564, 0x80, 0x2f }, {   5683, 0x80, 0x30 }, {   5801, 0x80, 0x31 },
++	{   5919, 0x80, 0x32 }, {   6038, 0x80, 0x33 }, {   6157, 0x80, 0x34 },
++	{   6275, 0x80, 0x35 }, {   6393, 0x80, 0x36 }, {   6511, 0x80, 0x37 },
++	{   6630, 0x80, 0x38 }, {   6749, 0x80, 0x39 }, {   6866, 0x80, 0x3a },
++	{   6985, 0x80, 0x3b }, {   7104, 0x80, 0x3c }, {   7222, 0x80, 0x3d },
++	{   7341, 0x80, 0x3e }, {   7458, 0x80, 0x3f }, {   7577, 0x81, 0x20 },
++	{   7814, 0x81, 0x21 }, {   8051, 0x81, 0x22 }, {   8288, 0x81, 0x23 },
++	{   8524, 0x81, 0x24 }, {   8761, 0x81, 0x25 }, {   8998, 0x81, 0x26 },
++	{   9235, 0x81, 0x27 }, {   9472, 0x81, 0x28 }, {   9708, 0x81, 0x29 },
++	{   9946, 0x81, 0x2a }, {  10182, 0x81, 0x2b }, {  10419, 0x81, 0x2c },
++	{  10655, 0x81, 0x2d }, {  10893, 0x81, 0x2e }, {  11129, 0x81, 0x2f },
++	{  11366, 0x81, 0x30 }, {  11602, 0x81, 0x31 }, {  11840, 0x81, 0x32 },
++	{  12077, 0x81, 0x33 }, {  12313, 0x81, 0x34 }, {  12550, 0x81, 0x35 },
++	{  12787, 0x81, 0x36 }, {  13024, 0x81, 0x37 }, {  13260, 0x81, 0x38 },
++	{  13497, 0x81, 0x39 }, {  13734, 0x81, 0x3a }, {  13971, 0x81, 0x3b },
++	{  14208, 0x81, 0x3c }, {  14444, 0x81, 0x3d }, {  14682, 0x81, 0x3e },
++	{  14918, 0x81, 0x3f }, {  15155, 0x83, 0x20 }, {  15629, 0x83, 0x21 },
++	{  16102, 0x83, 0x22 }, {  16576, 0x83, 0x23 }, {  17049, 0x83, 0x24 },
++	{  17523, 0x83, 0x25 }, {  17996, 0x83, 0x26 }, {  18470, 0x83, 0x27 },
++	{  18944, 0x83, 0x28 }, {  19418, 0x83, 0x29 }, {  19891, 0x83, 0x2a },
++	{  20365, 0x83, 0x2b }, {  20838, 0x83, 0x2c }, {  21312, 0x83, 0x2d },
++	{  21785, 0x83, 0x2e }, {  22259, 0x83, 0x2f }, {  22732, 0x83, 0x30 },
++	{  23206, 0x83, 0x31 }, {  23680, 0x83, 0x32 }, {  24154, 0x83, 0x33 },
++	{  24627, 0x83, 0x34 }, {  25101, 0x83, 0x35 }, {  25574, 0x83, 0x36 },
++	{  26048, 0x83, 0x37 }, {  26521, 0x83, 0x38 }, {  26995, 0x83, 0x39 },
++	{  27468, 0x83, 0x3a }, {  27942, 0x83, 0x3b }, {  28416, 0x83, 0x3c },
++	{  28890, 0x83, 0x3d }, {  29363, 0x83, 0x3e }, {  29837, 0x83, 0x3f },
++	{  30310, 0x87, 0x20 }, {  31257, 0x87, 0x21 }, {  32204, 0x87, 0x22 },
++	{  33152, 0x87, 0x23 }, {  34099, 0x87, 0x24 }, {  35046, 0x87, 0x25 },
++	{  35993, 0x87, 0x26 }, {  36940, 0x87, 0x27 }, {  37888, 0x87, 0x28 },
++	{  38835, 0x87, 0x29 }, {  39782, 0x87, 0x2a }, {  40729, 0x87, 0x2b },
++	{  41676, 0x87, 0x2c }, {  42624, 0x87, 0x2d }, {  43571, 0x87, 0x2e },
++	{  44518, 0x87, 0x2f }, {  45465, 0x87, 0x30 }, {  46412, 0x87, 0x31 },
++	{  47360, 0x87, 0x32 }, {  48307, 0x87, 0x33 }, {  49254, 0x87, 0x34 },
++	{  50201, 0x87, 0x35 }, {  51148, 0x87, 0x36 }, {  52096, 0x87, 0x37 },
++	{  53043, 0x87, 0x38 }, {  53990, 0x87, 0x39 }, {  54937, 0x87, 0x3a },
++	{  55884, 0x87, 0x3b }, {  56832, 0x87, 0x3c }, {  57779, 0x87, 0x3d },
++	{  58726, 0x87, 0x3e }, {  59673, 0x87, 0x3f }, {  60620, 0x8f, 0x20 },
++	{  62515, 0x8f, 0x21 }, {  64409, 0x8f, 0x22 }, {  66304, 0x8f, 0x23 },
++	{  68198, 0x8f, 0x24 }, {  70092, 0x8f, 0x25 }, {  71987, 0x8f, 0x26 },
++	{  73881, 0x8f, 0x27 }, {  75776, 0x8f, 0x28 }, {  77670, 0x8f, 0x29 },
++	{  79564, 0x8f, 0x2a }, {  81459, 0x8f, 0x2b }, {  83353, 0x8f, 0x2c },
++	{  85248, 0x8f, 0x2d }, {  87142, 0x8f, 0x2e }, {  89036, 0x8f, 0x2f },
++	{  90931, 0x8f, 0x30 }, {  92825, 0x8f, 0x31 }, {  94720, 0x8f, 0x32 },
++	{  96614, 0x8f, 0x33 }, {  98508, 0x8f, 0x34 }, { 100403, 0x8f, 0x35 },
++	{ 102297, 0x8f, 0x36 }, { 104192, 0x8f, 0x37 }, { 106086, 0x8f, 0x38 },
++	{ 107980, 0x8f, 0x39 }, { 109875, 0x8f, 0x3a }, { 111769, 0x8f, 0x3b },
++	{ 113664, 0x8f, 0x3c }, { 115558, 0x8f, 0x3d }, { 117452, 0x8f, 0x3e },
++	{ 119347, 0x8f, 0x3f },
++};
++
++struct sc231ai {
++	struct v4l2_subdev sd;
++	struct media_pad pad;
++	struct device *dev;
++
++	/* Where the sensor actually answers: the core's client, or an
++	 * ancillary one when the node is shared with the NT99235.
++	 */
++	struct i2c_client *i2c;
++
++	struct clk *mclk;
++	struct gpio_desc *reset_gpio;
++	struct gpio_desc *enable_gpio;
++
++	struct v4l2_ctrl_handler ctrl_handler;
++	struct v4l2_ctrl *exposure;
++	struct v4l2_ctrl *again;
++};
++
++/*
++ * Live exposure and gain as writable module parameters, with the same names
++ * and units as the NT99235 driver's, so the AE loop drives either sensor by
++ * writing /sys/module/<sensor>/parameters/{exposure,gain}. The V4L2 controls
++ * mirror them.
++ */
++static struct sc231ai *sc231ai_bound;
++static DEFINE_MUTEX(sc231ai_bound_lock);
++
++static int exposure = SC231AI_EXPOSURE_MAX;
++static int gain = SC231AI_GAIN_CODE_DEFAULT;
++
++static int orientation;
++
++static bool test_pattern;
++module_param(test_pattern, bool, 0644);
++MODULE_PARM_DESC(test_pattern,
++		 "sensor test pattern (a neutral ramp) instead of the image, applied at stream-on (default off)");
++
++static inline struct sc231ai *to_sc231ai(struct v4l2_subdev *sd)
++{
++	return container_of(sd, struct sc231ai, sd);
++}
++
++static int sc231ai_write(struct sc231ai *sc, u16 address, u8 value)
++{
++	u8 buf[3] = { address >> 8, address & 0xff, value };
++	int ret = i2c_master_send(sc->i2c, buf, sizeof(buf));
++
++	if (ret != sizeof(buf)) {
++		dev_err(sc->dev, "write 0x%04x = 0x%02x failed (%d)\n",
++			address, value, ret);
++		return ret < 0 ? ret : -EIO;
++	}
++
++	return 0;
++}
++
++static int sc231ai_read(struct sc231ai *sc, u16 address, u8 *value)
++{
++	u8 addr_buf[2] = { address >> 8, address & 0xff };
++	struct i2c_msg msgs[2] = {
++		{
++			.addr = sc->i2c->addr,
++			.len = sizeof(addr_buf),
++			.buf = addr_buf,
++		},
++		{
++			.addr = sc->i2c->addr,
++			.flags = I2C_M_RD,
++			.len = 1,
++			.buf = value,
++		},
++	};
++	int ret = i2c_transfer(sc->i2c->adapter, msgs, ARRAY_SIZE(msgs));
++
++	if (ret != ARRAY_SIZE(msgs))
++		return ret < 0 ? ret : -EIO;
++
++	return 0;
++}
++
++static int sc231ai_write_regs(struct sc231ai *sc,
++			      const struct sc231ai_reg *regs, unsigned int n)
++{
++	for (unsigned int i = 0; i < n; i++) {
++		int ret = sc231ai_write(sc, regs[i].address, regs[i].value);
++
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++/*
++ * The vendor power-on (sc231ai_cmos_power_on): both lines low, the 24 MHz
++ * master clock on, reset released, 10 ms. The enable line stays asserted for
++ * the session; power-off asserts reset and stops the clock.
++ */
++static int sc231ai_power_on(struct device *dev)
++{
++	struct sc231ai *sc = to_sc231ai(dev_get_drvdata(dev));
++	int ret;
++
++	gpiod_direction_output(sc->enable_gpio, 1);
++	gpiod_direction_output(sc->reset_gpio, 1);
++	usleep_range(SC231AI_RESET_SETTLE_US, SC231AI_RESET_SETTLE_US + 1000);
++
++	ret = clk_prepare_enable(sc->mclk);
++	if (ret) {
++		dev_err(dev, "failed to enable the master clock (%d)\n", ret);
++		return ret;
++	}
++
++	gpiod_set_value_cansleep(sc->reset_gpio, 0);
++	usleep_range(SC231AI_RESET_SETTLE_US, SC231AI_RESET_SETTLE_US + 1000);
++
++	return 0;
++}
++
++static int sc231ai_power_off(struct device *dev)
++{
++	struct sc231ai *sc = to_sc231ai(dev_get_drvdata(dev));
++
++	gpiod_set_value_cansleep(sc->reset_gpio, 1);
++	clk_disable_unprepare(sc->mclk);
++
++	return 0;
++}
++
++static int sc231ai_detect(struct sc231ai *sc)
++{
++	u8 hi, lo;
++
++	if (sc231ai_read(sc, SC231AI_REG_CHIP_ID_HI, &hi) ||
++	    sc231ai_read(sc, SC231AI_REG_CHIP_ID_LO, &lo))
++		return -ENODEV;
++
++	if (((hi << 8) | lo) != SC231AI_CHIP_ID) {
++		dev_info(sc->dev, "chip id 0x%02x%02x at 0x%02x is not an SC231AI\n",
++			 hi, lo, sc->i2c->addr);
++		return -ENODEV;
++	}
++
++	return 0;
++}
++
++/* The gain code's linear value in Q10. */
++static u32 sc231ai_code_gain(u32 code)
++{
++	return ((1024u << (code >> 4)) * (16 + (code & 15))) / 16;
++}
++
++static unsigned int sc231ai_again_index(u32 code)
++{
++	u32 want = sc231ai_code_gain(code);
++	unsigned int i = 0;
++
++	while (i + 1 < ARRAY_SIZE(sc231ai_again) &&
++	       sc231ai_again[i + 1].gain <= want)
++		i++;
++
++	return i;
++}
++
++static int sc231ai_commit_exposure(struct sc231ai *sc, u32 lines, u32 code)
++{
++	unsigned int idx = sc231ai_again_index(code);
++	u32 half;
++	int ret;
++
++	lines = clamp_t(u32, lines, SC231AI_EXPOSURE_MIN, SC231AI_EXPOSURE_MAX);
++	half = lines * 2;
++
++	ret = sc231ai_write(sc, SC231AI_REG_EXPOSURE_H, (half >> 12) & 0x0f);
++	if (!ret)
++		ret = sc231ai_write(sc, SC231AI_REG_EXPOSURE_M, (half >> 4) & 0xff);
++	if (!ret)
++		ret = sc231ai_write(sc, SC231AI_REG_EXPOSURE_L, (half & 0x0f) << 4);
++	if (!ret)
++		ret = sc231ai_write(sc, SC231AI_REG_AGAIN_COARSE,
++				    sc231ai_again[idx].coarse);
++	if (!ret)
++		ret = sc231ai_write(sc, SC231AI_REG_AGAIN_FINE,
++				    sc231ai_again[idx].fine);
++	if (!ret)
++		ret = sc231ai_write(sc, SC231AI_REG_DGAIN_COARSE,
++				    SC231AI_DGAIN_COARSE_1X);
++	if (!ret)
++		ret = sc231ai_write(sc, SC231AI_REG_DGAIN_FINE,
++				    SC231AI_DGAIN_FINE_1X);
++
++	return ret;
++}
++
++static int sc231ai_apply_live(void)
++{
++	struct sc231ai *sc;
++	int ret;
++
++	guard(mutex)(&sc231ai_bound_lock);
++
++	sc = sc231ai_bound;
++	if (!sc)
++		return 0;
++
++	if (sc->exposure)
++		__v4l2_ctrl_s_ctrl(sc->exposure, exposure);
++	if (sc->again)
++		__v4l2_ctrl_s_ctrl(sc->again, gain);
++
++	if (!pm_runtime_get_if_in_use(sc->dev))
++		return 0;
++
++	ret = sc231ai_commit_exposure(sc, exposure, gain);
++	pm_runtime_put(sc->dev);
++
++	return ret;
++}
++
++static int sc231ai_param_set(const char *val, const struct kernel_param *kp)
++{
++	int ret = param_set_int(val, kp);
++
++	if (ret)
++		return ret;
++
++	/* Saturate rather than reject, like the NT99235 driver. */
++	exposure = clamp(exposure, SC231AI_EXPOSURE_MIN, SC231AI_EXPOSURE_MAX);
++	gain = clamp(gain, SC231AI_GAIN_CODE_MIN, SC231AI_GAIN_CODE_MAX);
++
++	return sc231ai_apply_live();
++}
++
++static const struct kernel_param_ops sc231ai_param_ops = {
++	.set = sc231ai_param_set,
++	.get = param_get_int,
++};
++
++module_param_cb(exposure, &sc231ai_param_ops, &exposure, 0644);
++MODULE_PARM_DESC(exposure,
++		 "integration time in lines, clamped to 1-1114 (frame length minus 11); writable while streaming");
++
++module_param_cb(gain, &sc231ai_param_ops, &gain, 0644);
++MODULE_PARM_DESC(gain,
++		 "gain code 0x00-0x60, gain = 2^(code>>4) * (16 + (code&15)) / 16 (the NT99235 driver's scale), 1x to 64x; writable while streaming");
++
++static u8 sc231ai_orientation_value(void)
++{
++	return (orientation & 1 ? SC231AI_ORIENTATION_MIRROR : 0) |
++	       (orientation & 2 ? SC231AI_ORIENTATION_FLIP : 0);
++}
++
++static int sc231ai_orientation_set(const char *val, const struct kernel_param *kp)
++{
++	struct sc231ai *sc;
++	int ret = param_set_int(val, kp);
++
++	if (ret)
++		return ret;
++	orientation &= 3;
++
++	guard(mutex)(&sc231ai_bound_lock);
++
++	sc = sc231ai_bound;
++	if (!sc || !pm_runtime_get_if_in_use(sc->dev))
++		return 0;
++
++	ret = sc231ai_write(sc, SC231AI_REG_ORIENTATION, sc231ai_orientation_value());
++	pm_runtime_put(sc->dev);
++
++	return ret;
++}
++
++static const struct kernel_param_ops sc231ai_orientation_ops = {
++	.set = sc231ai_orientation_set,
++	.get = param_get_int,
++};
++
++module_param_cb(orientation, &sc231ai_orientation_ops, &orientation, 0644);
++MODULE_PARM_DESC(orientation,
++		 "bit 0 mirror, bit 1 flip, 3 = turned 180 degrees (default 0, the vendor's default); writable while streaming, the Bayer phase stays");
++
++static int sc231ai_s_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct sc231ai *sc = container_of(ctrl->handler, struct sc231ai,
++					  ctrl_handler);
++
++	if (!pm_runtime_get_if_in_use(sc->dev))
++		return 0;
++
++	switch (ctrl->id) {
++	case V4L2_CID_EXPOSURE:
++	case V4L2_CID_ANALOGUE_GAIN:
++		sc231ai_commit_exposure(sc, sc->exposure->val, sc->again->val);
++		break;
++	}
++
++	pm_runtime_put(sc->dev);
++
++	return 0;
++}
++
++static const struct v4l2_ctrl_ops sc231ai_ctrl_ops = {
++	.s_ctrl = sc231ai_s_ctrl,
++};
++
++static int sc231ai_start_stream(struct sc231ai *sc)
++{
++	int ret;
++
++	ret = sc231ai_write_regs(sc, sc231ai_regs_1920x1080p60,
++				 ARRAY_SIZE(sc231ai_regs_1920x1080p60));
++	if (ret)
++		return ret;
++
++	ret = sc231ai_write(sc, SC231AI_REG_ORIENTATION,
++			    sc231ai_orientation_value());
++	if (ret)
++		return ret;
++
++	if (test_pattern) {
++		u8 val;
++
++		ret = sc231ai_read(sc, SC231AI_REG_TEST_PATTERN, &val);
++		if (!ret)
++			ret = sc231ai_write(sc, SC231AI_REG_TEST_PATTERN,
++					    val | SC231AI_TEST_PATTERN_ENABLE);
++		if (ret)
++			return ret;
++		dev_info(sc->dev, "test pattern on\n");
++	}
++
++	ret = sc231ai_commit_exposure(sc, exposure, gain);
++	if (ret)
++		return ret;
++
++	return sc231ai_write(sc, SC231AI_REG_MODE_SELECT,
++			     SC231AI_MODE_STREAMING);
++}
++
++static int sc231ai_set_stream(struct v4l2_subdev *sd, int enable)
++{
++	struct sc231ai *sc = to_sc231ai(sd);
++	int ret;
++
++	if (!enable) {
++		ret = sc231ai_write(sc, SC231AI_REG_MODE_SELECT,
++				    SC231AI_MODE_STANDBY);
++		pm_runtime_put(sc->dev);
++		return ret;
++	}
++
++	ret = pm_runtime_resume_and_get(sc->dev);
++	if (ret)
++		return ret;
++
++	ret = sc231ai_start_stream(sc);
++	if (ret)
++		pm_runtime_put(sc->dev);
++
++	return ret;
++}
++
++static void sc231ai_fill_format(struct v4l2_mbus_framefmt *format)
++{
++	format->width = SC231AI_WIDTH;
++	format->height = SC231AI_HEIGHT;
++	format->code = SC231AI_MBUS_CODE;
++	format->field = V4L2_FIELD_NONE;
++	format->colorspace = V4L2_COLORSPACE_RAW;
++	format->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
++	format->quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	format->xfer_func = V4L2_XFER_FUNC_NONE;
++}
++
++static int sc231ai_enum_mbus_code(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_mbus_code_enum *code)
++{
++	if (code->index > 0)
++		return -EINVAL;
++
++	code->code = SC231AI_MBUS_CODE;
++
++	return 0;
++}
++
++static int sc231ai_enum_frame_size(struct v4l2_subdev *sd,
++				   struct v4l2_subdev_state *sd_state,
++				   struct v4l2_subdev_frame_size_enum *fse)
++{
++	if (fse->index > 0 || fse->code != SC231AI_MBUS_CODE)
++		return -EINVAL;
++
++	fse->min_width = SC231AI_WIDTH;
++	fse->max_width = SC231AI_WIDTH;
++	fse->min_height = SC231AI_HEIGHT;
++	fse->max_height = SC231AI_HEIGHT;
++
++	return 0;
++}
++
++/* One mode: any request gets it. */
++static int sc231ai_set_pad_format(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_format *fmt)
++{
++	sc231ai_fill_format(&fmt->format);
++	*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
++
++	return 0;
++}
++
++static int sc231ai_init_state(struct v4l2_subdev *sd,
++			      struct v4l2_subdev_state *sd_state)
++{
++	sc231ai_fill_format(v4l2_subdev_state_get_format(sd_state, 0));
++
++	return 0;
++}
++
++static const struct v4l2_subdev_video_ops sc231ai_video_ops = {
++	.s_stream = sc231ai_set_stream,
++};
++
++static const struct v4l2_subdev_pad_ops sc231ai_pad_ops = {
++	.enum_mbus_code = sc231ai_enum_mbus_code,
++	.enum_frame_size = sc231ai_enum_frame_size,
++	.get_fmt = v4l2_subdev_get_fmt,
++	.set_fmt = sc231ai_set_pad_format,
++};
++
++static const struct v4l2_subdev_ops sc231ai_subdev_ops = {
++	.video = &sc231ai_video_ops,
++	.pad = &sc231ai_pad_ops,
++};
++
++static const struct v4l2_subdev_internal_ops sc231ai_internal_ops = {
++	.init_state = sc231ai_init_state,
++};
++
++/* The mode needs two lanes; an endpoint with fewer cannot carry it. */
++static int sc231ai_check_endpoint(struct sc231ai *sc)
++{
++	struct v4l2_fwnode_endpoint bus_cfg = {
++		.bus_type = V4L2_MBUS_CSI2_DPHY,
++	};
++	struct fwnode_handle *endpoint;
++	unsigned int lanes;
++	int ret;
++
++	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(sc->dev), NULL);
++	if (!endpoint) {
++		dev_err(sc->dev, "no endpoint in the device tree node\n");
++		return -ENXIO;
++	}
++
++	ret = v4l2_fwnode_endpoint_alloc_parse(endpoint, &bus_cfg);
++	fwnode_handle_put(endpoint);
++	if (ret)
++		return ret;
++
++	lanes = bus_cfg.bus.mipi_csi2.num_data_lanes;
++	v4l2_fwnode_endpoint_free(&bus_cfg);
++
++	if (lanes < SC231AI_LANES) {
++		dev_err(sc->dev, "the mode needs %u data lanes, the endpoint has %u\n",
++			SC231AI_LANES, lanes);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int sc231ai_init_controls(struct sc231ai *sc)
++{
++	static const s64 link_freqs[] = { SC231AI_LINK_FREQ };
++	struct v4l2_ctrl_handler *handler = &sc->ctrl_handler;
++	struct v4l2_ctrl *ctrl;
++	int ret;
++
++	ret = v4l2_ctrl_handler_init(handler, 4);
++	if (ret)
++		return ret;
++
++	ctrl = v4l2_ctrl_new_int_menu(handler, NULL, V4L2_CID_LINK_FREQ,
++				      0, 0, link_freqs);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	ctrl = v4l2_ctrl_new_std(handler, NULL, V4L2_CID_PIXEL_RATE,
++				 SC231AI_PIXEL_RATE, SC231AI_PIXEL_RATE, 1,
++				 SC231AI_PIXEL_RATE);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	sc->exposure = v4l2_ctrl_new_std(handler, &sc231ai_ctrl_ops,
++					 V4L2_CID_EXPOSURE,
++					 SC231AI_EXPOSURE_MIN,
++					 SC231AI_EXPOSURE_MAX, 1, exposure);
++
++	sc->again = v4l2_ctrl_new_std(handler, &sc231ai_ctrl_ops,
++				      V4L2_CID_ANALOGUE_GAIN,
++				      SC231AI_GAIN_CODE_MIN,
++				      SC231AI_GAIN_CODE_MAX, 1, gain);
++
++	if (handler->error) {
++		ret = handler->error;
++		v4l2_ctrl_handler_free(handler);
++		return ret;
++	}
++
++	sc->sd.ctrl_handler = handler;
++
++	return 0;
++}
++
++static void sc231ai_unregister_ancillary(void *client)
++{
++	i2c_unregister_device(client);
++}
++
++static int sc231ai_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct sc231ai *sc;
++	int ret;
++
++	sc = devm_kzalloc(dev, sizeof(*sc), GFP_KERNEL);
++	if (!sc)
++		return -ENOMEM;
++
++	sc->dev = dev;
++	v4l2_i2c_subdev_init(&sc->sd, client, &sc231ai_subdev_ops);
++	sc->sd.internal_ops = &sc231ai_internal_ops;
++
++	if (client->addr == SC231AI_I2C_ADDR) {
++		sc->i2c = client;
++	} else {
++		sc->i2c = i2c_new_ancillary_device(client, "sc231ai",
++						   SC231AI_I2C_ADDR);
++		if (IS_ERR(sc->i2c))
++			return dev_err_probe(dev, PTR_ERR(sc->i2c),
++					     "no client at the SC231AI address\n");
++
++		ret = devm_add_action_or_reset(dev, sc231ai_unregister_ancillary,
++					       sc->i2c);
++		if (ret)
++			return ret;
++	}
++
++	ret = sc231ai_check_endpoint(sc);
++	if (ret)
++		return ret;
++
++	sc->mclk = devm_clk_get(dev, "mclk");
++	if (IS_ERR(sc->mclk))
++		return dev_err_probe(dev, PTR_ERR(sc->mclk),
++				     "failed to get the master clock\n");
++
++	if (clk_get_rate(sc->mclk) != SC231AI_MCLK_RATE)
++		dev_warn(dev, "master clock is %lu Hz, the sensor expects %u Hz\n",
++			 clk_get_rate(sc->mclk), SC231AI_MCLK_RATE);
++
++	sc->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_ASIS);
++	if (IS_ERR(sc->enable_gpio))
++		return dev_err_probe(dev, PTR_ERR(sc->enable_gpio),
++				     "failed to get the enable gpio\n");
++
++	sc->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_ASIS);
++	if (IS_ERR(sc->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(sc->reset_gpio),
++				     "failed to get the reset gpio\n");
++
++	/* Is it this sensor? Power up just long enough to read the id. */
++	ret = sc231ai_power_on(dev);
++	if (ret)
++		return ret;
++
++	ret = sc231ai_detect(sc);
++	sc231ai_power_off(dev);
++	if (ret)
++		return ret;
++
++	ret = sc231ai_init_controls(sc);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register the controls\n");
++
++	sc->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	sc->pad.flags = MEDIA_PAD_FL_SOURCE;
++	sc->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++
++	ret = media_entity_pads_init(&sc->sd.entity, 1, &sc->pad);
++	if (ret)
++		goto error_controls;
++
++	ret = v4l2_subdev_init_finalize(&sc->sd);
++	if (ret)
++		goto error_media_entity;
++
++	pm_runtime_set_suspended(dev);
++	pm_runtime_enable(dev);
++
++	ret = v4l2_async_register_subdev_sensor(&sc->sd);
++	if (ret)
++		goto error_pm;
++
++	scoped_guard(mutex, &sc231ai_bound_lock)
++		sc231ai_bound = sc;
++
++	dev_info(dev, "SC231AI at 0x%02x, 1920x1080p60 RAW10 on %u lanes, exposure %d gain 0x%02x\n",
++		 sc->i2c->addr, SC231AI_LANES, exposure, gain);
++
++	return 0;
++
++error_pm:
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
++	v4l2_subdev_cleanup(&sc->sd);
++error_media_entity:
++	media_entity_cleanup(&sc->sd.entity);
++error_controls:
++	v4l2_ctrl_handler_free(&sc->ctrl_handler);
++
++	return ret;
++}
++
++static void sc231ai_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct sc231ai *sc = to_sc231ai(sd);
++	struct device *dev = &client->dev;
++
++	scoped_guard(mutex, &sc231ai_bound_lock)
++		sc231ai_bound = NULL;
++
++	v4l2_async_unregister_subdev(sd);
++	v4l2_subdev_cleanup(sd);
++	media_entity_cleanup(&sd->entity);
++	v4l2_ctrl_handler_free(&sc->ctrl_handler);
++
++	pm_runtime_disable(dev);
++	if (!pm_runtime_status_suspended(dev))
++		sc231ai_power_off(dev);
++	pm_runtime_set_suspended(dev);
++}
++
++static DEFINE_RUNTIME_DEV_PM_OPS(sc231ai_pm_ops, sc231ai_power_off,
++				 sc231ai_power_on, NULL);
++
++static const struct of_device_id sc231ai_of_match[] = {
++	{ .compatible = "smartsens,sc231ai" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sc231ai_of_match);
++
++static struct i2c_driver sc231ai_driver = {
++	.probe = sc231ai_probe,
++	.remove = sc231ai_remove,
++	.driver = {
++		.name = "sc231ai",
++		.pm = pm_ptr(&sc231ai_pm_ops),
++		.of_match_table = sc231ai_of_match,
++	},
++};
++module_i2c_driver(sc231ai_driver);
++
++MODULE_DESCRIPTION("SmartSens SC231AI image sensor subdev");
++MODULE_LICENSE("GPL");

@@ -1,7 +1,7 @@
 # BetaFPV P1 SKY / Artosyn ArtLynk air unit, Artosyn PROXIMA 9311 (AR9311).
 #
 # Quad Cortex-A53, 256 MiB DDR, 128 MiB SPI-NAND, AR8030 baseband on SDIO
-# (mmc0@01b00000, reset on GPIO23), dwc2 OTG USB, NT99235 camera, no PHY.
+# (mmc0@01b00000, reset on GPIO23), dwc2 OTG USB, NT99235 or SC231AI camera, no PHY.
 #
 # Kernel: mainline 6.18.36 + MissingLynk's open Proxima-9311 BSP
 # (package/ml-kernel, applied by general/linux/linux-ext-ml-kernel.mk; board
@@ -59,7 +59,7 @@ BR2_ROOTFS_POST_IMAGE_SCRIPT="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/pos
 
 # Stock-image blobs: the P1 RF config (power/PA calibration, for the
 # generated p1_ascent_air.json, installed as ar8030/ar8030.json by the ar8030
-# package), Wave521C codec firmware, NT99235 ISP tuning, and the
+# package), Wave521C codec firmware, NT99235 and SC231AI ISP tuning, and the
 # SPL/U-Boot/DDR firmware used to USB-boot a board.
 BR2_PACKAGE_ARTLYNK_P1_VENDOR_FIRMWARE=y
 
@@ -100,7 +100,7 @@ BR2_PACKAGE_AR8030_PAIR_TOOL=y
 BR2_PACKAGE_AR8030_TOOLS=y
 BR2_PACKAGE_AR8030_TUNTAP=y
 BR2_PACKAGE_AR8030_TRANSPORT_TX=y
-# Video: waybeam's ar9311 backend (NT99235 V4L2 camera -> wave5 H.265 ->
+# Video: waybeam's ar9311 backend (NT99235 or SC231AI V4L2 camera -> wave5 H.265 ->
 # frame-shm://venc_frames, which ar8030-transport-tx sends over the link),
 # pinned in package/waybeam/waybeam.mk.
 BR2_PACKAGE_WAYBEAM=y
