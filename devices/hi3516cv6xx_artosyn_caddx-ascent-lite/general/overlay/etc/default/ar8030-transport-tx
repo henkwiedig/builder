@@ -26,7 +26,11 @@
 # interval only, and only where the link can't carry 300 kbps at 100 fps.
 # Replays of the 2026-10-02/03 flights: dropped frames 651 -> 280, each
 # stage active 0-4.5% of a flight.
-AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi -n 300 -F 3000 -D 4"
+# -a 5601: waybeam's audio (outgoing.audioPort; only while audio.enabled) on
+# the video socket, for the ground's audio ring (ar8030-transport
+# docs/ground-frame-ring.md). It replaced the socat relay of that port over
+# ar_net0.
+AR8030_TRANSPORT_TX_ARGS="-S 5602 -C pi -n 300 -F 3000 -D 4 -a 5601"
 
 # GPIO7_3 (bank 7 at 0x11097000, bit 3): this board's ar8030_rst line --
 # the vendor's own sys_config.ko pulsed it (fpv_edu405_gpio_init); here
