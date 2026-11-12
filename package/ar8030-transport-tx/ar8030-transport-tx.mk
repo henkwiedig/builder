@@ -89,6 +89,8 @@ define AR8030_TRANSPORT_TX_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/etc/init.d/S65ar8030-transport-tx
 	$(INSTALL) -D -m 0644 $(AR8030_TRANSPORT_TX_PKGDIR)/files/etc/default/ar8030-transport-tx \
 		$(TARGET_DIR)/etc/default/ar8030-transport-tx
+	$(INSTALL) -D -m 0755 $(AR8030_TRANSPORT_TX_PKGDIR)/files/usr/bin/collect_air_logs \
+		$(TARGET_DIR)/usr/bin/collect_air_logs
 endef
 
 #
