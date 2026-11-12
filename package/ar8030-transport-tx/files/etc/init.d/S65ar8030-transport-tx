@@ -289,12 +289,47 @@ start_lifecycled() {
 # ring wait.
 WATCHDOG_STALE_S=6
 
+# tx runs as the child of a subshell that waits for it and logs how it
+# ended: a crash otherwise leaves no trace at all (the log just stops --
+# print-fatal-signals and exception-trace are 0, and the SDK's own printf
+# output sits in tx's fully buffered stdout, lost on a signal death).
+# Seen 2026-11-12 on the P1: SIGSEGV from a stray SDK ioctl reply (fixed by
+# package/ar8030's 0038), an hour without video before anyone knew why.
+# The pidfile holds tx's own pid, not the subshell's, so tx-stop's kill
+# reaches tx itself; start_tx returns only once it is written, so a
+# tx-start right behind this one finds tx running.
 start_tx() {
 	mkdir -p "$RUNDIR"
+	rm -f "$PIDFILE"
 	(
-		exec "$DAEMON" -v $AR8030_TRANSPORT_TX_ARGS
-	) >>"$LOGFILE" 2>&1 &
-	echo $! > "$PIDFILE"
+		trap - EXIT
+		"$DAEMON" -v $AR8030_TRANSPORT_TX_ARGS >>"$LOGFILE" 2>&1 &
+		pid=$!
+		echo "$pid" >"$PIDFILE"
+		wait "$pid"
+		rc=$?
+		if [ "$rc" -gt 128 ]; then
+			echo "$(date): tx (pid $pid) killed by signal $((rc - 128))" >>"$LOGFILE"
+		else
+			echo "$(date): tx (pid $pid) exited with status $rc" >>"$LOGFILE"
+		fi
+	) </dev/null >/dev/null 2>&1 &
+	i=0
+	while [ ! -s "$PIDFILE" ] && [ $i -lt 50 ]; do
+		sleep 0.02
+		i=$((i + 1))
+	done
+}
+
+# Sends SIGKILL and waits (up to ~1 s) until the process is gone: two tx
+# on the same chip at once have taken the air's ar8030d down with them.
+kill9_wait() {
+	kill -9 "$1" 2>/dev/null || return 0
+	i=0
+	while kill -0 "$1" 2>/dev/null && [ $i -lt 10 ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
 }
 
 watchdog() {
@@ -312,12 +347,25 @@ watchdog() {
 	# log lines at all) also shows unchanged "bytes=" here, so this one
 	# check covers both failure modes -- the earlier mtime-only version
 	# only caught the frozen-process case.
+	#
+	# A tx that is gone altogether is restarted as well. Only tx-stop
+	# stops tx for good, and it kills this loop first; anything else that
+	# ends tx -- a crash, or tx giving up on its own -- used to leave the
+	# link up with no video until the next drop and reconnect ran the
+	# hooks again.
 	last_bytes=""
 	stall_count=0
 	while true; do
 		sleep "$WATCHDOG_STALE_S"
 		pid=$(cat "$PIDFILE" 2>/dev/null)
-		if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+		if [ -z "$pid" ]; then
+			last_bytes=""
+			stall_count=0
+			continue
+		fi
+		if ! kill -0 "$pid" 2>/dev/null; then
+			echo "$(date): tx (pid $pid) is gone, restarting" >>"$LOGFILE"
+			start_tx
 			last_bytes=""
 			stall_count=0
 			continue
@@ -333,7 +381,7 @@ watchdog() {
 
 		if [ "$stall_count" -ge 2 ]; then
 			echo "$(date): no byte progress for $((stall_count * WATCHDOG_STALE_S))s (stuck at bytes=$bytes), restarting" >>"$LOGFILE"
-			kill -9 "$pid" 2>/dev/null
+			kill9_wait "$pid"
 			start_tx
 			last_bytes=""
 			stall_count=0
@@ -350,8 +398,16 @@ tx_running() {
 # this on every CONNECT, including a warm restart that observes a link
 # already up, so this must be safe to call when tx is already running.
 tx_start_action() {
+	# A watchdog still running from an earlier tx-start restarts a dead tx
+	# on its own; let only the new one below do that, or both could.
+	if [ -f "$WATCHDOG_PIDFILE" ] && kill "$(cat "$WATCHDOG_PIDFILE")" 2>/dev/null; then
+		sleep 0.2
+	fi
+	rm -f "$WATCHDOG_PIDFILE"
 	if tx_running; then
 		echo "ar8030-transport-tx already running"
+		watchdog &
+		echo $! > "$WATCHDOG_PIDFILE"
 		return 0
 	fi
 	echo "Starting ar8030-transport-tx (tx)..."
@@ -362,12 +418,18 @@ tx_start_action() {
 	echo $! > "$WATCHDOG_PIDFILE"
 }
 
+# Waits for tx to exit (SIGTERM, then SIGKILL after ~3 s): a plain kill
+# returned at once, and a tx-start right after it -- a manual restart, or
+# hooks in quick succession -- had the new tx up 0.1-0.4 s before the old
+# one was gone (bench P1, 2026-11-12).
 tx_stop_action() {
 	echo "Stopping ar8030-transport-tx (tx)..."
 	[ -f "$WATCHDOG_PIDFILE" ] && kill "$(cat "$WATCHDOG_PIDFILE")" 2>/dev/null
 	rm -f "$WATCHDOG_PIDFILE"
-	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
-	rm -f "$PIDFILE"
+	pid=$(cat "$PIDFILE" 2>/dev/null)
+	kill_wait "$PIDFILE"
+	[ -n "$pid" ] && kill9_wait "$pid"
+	return 0
 }
 
 # Kills the pidfile's process and waits up to ~3 s for it to exit. stop()'s
