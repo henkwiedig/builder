@@ -37,7 +37,15 @@ binary itself is available, behind `BR2_PACKAGE_AR8030_USB_LOADER`.
 ### Where the demo firmware comes from
 
 `ar8030.json` (`files/lib/firmware/ar8030/`) is CADDX's own `bb_config_sky.json`
-— plain config, committed. `ar8030.img` (CADDX's `bb_demo_sky_3v3.img`) is a
+— plain config, committed — with one change: `para/br/rx/bandwidth` is 10
+instead of 5. The air (AP) never receives the broadcast slot, but the chip
+sizes its four rx buffers at boot by the largest rx half of the config (at
+MCS 13). Under CADDX's 5 MHz that comes to 2592 bytes, while the uplink
+runs at 20 MHz, so an uplink block above MCS 5 does not fit ("rx len 3070
+exceeding!" in the chip log) and the uplink collapses. At 10 MHz the
+buffers are 5184 bytes (stock SinYine's size), enough for uplink MCS 8:
+measured ground -> air TCP 3.1 -> 4.2 Mbit/s under the OTA boost. The P1's
+config (package/artlynk-p1-vendor-firmware) is built from this file. `ar8030.img` (CADDX's `bb_demo_sky_3v3.img`) is a
 proprietary vendor binary blob and is deliberately **not** committed — this
 repo is public. (This board's camera sensor tuning comes from the same
 vendor image too, but that's `package/waybeam`'s concern, not this

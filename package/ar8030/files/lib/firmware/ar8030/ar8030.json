@@ -210,7 +210,7 @@
 					},
 					"rx": {
 						"payload": true,
-						"bandwidth": "5",
+						"bandwidth": "10",
 						"enable_tintlv": true,
 						"tintlv_num": 2,
 						"tintlv_len": 12,
