@@ -22,9 +22,7 @@ AR8030_TRANSPORT_TX_ARGS="-C pi -n 1000"
 AR8030_RESET_GPIO=23
 
 # Bind button: GPIO42 (bank1 line19), active low (ml-kernel
-# proxima-9311-air.dts). Startup power 200 mW (lifecycled: 22 dBm) instead of
-# lifecycled's air default of 400 mW (26 dBm): the stock P1 configs top out
-# at 22-23 dBm for its PA. Only applies while no power is persisted.
+# proxima-9311-air.dts).
 # --soc-temp-cmd/--overheat-c 105: as on the Ascent, at >= 105 degC SoC
 # (/usr/bin/p1-temp, the protemp sensor) hooks.d/overheat stops waybeam,
 # unloads the camera chain and shows a still "VTX OVERHEAT" frame
@@ -49,7 +47,9 @@ AR8030_RESET_GPIO=23
 # artlynk-p1-vendor-firmware's make_ap_config()).
 # Not --fem-ctrl: its FEM bit (>= 24 dBm) is the Lite's FEM wiring; the P1
 # has a GSR5755. Only with an output-power measurement.
-# --max-power 200: BetaFPV calibrates and uses the P1's PA up to 22 dBm
-# (stock pwr_range [5, 22]); the air's 400 mW is 26 dBm. Bench: 200 mW
-# already costs ~4 dB SNR against 100 mW. The goggles then offer 200/100/25.
-AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --default-power 200 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2 --rf-path-b-off --max-power 200"
+# --power-levels 150,100,25: 22/20/14 dBm (a level's dBm is 10*log10(mW)).
+# BetaFPV calibrates and uses the P1's PA up to 22 dBm (stock pwr_range
+# [5, 22]); the top level is the default. Bench: 22 dBm already costs ~4 dB
+# SNR against 20 at bench range. A persisted level not among these (an older
+# image's 200) falls back to 150.
+AR8030_LIFECYCLED_ARGS="--http-port 8899 --bind-gpio 42 --soc-temp-cmd /usr/bin/p1-temp --overheat-c 105 --standby-dbm 10 --link-policy 2 --rf-path-b-off --power-levels 150,100,25"

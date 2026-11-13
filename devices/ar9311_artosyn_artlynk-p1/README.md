@@ -107,6 +107,14 @@ with BetaFPV's SPL. Power-cycle the goggles before a second attempt (they
 skip an air unit they have just updated). Afterwards SinYine's goggles cannot
 talk to it: it speaks this build's link, not SinYine's.
 
+That image differs from the P1 SKY one only in `/etc/default/ar8030-transport-tx`
+(post-image.sh): both RF paths on (no `--rf-path-b-off`; the TX has both PAs
+and antennas) and SinYine's stock power top, 25 dBm (stock `pwr_range`
+[5, 25], BetaFPV's 22): `--power-levels 300,200,100,25` (25/23/20/14 dBm)
+instead of the P1's `150,100,25`, the top level the default. A level saved
+from the menu earlier stays while it is still offered (200 mW, now 23 dBm)
+until 300 mW is picked.
+
 Back to SinYine's firmware: `sysupgrade --image=/tmp/SinYine_F1_TX_<date>_V<x>.bin
 --set-password=PASS` on the unit (the stock image's SDK-release product and
 its air-unit dtb identify it; the installed SPL stays).
@@ -226,8 +234,8 @@ PA calibration. Things that matter:
 - the channel table must match the ground's (42 entries), or the ground
   logs `chan tab: X not match Y` and never pairs
 - the stock P1 `bb_config_air.json` does not boot the Ascent firmware
-- startup power is capped to 200 mW (22 dBm) via `--default-power`, the
-  stock P1 configs top out at 22-23 dBm
+- the power levels are 150/100/25 mW (`--power-levels`, 22/20/14 dBm: a
+  level's dBm is 10*log10(mW)), the stock P1 configs top out at 22 dBm
 - the P1's front end (GSR5755) is switched from the AR8030's GPIO port 2,
   which only BetaFPV's baseband sets up (its config's `"board":
   "fpv_air_1t"`): the Ascent air baseband never enables port 2's pads
@@ -250,10 +258,9 @@ PA calibration. Things that matter:
   converted three in a row ran clean (18-19.5 dB, MCS 12). Bench power steps
   with the conversion: 25 and 100 mW about 5 ground AGC steps apart, SNR
   ~24 / 23 dB; 200 mW (22 dBm) ~19 dB, the PA's limit showing -- BetaFPV
-  caps QAM256 at 20 and QAM64 at 22 dBm. lifecycled's air top level,
-  400 mW (26 dBm), is past anything stock uses: `--max-power 200` drops it
-  (the goggles then offer 200/100/25 mW, a persisted 400 falls back to
-  200)
+  caps QAM256 at 20 and QAM64 at 22 dBm. lifecycled's default air top level,
+  400 mW (26 dBm), is past anything stock uses: `--power-levels 150,100,25`
+  leaves it out (a persisted level not among them falls back to 150)
 
 Warm reboots: the dw-wdt restart handler armed the reset with its shortest
 timeout, 2^16 cycles (2.7 ms), and from that the SoC nearly never came back

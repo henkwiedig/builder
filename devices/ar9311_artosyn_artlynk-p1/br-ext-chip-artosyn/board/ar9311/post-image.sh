@@ -83,22 +83,28 @@ check uImage.${SOC} $((0x600000))
 check ${DTB} $((0x60000))
 check rootfs.ubi $((336 * 0x20000))
 
-# rootfs-sinyine.ubi: this rootfs with both RF paths on, for the SinYine F1
-# TX -- --rf-path-b-off taken out of /etc/default/ar8030-transport-tx, nothing
-# else. Made the way Buildroot made rootfs.ubifs: its own fakeroot script
-# (owners, device nodes, mkfs.ubifs) run on a copy of the target.
+# rootfs-sinyine.ubi: this rootfs for the SinYine F1 TX, only
+# /etc/default/ar8030-transport-tx changed: both RF paths on (--rf-path-b-off
+# taken out) and SinYine's stock power top, 25 dBm (stock pwr_range [5, 25];
+# BetaFPV's is 22): --power-levels 300,200,100,25 (25/23/20/14 dBm) instead of
+# 150,100,25, the top level the default as stock starts at its 25. Made the
+# way Buildroot made rootfs.ubifs: its own fakeroot script (owners, device
+# nodes, mkfs.ubifs) run on a copy of the target.
 FS=${BUILD_DIR}/buildroot-fs/ubifs
 SY=${BUILD_DIR}/buildroot-fs/ubifs-sinyine
 rm -rf "${SY}"
 mkdir -p "${SY}"
 rsync -auH --exclude=/THIS_IS_NOT_YOUR_ROOT_FILESYSTEM "${TARGET_DIR}/" "${SY}/target/"
 defaults=${SY}/target/etc/default/ar8030-transport-tx
-if ! grep -q -- ' --rf-path-b-off' "${defaults}"; then
-	echo "post-image: no --rf-path-b-off in /etc/default/ar8030-transport-tx to take out for the SinYine image"
-	exit 1
-fi
-sed -i -e 's/ --rf-path-b-off//' \
-	-e '1i # SinYine F1 TX: the P1 SKY file with --rf-path-b-off taken out (both RF paths fitted).' \
+for flag in ' --rf-path-b-off' ' --power-levels 150,100,25'; do
+	if ! grep -q -- "^AR8030_LIFECYCLED_ARGS=.*${flag}" "${defaults}"; then
+		echo "post-image: no${flag} in /etc/default/ar8030-transport-tx to change for the SinYine image"
+		exit 1
+	fi
+done
+sed -i -e '/^AR8030_LIFECYCLED_ARGS=/{s/ --rf-path-b-off//;s/ --power-levels 150,100,25/ --power-levels 300,200,100,25/}' \
+	-e '1i # SinYine F1 TX: the P1 SKY file with both RF paths on (no --rf-path-b-off) and SinYine'"'"'s\
+# stock power top, 25 dBm: --power-levels 300,200,100,25 (25/23/20/14 dBm).' \
 	"${defaults}"
 sed -e "s#${FS}/target#${SY}/target#g" -e "s#${BINARIES_DIR}/rootfs.ubifs#${BINARIES_DIR}/rootfs-sinyine.ubifs#" \
 	"${FS}/fakeroot" > "${SY}/fakeroot"
