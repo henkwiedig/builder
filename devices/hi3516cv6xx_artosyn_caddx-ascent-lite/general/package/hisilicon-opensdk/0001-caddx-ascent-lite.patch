@@ -101,7 +101,7 @@ diff -ru a/kernel/sys_config/hi3516cv6xx/pin_mux.c b/kernel/sys_config/hi3516cv6
 diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/kernel/sys_config/hi3516cv6xx/sys_cfg.c
 --- a/kernel/sys_config/hi3516cv6xx/sys_cfg.c
 +++ b/kernel/sys_config/hi3516cv6xx/sys_cfg.c
-@@ -45,6 +45,8 @@
+@@ -54,6 +54,8 @@
  #define SENSOR_NAME_VS4388 "vs4388"
  /* MIS20S1, 27 MHz: "mis20s1 27Mclk 2M30fps(MIPI)" in the vendor's CV610 firmware */
  #define SENSOR_NAME_MIS20S1 "mis20s1"
@@ -110,7 +110,7 @@ diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/kernel/sys_config/hi3516cv6
  #define MIPI_AD "mipi_ad"
  
  static void *g_reg_crg_base = NULL;
-@@ -212,6 +214,9 @@
+@@ -221,6 +223,9 @@
      } else if (strncmp(BOARD_NAME_KOLB, g_board_name, strlen(BOARD_NAME_KOLB)) == 0) {
          g_board  = BOARD_KOLB;
          sys_config_print("g_board %u\n", BOARD_KOLB);
@@ -120,12 +120,12 @@ diff -ru a/kernel/sys_config/hi3516cv6xx/sys_cfg.c b/kernel/sys_config/hi3516cv6
      } else {
          g_board  = BOARD_SCK;
          sys_config_print("g_board default %u\n", BOARD_SCK);
-@@ -308,13 +313,15 @@
-         (strncmp(SENSOR_NAME_MIS20S1, name, len) == 0) ||
+@@ -319,13 +324,15 @@
          (strncmp(SENSOR_NAME_SC431HAI, name, len) == 0) ||
          (strncmp(SENSOR_NAME_SC450AI, name, len) == 0) ||
--        (strncmp(SENSOR_NAME_SC500AI, name, len) == 0)) {
-+        (strncmp(SENSOR_NAME_SC500AI, name, len) == 0) ||
+         (strncmp(SENSOR_NAME_SC500AI, name, len) == 0) ||
+-        (strncmp(SENSOR_NAME_SC850SL, name, len) == 0)) {
++        (strncmp(SENSOR_NAME_SC850SL, name, len) == 0) ||
 +        (strncmp(SENSOR_NAME_PS5280, name, len) == 0)) {
          clock = 0xA001;   /* 27M */
      } else if ((strncmp(SENSOR_NAME_OS04D10, name, len) == 0) ||

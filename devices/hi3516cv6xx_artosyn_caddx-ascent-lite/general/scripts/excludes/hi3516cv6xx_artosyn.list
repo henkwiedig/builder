@@ -26,3 +26,10 @@
 /usr/lib/sensors/libsns_gc4653.so
 /usr/lib/sensors/libsns_vs4388.so
 
+/usr/lib/sensors/libsns_gc2063.so
+/usr/lib/sensors/libsns_imx415.so
+/usr/lib/sensors/libsns_imx664.so
+/usr/lib/sensors/libsns_imx675.so
+/usr/lib/sensors/libsns_imx678.so
+/usr/lib/sensors/libsns_mis20s1.so
+/usr/lib/sensors/libsns_sc850sl.so
