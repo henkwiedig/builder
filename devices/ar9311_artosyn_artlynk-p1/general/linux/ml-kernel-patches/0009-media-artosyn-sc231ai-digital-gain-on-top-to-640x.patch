@@ -1,0 +1,123 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: sc231ai: digital gain on top, to 640x
+
+The driver stopped at the NT99235's 64x, all of it analogue. In the dark
+the vendor's own AE runs this sensor at 1/60 s with its analogue gain at
+the table's 116.5x and the sensor's digital gain on top: read back from a
+stock P1 (BetaFPV 2.1.2) it was 364x in a dark room (0x3e08/09 = 8f/3f,
+0x3e06/07 = 01/c8) and 641x with the lens covered (digital 03/b0). At 64x
+the same room came out 3.6 stops under the AE's target.
+
+- The gain code range goes on to 0x94 (640x) on the same scale.
+- The analogue table is used up to 116.5x as before; whatever the code
+  asks beyond the analogue setting becomes digital gain, laid out as the
+  vendor's cmos_dgain_calc_table: 0x3e06 doubles (0x00, 0x01, 0x03, 0x07
+  = 1x to 8x), 0x3e07 scales by fine / 128 from 0x80 to 0xfc in steps of
+  4. The result is at or below the code's gain (at most 2.9 % under
+  between 64x and 640x) and rises with the code. At 0x87 the driver writes
+  the vendor's own dark-room setting, 8f/3f with 01/c8.
+
+The vendor's library writes only exposure, these two gain pairs and the
+frame length per AE step (sc231ai_cmos.c), so no gain-range register
+changes go with it.
+
+---
+diff --git a/drivers/media/artosyn/sc231ai.c b/drivers/media/artosyn/sc231ai.c
+--- a/drivers/media/artosyn/sc231ai.c
++++ b/drivers/media/artosyn/sc231ai.c
+@@ -64,8 +64,15 @@
+ #define SC231AI_REG_DGAIN_FINE		0x3e07
+ #define SC231AI_REG_AGAIN_COARSE	0x3e08
+ #define SC231AI_REG_AGAIN_FINE		0x3e09
+-#define SC231AI_DGAIN_COARSE_1X		0x00
+-#define SC231AI_DGAIN_FINE_1X		0x80
++/*
++ * Digital gain as the vendor's cmos_dgain_calc_table lays it out: the coarse
++ * register doubles (0x00, 0x01, 0x03, 0x07 = 1x, 2x, 4x, 8x), the fine one
++ * scales by fine / 128 from 0x80 to 0xfc in steps of 4, so 1x to 15.75x.
++ */
++#define SC231AI_DGAIN_COARSE_STEPS	4
++#define SC231AI_DGAIN_FINE_MIN		0x80
++#define SC231AI_DGAIN_FINE_MAX		0xfc
++#define SC231AI_DGAIN_FINE_STEP		4
+ 
+ /*
+  * Mirror and flip, 0x3221: the vendor's sensor control 7 writes 0x00, 0x06,
+@@ -97,12 +104,15 @@
+ /*
+  * The gain parameter uses the NT99235 driver's code scale, so one AE loop
+  * drives either sensor: gain = 2^(code >> 4) * (16 + (code & 15)) / 16, 1x at
+- * 0x00 to 64x at 0x60. The driver converts it to the nearest analogue setting
+- * at or below that gain. The SC231AI's analogue range reaches 116x, so the
+- * whole code range is analogue and digital gain stays at 1x.
++ * 0x00. The NT99235 stops at 64x (0x60); this sensor goes on to 640x (0x94),
++ * where the vendor's own AE stops too (116.5x analogue x 5.5x digital, read
++ * back from a stock P1 in the dark). The driver takes the analogue setting at
++ * or below the gain, up to the table's 116.5x, and makes up the rest with
++ * digital gain, as the vendor does: analogue first, digital only once the
++ * analogue range is used up.
+  */
+ #define SC231AI_GAIN_CODE_MIN		0x00
+-#define SC231AI_GAIN_CODE_MAX		0x60
++#define SC231AI_GAIN_CODE_MAX		0x94
+ #define SC231AI_GAIN_CODE_DEFAULT	0x3c
+ 
+ #define SC231AI_MCLK_RATE		24000000
+@@ -436,12 +446,34 @@
+ 	return i;
+ }
+ 
++/*
++ * The digital gain pair that, on top of the analogue gain at idx, comes
++ * closest to the code's gain without going over.
++ */
++static void sc231ai_dgain(u32 code, unsigned int idx, u8 *coarse, u8 *fine)
++{
++	/* Q10 and at least 1x; 640x in Q10 times 1024 still fits a u32. */
++	u32 rest = sc231ai_code_gain(code) * 1024 / sc231ai_again[idx].gain;
++	unsigned int c = 0;
++	u32 f;
++
++	while (c + 1 < SC231AI_DGAIN_COARSE_STEPS && rest >= (2048u << c))
++		c++;
++	f = (rest * SC231AI_DGAIN_FINE_MIN) / (1024u << c);
++	f -= f % SC231AI_DGAIN_FINE_STEP;
++	*coarse = (1u << c) - 1;
++	*fine = clamp_t(u32, f, SC231AI_DGAIN_FINE_MIN, SC231AI_DGAIN_FINE_MAX);
++}
++
+ static int sc231ai_commit_exposure(struct sc231ai *sc, u32 lines, u32 code)
+ {
+ 	unsigned int idx = sc231ai_again_index(code);
++	u8 dcoarse, dfine;
+ 	u32 half;
+ 	int ret;
+ 
++	sc231ai_dgain(code, idx, &dcoarse, &dfine);
++
+ 	lines = clamp_t(u32, lines, SC231AI_EXPOSURE_MIN, SC231AI_EXPOSURE_MAX);
+ 	half = lines * 2;
+ 
+@@ -457,11 +489,9 @@
+ 		ret = sc231ai_write(sc, SC231AI_REG_AGAIN_FINE,
+ 				    sc231ai_again[idx].fine);
+ 	if (!ret)
+-		ret = sc231ai_write(sc, SC231AI_REG_DGAIN_COARSE,
+-				    SC231AI_DGAIN_COARSE_1X);
++		ret = sc231ai_write(sc, SC231AI_REG_DGAIN_COARSE, dcoarse);
+ 	if (!ret)
+-		ret = sc231ai_write(sc, SC231AI_REG_DGAIN_FINE,
+-				    SC231AI_DGAIN_FINE_1X);
++		ret = sc231ai_write(sc, SC231AI_REG_DGAIN_FINE, dfine);
+ 
+ 	return ret;
+ }
+@@ -516,7 +546,7 @@
+ 
+ module_param_cb(gain, &sc231ai_param_ops, &gain, 0644);
+ MODULE_PARM_DESC(gain,
+-		 "gain code 0x00-0x60, gain = 2^(code>>4) * (16 + (code&15)) / 16 (the NT99235 driver's scale), 1x to 64x; writable while streaming");
++		 "gain code 0x00-0x94, gain = 2^(code>>4) * (16 + (code&15)) / 16 (the NT99235 driver's scale), 1x to 640x: analogue to 116.5x, digital above; writable while streaming");
+ 
+ static u8 sc231ai_orientation_value(void)
+ {
