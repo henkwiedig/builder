@@ -22,6 +22,10 @@
 # active (openipc-bsel); the other slot keeps the previous firmware, and
 # "openipc-bsel switch" goes back to it.
 #
+# -n with no image is firstboot's call (the shared /usr/sbin/firstboot runs
+# `sysupgrade -n [-x]`): the running slot's settings go back to the image's,
+# see reset_overlay.
+#
 # An OpenIPC image also gets this system's settings: the U-Boot environment's
 # variables and, from the overlay, $OVERLAY_CARRY (passwords, ssh keys,
 # /etc/default, and lifecycled's state: the AR8030 pairing, its paired marker
@@ -66,6 +70,10 @@ die() {
 print_usage() {
 	echo "
 Usage: $0 --image=FILE | --url=URL [options]
+       $0 -n
+
+Without an image, -n (firstboot) resets this slot's settings to the image's,
+the AR8030 pairing included, and reboots.
 
 Flashes a P1 update image -- BetaFPV's stock P1_SKY_*.img, SinYine's stock
 SinYine_F1_TX_*.bin or an OpenIPC P1_SKY_*_OpenIPC_*.img -- into the slot that
@@ -227,6 +235,24 @@ openipc_overlay() {
 	umount "$WORK/ovl"
 }
 
+# firstboot. The firmware's /init has no reset hook for a UBI root, and the
+# rootfs_data volume is mounted under the running system, so its contents go
+# while it is in use and a forced reboot follows straight away; /init makes
+# the two directories again on the way up and the customizer sets root's
+# password. -x cannot be honoured: a system running on without its overlay's
+# files would write half a set of settings back.
+reset_overlay() {
+	grep -q '^ubi0:rootfs_data /overlay ubifs ' /proc/mounts ||
+		die "/overlay is not this slot's rootfs_data: nothing to reset"
+	[ -n "$reboot" ] || die "-x: this unit resets its settings only with a reboot straight after"
+	log "settings reset to the image's, the AR8030 pairing too: bind again afterwards"
+	rm -rf /overlay/root /overlay/work
+	sync
+	log "rebooting"
+	reboot -d 1 -f
+	exit 0
+}
+
 # Stock: --set-password through stock's /usrdata/run_dbg.sh hook (see top).
 stock_password() {
 	local num buildtime vol hash
@@ -282,7 +308,11 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ -n "$image$url" ] || { print_usage; exit 1; }
+if [ -z "$image$url" ]; then
+	[ -z "$carry" ] && reset_overlay
+	print_usage
+	exit 1
+fi
 
 mkdir "$WORK" 2>/dev/null || { echo "sysupgrade: already running ($WORK exists)" >&2; exit 1; }
 trap cleanup INT TERM
