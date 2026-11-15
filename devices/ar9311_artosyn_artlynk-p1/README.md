@@ -113,7 +113,14 @@ and antennas) and SinYine's stock power top, 25 dBm (stock `pwr_range`
 [5, 25], BetaFPV's 22): `--power-levels 300,200,100,25` (25/23/20/14 dBm)
 instead of the P1's `150,100,25`, the top level the default. A level saved
 from the menu earlier stays while it is still offered (200 mW, now 23 dBm)
-until 300 mW is picked.
+until 300 mW is picked. And in `/lib/firmware/ar8030/ar8030.json`: the uplink
+slot in STBC (`tx_mode` 2TX_STBC, `rx_mode` 2T2R_STBC) as SinYine's own
+firmware runs it, so the goggles send on both PAs and the TX receives on both
+antennas. With the P1's 1TX the goggles drive only RF path A, which on a
+tester's SinYine goggles reached the TX ~18 dB below path B; STBC gave
+12-16 dB more uplink SNR at range. A unit updated over an older install keeps
+its old `ar8030.json` (sysupgrade carries `/lib/firmware/ar8030`): factory
+reset after the update, then bind again.
 
 Back to SinYine's firmware: `sysupgrade --image=/tmp/SinYine_F1_TX_<date>_V<x>.bin
 --set-password=PASS` on the unit (the stock image's SDK-release product and

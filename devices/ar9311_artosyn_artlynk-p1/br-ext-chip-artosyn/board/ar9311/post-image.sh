@@ -83,13 +83,18 @@ check uImage.${SOC} $((0x600000))
 check ${DTB} $((0x60000))
 check rootfs.ubi $((336 * 0x20000))
 
-# rootfs-sinyine.ubi: this rootfs for the SinYine F1 TX, only
-# /etc/default/ar8030-transport-tx changed: both RF paths on (--rf-path-b-off
-# taken out) and SinYine's stock power top, 25 dBm (stock pwr_range [5, 25];
+# rootfs-sinyine.ubi: this rootfs for the SinYine F1 TX, two files changed.
+# /etc/default/ar8030-transport-tx: both RF paths on (--rf-path-b-off taken
+# out) and SinYine's stock power top, 25 dBm (stock pwr_range [5, 25];
 # BetaFPV's is 22): --power-levels 300,200,100,25 (25/23/20/14 dBm) instead of
-# 150,100,25, the top level the default as stock starts at its 25. Made the
-# way Buildroot made rootfs.ubifs: its own fakeroot script (owners, device
-# nodes, mkfs.ubifs) run on a copy of the target.
+# 150,100,25, the top level the default as stock starts at its 25.
+# /lib/firmware/ar8030/ar8030.json: the uplink slot in STBC, as SinYine's own
+# firmware runs it -- the goggles send on both PAs (they follow the drone's
+# slot rx_mode), the drone receives on both antennas. With 1TX the goggles
+# drive only path A, which on a tester's SinYine goggles reached the drone
+# ~18 dB below path B; STBC gave 12-16 dB more uplink SNR at range.
+# Made the way Buildroot made rootfs.ubifs: its own fakeroot script (owners,
+# device nodes, mkfs.ubifs) run on a copy of the target.
 FS=${BUILD_DIR}/buildroot-fs/ubifs
 SY=${BUILD_DIR}/buildroot-fs/ubifs-sinyine
 rm -rf "${SY}"
@@ -106,6 +111,14 @@ sed -i -e '/^AR8030_LIFECYCLED_ARGS=/{s/ --rf-path-b-off//;s/ --power-levels 150
 	-e '1i # SinYine F1 TX: the P1 SKY file with both RF paths on (no --rf-path-b-off) and SinYine'"'"'s\
 # stock power top, 25 dBm: --power-levels 300,200,100,25 (25/23/20/14 dBm).' \
 	"${defaults}"
+cfg=${SY}/target/lib/firmware/ar8030/ar8030.json
+if [ "$(grep -c '"tx_mode":[[:space:]]*"1TX"' "${cfg}")" != 1 ] ||
+	[ "$(grep -c '"rx_mode":[[:space:]]*"1T1R"' "${cfg}")" != 1 ]; then
+	echo "post-image: lib/firmware/ar8030/ar8030.json has not one 1TX / 1T1R uplink slot to change for the SinYine image"
+	exit 1
+fi
+sed -i -e 's/"tx_mode":\([[:space:]]*\)"1TX"/"tx_mode":\1"2TX_STBC"/' \
+	-e 's/"rx_mode":\([[:space:]]*\)"1T1R"/"rx_mode":\1"2T2R_STBC"/' "${cfg}"
 sed -e "s#${FS}/target#${SY}/target#g" -e "s#${BINARIES_DIR}/rootfs.ubifs#${BINARIES_DIR}/rootfs-sinyine.ubifs#" \
 	"${FS}/fakeroot" > "${SY}/fakeroot"
 if grep -q -e "${FS}/target" -e "${BINARIES_DIR}/rootfs.ubifs" "${SY}/fakeroot"; then
