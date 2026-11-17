@@ -87,7 +87,11 @@ check rootfs.ubi $((336 * 0x20000))
 # /etc/default/ar8030-transport-tx: both RF paths on (--rf-path-b-off taken
 # out) and SinYine's stock power top, 25 dBm (stock pwr_range [5, 25];
 # BetaFPV's is 22): --power-levels 300,200,100,25 (25/23/20/14 dBm) instead of
-# 150,100,25, the top level the default as stock starts at its 25.
+# 150,100,25, the top level the default as stock starts at its 25. And no
+# --standby-dbm: SinYine's stock firmware keeps full power while the FC is
+# disarmed. A tester's walk with the FC disarmed (no RC link) ran the downlink
+# at 10 dBm, ~14 dB below his armed walk. The overheat pause (--overheat-c)
+# and heat-guard stay; only the pause no longer drops the power.
 # /lib/firmware/ar8030/ar8030.json: the uplink slot in STBC, as SinYine's own
 # firmware runs it -- the goggles send on both PAs (they follow the drone's
 # slot rx_mode), the drone receives on both antennas. With 1TX the goggles
@@ -101,15 +105,16 @@ rm -rf "${SY}"
 mkdir -p "${SY}"
 rsync -auH --exclude=/THIS_IS_NOT_YOUR_ROOT_FILESYSTEM "${TARGET_DIR}/" "${SY}/target/"
 defaults=${SY}/target/etc/default/ar8030-transport-tx
-for flag in ' --rf-path-b-off' ' --power-levels 150,100,25'; do
+for flag in ' --rf-path-b-off' ' --power-levels 150,100,25' ' --standby-dbm 10'; do
 	if ! grep -q -- "^AR8030_LIFECYCLED_ARGS=.*${flag}" "${defaults}"; then
 		echo "post-image: no${flag} in /etc/default/ar8030-transport-tx to change for the SinYine image"
 		exit 1
 	fi
 done
-sed -i -e '/^AR8030_LIFECYCLED_ARGS=/{s/ --rf-path-b-off//;s/ --power-levels 150,100,25/ --power-levels 300,200,100,25/}' \
-	-e '1i # SinYine F1 TX: the P1 SKY file with both RF paths on (no --rf-path-b-off) and SinYine'"'"'s\
-# stock power top, 25 dBm: --power-levels 300,200,100,25 (25/23/20/14 dBm).' \
+sed -i -e '/^AR8030_LIFECYCLED_ARGS=/{s/ --rf-path-b-off//;s/ --power-levels 150,100,25/ --power-levels 300,200,100,25/;s/ --standby-dbm 10//}' \
+	-e '1i # SinYine F1 TX: the P1 SKY file with both RF paths on (no --rf-path-b-off), SinYine'"'"'s\
+# stock power top, 25 dBm: --power-levels 300,200,100,25 (25/23/20/14 dBm), and\
+# no --standby-dbm: full power while disarmed, as stock. The notes below are the P1'"'"'s.' \
 	"${defaults}"
 cfg=${SY}/target/lib/firmware/ar8030/ar8030.json
 if [ "$(grep -c '"tx_mode":[[:space:]]*"1TX"' "${cfg}")" != 1 ] ||
