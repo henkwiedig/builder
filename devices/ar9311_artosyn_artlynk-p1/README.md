@@ -113,10 +113,12 @@ and antennas) and SinYine's stock power top, 25 dBm (stock `pwr_range`
 [5, 25], BetaFPV's 22): `--power-levels 300,200,100,25` (25/23/20/14 dBm)
 instead of the P1's `150,100,25`, the top level the default. A level saved
 from the menu earlier stays while it is still offered (200 mW, now 23 dBm)
-until 300 mW is picked. No `--standby-dbm` either: SinYine's stock firmware
-keeps full power while the FC is disarmed, and a tester's walk with a disarmed
-FC (no RC link) otherwise ran the downlink at 10 dBm. The overheat pause and
-heat-guard stay; only the pause no longer lowers the power. And in
+until 300 mW is picked. And `--standby-default off`: SinYine's stock firmware
+keeps full power while the FC is disarmed, so the 10 dBm low-power mode starts
+switched off and only the overheat pause lowers the power, until it is switched
+on in the goggles' menu (Drone Settings -> Artosyn -> Low Power When Disarmed).
+With it on, a tester's walk with a disarmed FC (no RC link) ran the downlink at
+10 dBm. And in
 `/lib/firmware/ar8030/ar8030.json`: the uplink
 slot in STBC (`tx_mode` 2TX_STBC, `rx_mode` 2T2R_STBC) as SinYine's own
 firmware runs it, so the goggles send on both PAs and the TX receives on both
@@ -194,7 +196,9 @@ Working (hardware-tested, RAM boot):
 
 Taken over from the Ascent, not yet tested on the P1 (no FC on the bench):
 10 dBm standby while the FC is disarmed (msposd -> `armed.sh` ->
-lifecycled `--standby-dbm 10`).
+lifecycled `--standby-dbm 10`). The goggles' menu switches it off and on
+(Drone Settings -> Artosyn -> Low Power When Disarmed); the overheat pause
+lowers the power either way.
 
 ### Heat
 

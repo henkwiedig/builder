@@ -35,7 +35,10 @@ AR8030_RESET_GPIO=23
 # and for the whole of an overheat pause, armed or not. msposd reports the
 # FC's arm state (MSP_STATUS) through /usr/bin/armed.sh -> POST
 # /api/v1/armed; lifecycled assumes armed until it does, so a P1 without an
-# FC stays at full power.
+# FC stays at full power. The goggles' menu (Drone Settings -> Artosyn -> Low
+# Power When Disarmed, POST /api/v1/standby) switches the disarmed part off and
+# on, saved in /lib/firmware/ar8030/ar8030.standby; the overheat pause keeps
+# lowering the power either way. On by default here (--standby-default).
 # --link-policy 2: stock's runtime MCS policy for video_strategy 2, as on the
 # Ascent -- same baseband firmware, same ground: uplink MCS table + range
 # 1-2 and rfo_kikp; the goggles push the matching downlink table. See

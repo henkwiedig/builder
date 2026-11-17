@@ -87,11 +87,13 @@ check rootfs.ubi $((336 * 0x20000))
 # /etc/default/ar8030-transport-tx: both RF paths on (--rf-path-b-off taken
 # out) and SinYine's stock power top, 25 dBm (stock pwr_range [5, 25];
 # BetaFPV's is 22): --power-levels 300,200,100,25 (25/23/20/14 dBm) instead of
-# 150,100,25, the top level the default as stock starts at its 25. And no
-# --standby-dbm: SinYine's stock firmware keeps full power while the FC is
-# disarmed. A tester's walk with the FC disarmed (no RC link) ran the downlink
-# at 10 dBm, ~14 dB below his armed walk. The overheat pause (--overheat-c)
-# and heat-guard stay; only the pause no longer drops the power.
+# 150,100,25, the top level the default as stock starts at its 25. And
+# --standby-default off: SinYine's stock firmware keeps full power while the
+# FC is disarmed, so the low-power mode (--standby-dbm 10) is off until it is
+# switched on from the goggles' menu (Drone Settings -> Artosyn -> Low Power When
+# Disarmed); the overheat pause still lowers the power. With it on, a
+# tester's walk with the FC disarmed (no RC link) ran the downlink at 10 dBm,
+# ~14 dB below his armed walk.
 # /lib/firmware/ar8030/ar8030.json: the uplink slot in STBC, as SinYine's own
 # firmware runs it -- the goggles send on both PAs (they follow the drone's
 # slot rx_mode), the drone receives on both antennas. With 1TX the goggles
@@ -111,10 +113,11 @@ for flag in ' --rf-path-b-off' ' --power-levels 150,100,25' ' --standby-dbm 10';
 		exit 1
 	fi
 done
-sed -i -e '/^AR8030_LIFECYCLED_ARGS=/{s/ --rf-path-b-off//;s/ --power-levels 150,100,25/ --power-levels 300,200,100,25/;s/ --standby-dbm 10//}' \
+sed -i -e '/^AR8030_LIFECYCLED_ARGS=/{s/ --rf-path-b-off//;s/ --power-levels 150,100,25/ --power-levels 300,200,100,25/;s/ --standby-dbm 10/ --standby-dbm 10 --standby-default off/}' \
 	-e '1i # SinYine F1 TX: the P1 SKY file with both RF paths on (no --rf-path-b-off), SinYine'"'"'s\
 # stock power top, 25 dBm: --power-levels 300,200,100,25 (25/23/20/14 dBm), and\
-# no --standby-dbm: full power while disarmed, as stock. The notes below are the P1'"'"'s.' \
+# --standby-default off: full power while disarmed, as stock, until switched on in\
+# the goggles'"'"' menu. The notes below are the P1'"'"'s.' \
 	"${defaults}"
 cfg=${SY}/target/lib/firmware/ar8030/ar8030.json
 if [ "$(grep -c '"tx_mode":[[:space:]]*"1TX"' "${cfg}")" != 1 ] ||
