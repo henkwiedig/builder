@@ -1,0 +1,282 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: isp: DRC on its own, and off on an empty
+ profile
+
+The NT99235's tuning file turns DRC on, and a stock P1 running it does
+in sunshine, while the replayed trace has it off. Three things stood
+between that and a working picture:
+
+- drc_on writes the DRC stage's own enable rows from the gates table
+  and nothing else. gates=1 is no way there on this sensor: its file's
+  other gates also start af_stats, derolling_stats and rgb_his_stats,
+  whose statistics buffers this driver does not allocate, and a P1
+  loaded with gates=1 hung outright.
+- The DRC table's second length word (0x0068) was written only on the
+  SC231AI's RAW10 path; the NT99235's replay leaves it at 0, and with
+  DRC on the stage fetched nothing and the picture went white. Both
+  length words are now written whenever DRC runs (stock NT99235: 0x100).
+- The NT99235's file counts six DRC profiles and leaves 4 and 5 empty,
+  the dark end of its band table, and the pinned default (4) is one of
+  them. A stock P1 with that camera at night (1123 lines x 64x, the band
+  of profile 4) holds that empty page with its DRC gate off. Under drc_on
+  the gate now follows the selection the same way: off while it takes
+  from an empty profile, on otherwise. Measured at night: ours with DRC
+  held on profile 3 lifted black to Y 35 where stock sat at 24; with
+  the rule the levels match stock's within a code or two.
+
+The colour node also re-derives cm2 (cm2_trigger), which runs on the
+NT99235 and reads the same trigger as cm.
+
+Measured on a P1 with the NT99235 in sunshine, stock captured minutes
+apart: with drc_on, the tone pages following the exposure and the
+file's sharpening (waybeam 0.99.0), the gamma page came out within a
+few counts of stock's and cm/cm2 as stock's; edge energy 10.0 against
+stock's 13.4, where the replay gave 5.4.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/artosyn/ar-isp-main.c   | 49 ++++++++++++++++++++++++---
+ drivers/media/artosyn/ar-isp-priv.h   |  4 +++
+ drivers/media/artosyn/ar-isp-tables.c | 41 ++++++++++++++++++++--
+ drivers/media/artosyn/ar-isp-tone.h   | 29 ++++++++++++++++
+ 4 files changed, 116 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/media/artosyn/ar-isp-main.c b/drivers/media/artosyn/ar-isp-main.c
+index fd112ac..8e22352 100644
+--- a/drivers/media/artosyn/ar-isp-main.c
++++ b/drivers/media/artosyn/ar-isp-main.c
+@@ -399,6 +399,38 @@ static void ar_isp_gates_veto(struct ar_isp *isp, bool commit)
+ 			 deviations, commit ? "written" : "counted only");
+ }
+ 
++/*
++ * DRC alone (drc_on, ar-isp-tables.c). The NT99235's tuning file turns DRC
++ * on, and a stock P1 running it does, while the replayed trace has it off.
++ * Its other gates are no way to get there: they also start af_stats,
++ * derolling_stats and rgb_his_stats, whose statistics buffers this driver
++ * does not allocate, and with gates=1 that hung a P1 outright. This writes
++ * the DRC stage's enable rows from the same table and nothing else, then
++ * leaves the gate to the empty-profile rule; ar_isp_input_setup() gives the
++ * DRC table its second length word, without which the stage fetches nothing
++ * and the picture goes white.
++ */
++static void ar_isp_drc_enable(struct ar_isp *isp)
++{
++	if (!ar_isp_drc_on())
++		return;
++
++	for (unsigned int i = 0; i < ARRAY_SIZE(ar_isp_stages); i++) {
++		const struct ar_isp_stage *st = &ar_isp_stages[i];
++
++		if (strcmp(st->name, "drc"))
++			continue;
++
++		for (unsigned int g = 0; g < st->n_gates; g++)
++			if (st->gates[g].kind == AR_ISP_GATE_BIT_ENABLE)
++				writel(readl(isp->base + st->gates[g].reg) |
++				       st->gates[g].set_mask,
++				       isp->base + st->gates[g].reg);
++	}
++	/* And off again while the page comes from an empty profile. */
++	ar_isp_drc_gate_apply(isp);
++}
++
+ /*
+  * Apply the whole configuration.
+  *
+@@ -446,6 +478,7 @@ static void ar_isp_configure(struct ar_isp *isp)
+ 	ar_isp_ladders_apply(isp, false);
+ 	ar_isp_de3d_geom_apply(isp, false);
+ 	ar_isp_gates_veto(isp, gates);
++	ar_isp_drc_enable(isp);
+ 
+ 	isp->configured = true;
+ 
+@@ -664,6 +697,7 @@ static void ar_isp_configure_prefix(struct ar_isp *isp, size_t n)
+ 	ar_isp_ladders_apply(isp, false);
+ 	ar_isp_de3d_geom_apply(isp, false);
+ 	ar_isp_gates_veto(isp, gates);
++	ar_isp_drc_enable(isp);
+ 
+ 	isp->configured = true;
+ 
+@@ -743,10 +777,10 @@ static int ar_isp_tone_set(void *data, u64 val)
+ DEFINE_DEBUGFS_ATTRIBUTE(ar_isp_tone_fops, NULL, ar_isp_tone_set, "%llu\n");
+ 
+ /*
+- * Colour re-latch for a userspace AWB: write a non-zero value after changing
+- * colour_temp or cm_trigger, and ccm1's matrix and cm's gain field are
+- * re-derived from them (ar_isp_colour_apply). Seven register writes, safe
+- * mid-stream like the ladders node.
++ * Colour re-latch for a userspace AWB and AE: write a non-zero value after
++ * changing colour_temp, cm_trigger or cm2_trigger, and ccm1's matrix and the
++ * cm and cm2 fields are re-derived from them (ar_isp_colour_apply). A dozen
++ * register writes, safe mid-stream like the ladders node.
+  */
+ static int ar_isp_colour_set(void *data, u64 val)
+ {
+@@ -875,7 +909,14 @@ static void ar_isp_input_setup(struct ar_isp *isp,
+ 		val = readl(isp->base + AR_ISP_CFA_ORDER);
+ 		val = (val & ~AR_ISP_CFA_ORDER_MASK) | 2;
+ 		writel(val, isp->base + AR_ISP_CFA_ORDER);
++	}
+ 
++	/*
++	 * Both DRC length words whenever DRC runs. The NT99235's replay leaves
++	 * the second at 0, harmless while its DRC is off; with DRC on it is
++	 * what a stock P1 holds (0x100), and at 0 the picture goes white.
++	 */
++	if (raw10 || ar_isp_drc_on()) {
+ 		/* A command, not a status: no completion to wait for. */
+ 		writel(AR_ISP_TABLE_DRC_LEN_VALUE, isp->base + AR_ISP_TABLE_DRC_LEN0);
+ 		writel(AR_ISP_TABLE_DRC_LEN_VALUE, isp->base + AR_ISP_TABLE_DRC_LEN1);
+diff --git a/drivers/media/artosyn/ar-isp-priv.h b/drivers/media/artosyn/ar-isp-priv.h
+index c42dd98..e3c06a5 100644
+--- a/drivers/media/artosyn/ar-isp-priv.h
++++ b/drivers/media/artosyn/ar-isp-priv.h
+@@ -80,6 +80,8 @@ struct ar_isp {
+ 	 */
+ 	struct ar_isp_tone_pick last_gamma;
+ 	struct ar_isp_tone_pick last_drc;
++	/* The DRC page comes from an empty profile (ar_isp_drc_gate_apply). */
++	bool drc_empty;
+ 
+ 	/*
+ 	 * Read-only views of the two tone pages, for debugfs. These are the
+@@ -195,6 +197,8 @@ const void *ar_isp_stats_ready(struct ar_isp *isp, const void *buf, size_t size)
+ void ar_isp_stats_publish(struct ar_isp *isp);
+ void ar_isp_ccm_apply(struct ar_isp *isp);
+ void ar_isp_colour_apply(struct ar_isp *isp);
++bool ar_isp_drc_on(void);
++void ar_isp_drc_gate_apply(struct ar_isp *isp);
+ void ar_isp_dpc_apply(struct ar_isp *isp);
+ void ar_isp_rnr_apply(struct ar_isp *isp, bool verbose);
+ void ar_isp_lnr_apply(struct ar_isp *isp, bool verbose);
+diff --git a/drivers/media/artosyn/ar-isp-tables.c b/drivers/media/artosyn/ar-isp-tables.c
+index 2f49857..6aa0bc3 100644
+--- a/drivers/media/artosyn/ar-isp-tables.c
++++ b/drivers/media/artosyn/ar-isp-tables.c
+@@ -256,6 +256,35 @@ MODULE_PARM_DESC(rnr_mode,
+ #define AR_ISP_RNR_LINE_WIDTH		1920
+ #define AR_ISP_RNR_LINE_BIAS		500
+ 
++/*
++ * DRC alone, for the NT99235: its tuning file turns DRC on, and a stock P1
++ * running it does in sunshine, while the replayed trace has it off. Its
++ * other gates are no way there (ar-isp-main.c, ar_isp_drc_enable). Where the
++ * exposure selects an empty profile the gate goes off again, as stock's
++ * does at night (ar-isp-tone.h).
++ */
++static bool drc_on;
++module_param(drc_on, bool, 0644);
++MODULE_PARM_DESC(drc_on,
++		 "enable DRC by its own gate rows, without the other stage gates, and off while the selected profile is empty (default off; gates=1 includes it)");
++
++bool ar_isp_drc_on(void)
++{
++	return drc_on;
++}
++
++#define AR_ISP_DRC_GATE_REG		0x0018
++#define AR_ISP_DRC_GATE_BIT		BIT(16)
++
++/* The DRC gate under drc_on: on unless the page comes from an empty profile. */
++void ar_isp_drc_gate_apply(struct ar_isp *isp)
++{
++	if (!drc_on)
++		return;
++	ar_isp_rmw(isp, AR_ISP_DRC_GATE_REG, AR_ISP_DRC_GATE_BIT,
++		   isp->drc_empty ? 0 : AR_ISP_DRC_GATE_BIT);
++}
++
+ /* See ar-isp-dpc.h: the thresholds follow rnr_gain, the same linear gain. */
+ static bool dpc_tuned;
+ module_param(dpc_tuned, bool, 0644);
+@@ -1117,9 +1146,9 @@ void ar_isp_cm2_apply(struct ar_isp *isp, bool verbose)
+ 
+ /*
+  * The colour stages that follow the light, re-derived for the colour debugfs
+- * node: ccm1's matrix from colour_temp and cm's field from cm_trigger and
+- * colour_temp. Seven register writes; the AWB calls it when its balance has
+- * moved and the AE when the trigger has.
++ * node: ccm1's matrix from colour_temp, cm's field from cm_trigger and
++ * colour_temp, cm2's row from cm2_trigger. A dozen register writes; the AWB
++ * calls it when its balance has moved and the AE when the trigger has.
+  */
+ void ar_isp_colour_apply(struct ar_isp *isp)
+ {
+@@ -1128,6 +1157,8 @@ void ar_isp_colour_apply(struct ar_isp *isp)
+ 	if (ccm && blob && ar_isp_get_le32(blob + AR_ISP_CCM_BLOB_GATE) == 1)
+ 		ar_isp_ccm1_matrix(isp, false);
+ 	ar_isp_cm_apply(isp, false);
++	/* cm2 reads the same trigger (cm2_trigger); gated off on the SC231AI. */
++	ar_isp_cm2_apply(isp, false);
+ }
+ 
+ /*
+@@ -1535,6 +1566,9 @@ void ar_isp_tone_apply(struct ar_isp *isp, bool force, bool verbose)
+ 
+ 	if (!want_drc)
+ 		drc = ar_isp_tone_none;
++	else
++		isp->drc_empty = ar_isp_drc_pick_empty(blob, &drc);
++	ar_isp_drc_gate_apply(isp);
+ 
+ 	if (!ar_isp_tone_changed(isp, &gamma, &drc, force)) {
+ 		if (verbose)
+@@ -1685,6 +1719,7 @@ static void ar_isp_fill_drc(struct ar_isp *isp, const u8 *blob,
+ 	 * runs and is left in place only so the two can be compared in one
+ 	 * bring-up.
+ 	 */
++	isp->drc_empty = ar_isp_drc_pick_empty(blob, &pick);
+ 	page = isp->drc;
+ 	ar_isp_drc_from_blob(page, blob, pick.low, pick.high, pick.t_q12);
+ 	ar_isp_drc_pack_bank(page + 2 * AR_ISP_DRC_BANK, ar_isp_drc_tail_bank0);
+diff --git a/drivers/media/artosyn/ar-isp-tone.h b/drivers/media/artosyn/ar-isp-tone.h
+index 2bfc394..69f41b3 100644
+--- a/drivers/media/artosyn/ar-isp-tone.h
++++ b/drivers/media/artosyn/ar-isp-tone.h
+@@ -107,6 +107,27 @@ static inline void ar_isp_tone_pick_gamma(struct ar_isp_tone_pick *out,
+ 	ar_isp_tone_select(out, blob, AR_ISP_GAMMA_BLOB_BANDS, count, scalar_q8);
+ }
+ 
++/*
++ * A DRC profile whose two curves are all zero. The NT99235's file counts six
++ * profiles and leaves the last two, the dark end of its band table, empty. A
++ * stock P1 with that camera at night (1123 lines x 64x, the band of profile
++ * 4) holds exactly that empty page with its DRC gate off: an empty profile
++ * means no DRC.
++ */
++static inline bool ar_isp_drc_profile_empty(const u8 *blob, unsigned int p)
++{
++	for (unsigned int b = 0; b < 2; b++) {
++		const u8 *bank = blob + AR_ISP_DRC_BLOB_OFFSET +
++				 p * AR_ISP_DRC_BLOB_STRIDE +
++				 b * AR_ISP_DRC_BLOB_BANK1;
++
++		for (unsigned int i = 0; i < AR_ISP_DRC_SAMPLES; i++)
++			if (ar_isp_get_le32(bank + i * 4))
++				return false;
++	}
++	return true;
++}
++
+ static inline void ar_isp_tone_pick_drc(struct ar_isp_tone_pick *out,
+ 					const u8 *blob, u32 scalar_q8)
+ {
+@@ -118,4 +139,12 @@ static inline void ar_isp_tone_pick_drc(struct ar_isp_tone_pick *out,
+ 	ar_isp_tone_select(out, blob, AR_ISP_DRC_BLOB_BANDS, count, scalar_q8);
+ }
+ 
++/* Whether a selection takes from a profile with no curves. */
++static inline bool ar_isp_drc_pick_empty(const u8 *blob,
++					 const struct ar_isp_tone_pick *p)
++{
++	return ar_isp_drc_profile_empty(blob, p->low) ||
++	       ar_isp_drc_profile_empty(blob, p->high);
++}
++
+ #endif /* AR_ISP_TONE_H */
+-- 
+2.43.0
+

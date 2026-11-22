@@ -1,0 +1,405 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: isp: colour matrix and cm follow the light
+
+Without an AWB the driver installs one colour matrix bank (ccm_bank,
+default 0) and cm's CT column 0, for the whole session. A userspace AWB
+now hands it the light's colour temperature:
+
+- colour_temp (kelvin, default 0 = as before) selects ccm1's matrix from
+  the tuning file's four banks. The illuminant ladder's eight kelvins are
+  the banks' band table, {low, high} per bank in the layout the tone
+  pages use (SC231AI: 2500/3100, 3700/4300, 4800/5300, 6200/6700): inside
+  a band that bank, in a gap the two blended per coefficient, clamped at
+  the ends. A light inside a band packs exactly what ccm_bank packs.
+- cm takes its CT column the same way from its own kelvin bands, blended,
+  then its exposure row from cm_trigger as before; 0 K is column 0.
+- debugfs colour: write 1 to re-derive both mid-stream (six ccm1 words,
+  copy A only, and cm's field), as tone does for the tone pages. The
+  stream-start install and the ladder re-latch use colour_temp too.
+
+Measured on a stock P1 (BetaFPV, SC231AI): at dusk its ccm1 held bank 1
+exactly and in sunshine bank 3 exactly, at the lights its AWB balanced to
+399/646 and 537/474; cm read 32 (1.0) in sunshine where column 0 gives 28
+(0.9). With waybeam 0.99.0 feeding colour_temp, ours in the same sunshine
+holds bank 3 and cm 32, word for word stock's registers; foliage and sky
+were 12 % less saturated before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/artosyn/ar-isp-cm.h     |  50 ++++++++++++
+ drivers/media/artosyn/ar-isp-colour.h |  60 ++++++++++++++
+ drivers/media/artosyn/ar-isp-main.c   |  19 +++++
+ drivers/media/artosyn/ar-isp-priv.h   |   1 +
+ drivers/media/artosyn/ar-isp-tables.c | 113 +++++++++++++++++++++-----
+ 5 files changed, 221 insertions(+), 22 deletions(-)
+
+diff --git a/drivers/media/artosyn/ar-isp-cm.h b/drivers/media/artosyn/ar-isp-cm.h
+index ca2fac9..7190919 100644
+--- a/drivers/media/artosyn/ar-isp-cm.h
++++ b/drivers/media/artosyn/ar-isp-cm.h
+@@ -24,6 +24,7 @@
+ 
+ #include "vendor-tables/ar-isp-blob.h"
+ #include "ar-isp-ladder.h"
++#include "ar-isp-tone.h"
+ 
+ #define AR_ISP_CM_BANK			0x4834
+ #define AR_ISP_CM_GAIN_REG		0x483c
+@@ -124,4 +125,53 @@ static inline u32 ar_isp_cm_gain_field_from_blob(const u8 *blob, u32 trigger_q8,
+ 	return (gain_q16 >> 11) & AR_ISP_CM_GAIN_MASK;
+ }
+ 
++/*
++ * The CT columns' own band table follows the AEC axis: one {low, high} kelvin
++ * pair per column, 0/2000, 2900/3100, 3900/4000, 4900/5000, 5500/5700,
++ * 6400/6500 and 7400/7500 in the SC231AI file, in the tone pages' band layout.
++ * Its first rows hold 0.9 up to 3100 K and 1.0 from 3900 K: a stock P1 in
++ * sunshine held the field at 32 where column 0 gives 28.
++ */
++#define AR_ISP_CM_CT_AXIS \
++	(AR_ISP_CM_AEC_AXIS + AR_ISP_CM_AEC_ROWS * AR_ISP_TONE_BAND_STRIDE)
++
++static inline u32 ar_isp_cm_gain_q16_at(const u8 *blob, unsigned int row,
++					const struct ar_isp_tone_pick *col)
++{
++	return ar_isp_tone_blend(ar_isp_cm_gain_q16(blob, row, col->low),
++				 ar_isp_cm_gain_q16(blob, row, col->high),
++				 col->t_q12);
++}
++
++/*
++ * The gain field for a light of @ct_q8 kelvin (Q8): the column pair from the
++ * CT band table, blended, then the row pair from the trigger as above. A light
++ * of 0 K sits in the first column, which is what the column-0 form above
++ * computes.
++ */
++static inline u32 ar_isp_cm_gain_field_at_ct(const u8 *blob, u32 trigger_q8,
++					     u32 ct_q8)
++{
++	u32 count = ar_isp_get_le32(blob + AR_ISP_CM_HEADER +
++				    AR_ISP_CM_HDR_CT_COUNT);
++	struct ar_isp_tone_pick col;
++	unsigned int row;
++	u32 gain_q16;
++	u32 t_q24;
++
++	if (count < 1 || count > AR_ISP_CM_CT_COLUMNS)
++		count = AR_ISP_CM_CT_COLUMNS;
++
++	ar_isp_tone_select(&col, blob, AR_ISP_CM_CT_AXIS, count, ct_q8);
++	ar_isp_cm_select(blob, trigger_q8, &row, &t_q24);
++	gain_q16 = ar_isp_cm_gain_q16_at(blob, row, &col);
++
++	if (t_q24)
++		gain_q16 = ar_isp_ladder_blend(ar_isp_cm_gain_q16_at(blob, row - 1,
++								     &col),
++					       gain_q16, t_q24);
++
++	return (gain_q16 >> 11) & AR_ISP_CM_GAIN_MASK;
++}
++
+ #endif /* AR_ISP_CM_H */
+diff --git a/drivers/media/artosyn/ar-isp-colour.h b/drivers/media/artosyn/ar-isp-colour.h
+index e85b911..9d0a078 100644
+--- a/drivers/media/artosyn/ar-isp-colour.h
++++ b/drivers/media/artosyn/ar-isp-colour.h
+@@ -24,6 +24,7 @@
+ 
+ #include "vendor-tables/ar-isp-blob.h"
+ #include "ar-isp-bytes.h"
++#include "ar-isp-tone.h"
+ 
+ /*
+  * CCM register banks. Each is 0x50 bytes: a packed matrix at +0x00, a second
+@@ -167,4 +168,63 @@ static inline void ar_isp_ccm_from_blob(u8 *dst, const u8 *blob,
+ 	ar_isp_ccm_pack(dst, bits);
+ }
+ 
++/*
++ * The illuminant ladder is the banks' band table: its eight kelvins are four
++ * {low, high} pairs, 2500/3100, 3700/4300, 4800/5300 and 6200/6700 in the
++ * SC231AI file, one per bank, in the layout the tone pages' band tables use
++ * (ar-isp-tone.h). A light inside a band takes that bank, one in the gap
++ * between two bands blends them, and the ends clamp. Measured on a stock P1
++ * (SC231AI): at dusk its ccm1 held bank 1 exactly, in sunshine bank 3
++ * exactly, the two lights its AWB balanced to 399/646 and 537/474.
++ */
++#define AR_ISP_CCM_CT_SHIFT		8	/* the kelvin argument is Q8 */
++
++/* A float32 coefficient as signed Q16, magnitude truncated toward zero. */
++static inline s32 ar_isp_ccm_f32_s16(u32 bits)
++{
++	s32 mag = (s32)ar_isp_f32_q16(bits & ~AR_ISP_F32_SIGN);
++
++	return (bits & AR_ISP_F32_SIGN) ? -mag : mag;
++}
++
++/*
++ * Pack the matrix for a light of @ct_q8 kelvin (Q8). A blend is taken per
++ * coefficient in Q16 and narrowed to Q8 toward zero, so a light inside a band
++ * packs exactly what ar_isp_ccm_from_blob() packs for that bank.
++ */
++static inline void ar_isp_ccm_at_ct(u8 *dst, const u8 *blob, u32 ct_q8)
++{
++	const u8 *lo, *hi;
++	struct ar_isp_tone_pick pick;
++
++	ar_isp_tone_select(&pick, blob, AR_ISP_CCM_BLOB_LADDER,
++			   AR_ISP_CCM_BLOB_BANKS_USED, ct_q8);
++	if (!pick.t_q12) {
++		ar_isp_ccm_from_blob(dst, blob, pick.low);
++		return;
++	}
++
++	lo = blob + AR_ISP_CCM_BLOB_BANKS + pick.low * AR_ISP_CCM_BLOB_BANK_STRIDE;
++	hi = blob + AR_ISP_CCM_BLOB_BANKS + pick.high * AR_ISP_CCM_BLOB_BANK_STRIDE;
++
++	for (unsigned int row = 0; row < AR_ISP_CCM_DIM; row++) {
++		u16 c[AR_ISP_CCM_DIM];
++
++		for (unsigned int col = 0; col < AR_ISP_CCM_DIM; col++) {
++			unsigned int k = (AR_ISP_CCM_DIM * row + col) * 4;
++			s64 v = ((s64)ar_isp_ccm_f32_s16(ar_isp_get_le32(lo + k)) *
++				 (AR_ISP_TONE_BLEND_ONE - pick.t_q12) +
++				 (s64)ar_isp_ccm_f32_s16(ar_isp_get_le32(hi + k)) *
++				 pick.t_q12) / AR_ISP_TONE_BLEND_ONE;
++			u32 mag = (u32)(v < 0 ? -v : v) >> 8;
++
++			if (mag > AR_ISP_CCM_MAG_MAX)
++				mag = AR_ISP_CCM_MAG_MAX;
++			c[col] = v < 0 ? (u16)(AR_ISP_CCM_SIGN | mag) : (u16)mag;
++		}
++		ar_isp_put_le32(dst + 8 * row, (u32)c[0] | ((u32)c[1] << 16));
++		ar_isp_put_le32(dst + 8 * row + 4, c[2]);
++	}
++}
++
+ #endif /* AR_ISP_COLOUR_H */
+diff --git a/drivers/media/artosyn/ar-isp-main.c b/drivers/media/artosyn/ar-isp-main.c
+index 0876139..fd112ac 100644
+--- a/drivers/media/artosyn/ar-isp-main.c
++++ b/drivers/media/artosyn/ar-isp-main.c
+@@ -742,6 +742,23 @@ static int ar_isp_tone_set(void *data, u64 val)
+ }
+ DEFINE_DEBUGFS_ATTRIBUTE(ar_isp_tone_fops, NULL, ar_isp_tone_set, "%llu\n");
+ 
++/*
++ * Colour re-latch for a userspace AWB: write a non-zero value after changing
++ * colour_temp or cm_trigger, and ccm1's matrix and cm's gain field are
++ * re-derived from them (ar_isp_colour_apply). Seven register writes, safe
++ * mid-stream like the ladders node.
++ */
++static int ar_isp_colour_set(void *data, u64 val)
++{
++	struct ar_isp *isp = data;
++
++	if (val)
++		ar_isp_colour_apply(isp);
++
++	return 0;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(ar_isp_colour_fops, NULL, ar_isp_colour_set, "%llu\n");
++
+ /*
+  * The one ISP, for the exported bring-up call. Single block, single node.
+  */
+@@ -1492,6 +1509,8 @@ static int ar_isp_probe(struct platform_device *pdev)
+ 			    &ar_isp_ladder_banks_fops);
+ 	debugfs_create_file_unsafe("tone", 0600, isp->debugfs, isp,
+ 				   &ar_isp_tone_fops);
++	debugfs_create_file_unsafe("colour", 0600, isp->debugfs, isp,
++				   &ar_isp_colour_fops);
+ 	/*
+ 	 * The two tone pages as the hardware fetches them. gamma and DRC are
+ 	 * the only configured stages with no register readback, so this is the
+diff --git a/drivers/media/artosyn/ar-isp-priv.h b/drivers/media/artosyn/ar-isp-priv.h
+index c6516c6..c42dd98 100644
+--- a/drivers/media/artosyn/ar-isp-priv.h
++++ b/drivers/media/artosyn/ar-isp-priv.h
+@@ -194,6 +194,7 @@ void ar_isp_stats_arm(struct ar_isp *isp, unsigned int half);
+ const void *ar_isp_stats_ready(struct ar_isp *isp, const void *buf, size_t size);
+ void ar_isp_stats_publish(struct ar_isp *isp);
+ void ar_isp_ccm_apply(struct ar_isp *isp);
++void ar_isp_colour_apply(struct ar_isp *isp);
+ void ar_isp_dpc_apply(struct ar_isp *isp);
+ void ar_isp_rnr_apply(struct ar_isp *isp, bool verbose);
+ void ar_isp_lnr_apply(struct ar_isp *isp, bool verbose);
+diff --git a/drivers/media/artosyn/ar-isp-tables.c b/drivers/media/artosyn/ar-isp-tables.c
+index 0e33d41..e966846 100644
+--- a/drivers/media/artosyn/ar-isp-tables.c
++++ b/drivers/media/artosyn/ar-isp-tables.c
+@@ -123,6 +123,33 @@ module_param(ccm_bank, uint, 0644);
+ MODULE_PARM_DESC(ccm_bank,
+ 		 "which tuning-file illuminant bank to install, 0 to 3 (default 0, the traced one)");
+ 
++/*
++ * The light's colour temperature, from a userspace AWB. The vendor's AWB picks
++ * ccm1's matrix and cm's CT column from its own estimate; with none here the
++ * driver installs ccm_bank and column 0. A temperature selects and blends both
++ * from their kelvin band tables instead (ar-isp-colour.h, ar-isp-cm.h): set it
++ * and write the colour debugfs node, or it takes effect at the next pipeline
++ * start.
++ */
++#define AR_ISP_COLOUR_TEMP_MAX		50000
++
++static int colour_temp;
++module_param(colour_temp, int, 0644);
++MODULE_PARM_DESC(colour_temp,
++		 "colour temperature of the light in kelvin, from a userspace AWB: selects and blends the CCM banks and cm's CT column (0, the default, installs ccm_bank and column 0)");
++
++/* colour_temp as the Q8 kelvin the band tables take; 0 when unset. */
++static u32 ar_isp_colour_ct_q8(void)
++{
++	int ct = READ_ONCE(colour_temp);
++
++	if (ct <= 0)
++		return 0;
++	if (ct > AR_ISP_COLOUR_TEMP_MAX)
++		ct = AR_ISP_COLOUR_TEMP_MAX;
++	return (u32)ct << AR_ISP_CCM_CT_SHIFT;
++}
++
+ /*
+  * Unlike the other ownership switches, this one does not reproduce a value the
+  * vendor computes; it hands the hardware three working buffers of our own. The
+@@ -484,6 +511,43 @@ void ar_isp_stats_publish(struct ar_isp *isp)
+ 			 &isp->ltm_page_dma, &isp->ltm_stats_dma);
+ }
+ 
++/*
++ * ccm1's live matrix, copy A only: the light's when colour_temp is set, else
++ * bank ccm_bank. Six whole-word writes and nothing else, so it can follow the
++ * AWB mid-stream without the identity the full install starts from.
++ */
++static void ar_isp_ccm1_matrix(struct ar_isp *isp, bool verbose)
++{
++	u8 packed[AR_ISP_CCM_WORDS * 4];
++	const u8 *blob = isp->tuning->data;
++	u32 ct_q8 = ar_isp_colour_ct_q8();
++	unsigned int i;
++
++	if (ct_q8) {
++		ar_isp_ccm_at_ct(packed, blob, ct_q8);
++	} else {
++		if (ccm_bank >= AR_ISP_CCM_BLOB_BANKS_USED) {
++			dev_warn(isp->dev, "ccm: bank %u out of range, using 0\n",
++				 ccm_bank);
++			ccm_bank = 0;
++		}
++		ar_isp_ccm_from_blob(packed, blob, ccm_bank);
++	}
++
++	for (i = 0; i < AR_ISP_CCM_WORDS; i++)
++		writel(ar_isp_get_le32(packed + i * 4),
++		       isp->base + AR_ISP_CCM1_BANK + i * 4);
++
++	if (!verbose)
++		return;
++	if (ct_q8)
++		dev_info(isp->dev, "ccm: %u K packed into ccm1 copy A\n",
++			 ct_q8 >> AR_ISP_CCM_CT_SHIFT);
++	else
++		dev_info(isp->dev, "ccm: bank %u packed into ccm1 copy A\n",
++			 ccm_bank);
++}
++
+ /*
+  * Colour correction. Two register banks of 0x50 bytes each,
+  * holding two packed 3x3 matrices, one at +0x00 and a second copy at +0x20.
+@@ -503,12 +567,11 @@ void ar_isp_stats_publish(struct ar_isp *isp)
+  * Without AWB there is nothing to interpolate between, so the driver installs
+  * one illuminant bank verbatim. Bank 0 is what the vendor was traced writing,
+  * which makes this reproduce the traced register state exactly rather than
+- * approximate it. When AWB exists it selects the bank and blends two of them;
+- * the packing does not change.
++ * approximate it. A userspace AWB that sets colour_temp selects the bank and
++ * blends two of them instead; the packing does not change.
+  */
+ void ar_isp_ccm_apply(struct ar_isp *isp)
+ {
+-	u8 packed[AR_ISP_CCM_WORDS * 4];
+ 	const u8 *blob;
+ 	unsigned int i;
+ 
+@@ -538,18 +601,7 @@ void ar_isp_ccm_apply(struct ar_isp *isp)
+ 		return;
+ 	}
+ 
+-	if (ccm_bank >= AR_ISP_CCM_BLOB_BANKS_USED) {
+-		dev_warn(isp->dev, "ccm: bank %u out of range, using 0\n", ccm_bank);
+-		ccm_bank = 0;
+-	}
+-
+-	ar_isp_ccm_from_blob(packed, blob, ccm_bank);
+-
+-	for (i = 0; i < AR_ISP_CCM_WORDS; i++)
+-		writel(ar_isp_get_le32(packed + i * 4),
+-		       isp->base + AR_ISP_CCM1_BANK + i * 4);
+-
+-	dev_info(isp->dev, "ccm: bank %u packed into ccm1 copy A\n", ccm_bank);
++	ar_isp_ccm1_matrix(isp, true);
+ }
+ 
+ /*
+@@ -864,9 +916,10 @@ void ar_isp_cnf_apply(struct ar_isp *isp, bool verbose)
+ 
+ /*
+  * Colour manipulation. The vendor recomputes cm and cm2 on the AE trigger from
+- * their own two-dimensional tables in the tuning file. cm currently uses the
+- * known CT column 0, which is one of the two columns that encode the measured
+- * live row; cm2 has one live CT column in this blob. Both stages pack their
++ * their own two-dimensional tables in the tuning file. cm takes its CT column
++ * from colour_temp, column 0 while that is unset, which is one of the two
++ * columns that encode the measured live row; cm2 has one live CT column in
++ * this blob. Both stages pack their
+  * gain into a low-seven-bit field and preserve the surrounding static image.
+  *
+  * The abscissa is the AEC trigger scalar, not the gain the noise ladders use;
+@@ -901,7 +954,8 @@ void ar_isp_cm_apply(struct ar_isp *isp, bool verbose)
+ 		return;
+ 	}
+ 
+-	field = ar_isp_cm_gain_field_from_blob(blob, (u32)cm_trigger, 0);
++	field = ar_isp_cm_gain_field_at_ct(blob, (u32)cm_trigger,
++					   ar_isp_colour_ct_q8());
+ 	ar_isp_rmw(isp, AR_ISP_CM_GAIN_REG, AR_ISP_CM_GAIN_MASK, field);
+ 
+ 	if (verbose)
+@@ -950,6 +1004,21 @@ void ar_isp_cm2_apply(struct ar_isp *isp, bool verbose)
+ 			 row.gain_field, row.lo2, row.recip2);
+ }
+ 
++/*
++ * The colour stages that follow the light, re-derived for the colour debugfs
++ * node: ccm1's matrix from colour_temp and cm's field from cm_trigger and
++ * colour_temp. Seven register writes; the AWB calls it when its balance has
++ * moved and the AE when the trigger has.
++ */
++void ar_isp_colour_apply(struct ar_isp *isp)
++{
++	const u8 *blob = isp->tuning ? isp->tuning->data : NULL;
++
++	if (ccm && blob && ar_isp_get_le32(blob + AR_ISP_CCM_BLOB_GATE) == 1)
++		ar_isp_ccm1_matrix(isp, false);
++	ar_isp_cm_apply(isp, false);
++}
++
+ /*
+  * The colour-space matrix, from the four the vendor library carries.
+  *
+@@ -1205,9 +1274,9 @@ int ar_isp_ladders_show(struct seq_file *s, struct ar_isp *isp)
+ 	} else {
+ 		ar_isp_ladder_cmp(s, "cm", AR_ISP_CM_GAIN_REG,
+ 				  readl(isp->base + AR_ISP_CM_GAIN_REG),
+-				  ar_isp_cm_gain_field_from_blob(blob,
+-								 (u32)cm_trigger,
+-								 0),
++				  ar_isp_cm_gain_field_at_ct(blob,
++							     (u32)cm_trigger,
++							     ar_isp_colour_ct_q8()),
+ 				  AR_ISP_CM_GAIN_MASK, &bad);
+ 	}
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,352 @@
+From: Henk Wiedig <hwiedig@googlemail.com>
+Subject: [PATCH] media: artosyn: isp: sharpening, defect pixels and rnr from
+ the sensor's own tuning
+
+The configure path replays an NT99235 vendor trace, and four settings
+that shape fine detail came along with it. On a stock SC231AI P1 in
+sunshine all four read differently, and with ours set to them the
+picture's edge energy went from half of stock's to stock's (18.4 against
+18.8, mean absolute Laplacian of Y) and sunlit leaves lost the white
+sparkle they had. Each is a parameter, off by default, so the NT99235
+keeps its replay:
+
+- sharpness_tuned: lnr register 19 (0x3d14), the sharpening, comes from
+  the tuning file's lnr ladder at the current gain, payload words 0x88
+  and 0x8c as the vendor packs them (0x1bbc38), and the sharpness
+  percentage scales that. The replay holds 0x000c000a, below even the
+  NT99235 file's own ladder; the SC231AI's ladder holds 60 at 1x, easing
+  to 15 in its top band, and stock read 0x003c003c: neutral strength.
+- dpc_tuned: the defect-pixel thresholds (0x0c14 on, 34 words) come from
+  the tuning file's DPC gain ladder at rnr_gain. The file carries the
+  carried payload as five records behind a generic ladder header (enable,
+  interpolate 0, five bands at +0x54: 1-8, 10-16, 20-60, 700-1500, one
+  more); record 1 is the payload word for word, so its trace ran in the
+  10-16 band. Stock at 1x held record 0, whose lower thresholds remove
+  the single-pixel highlights the sharpening otherwise turns into sparkle.
+- rnr_mode: bits 2 and 3 of rnr's control word 0x1800 (bit 3 is
+  birnr's, bit 2 not recovered), and with it bit 4 from the rnr ladder's
+  per-band flag (payload word 1, which the register packer does not
+  read). The replay has all three clear (0xe0); a stock SC231AI P1 runs
+  0xfc in sunshine and 0xec at night, and the SC231AI's file flags 1x-8x
+  and 32x and clears 16x and from 64x on. Measured: in sunshine bit 4
+  brings back the texture of grass and foliage, at night clear it is
+  part of what keeps the noise down; bit 3 smooths a little, bit 2 shows
+  nothing. The NT99235's file holds the flag clear in every band.
+- line_length: 0x1890 is (line length - width + 500) with bit 16 set;
+  the replay has the NT99235's 2200-pixel line, the SC231AI's is 2240
+  (stock 0x00010334). No visible effect measured; set for correctness.
+
+The ladder parity oracle compares register 19 against the same
+derivation. waybeam's camera loader passes sharpness_tuned=1 dpc_tuned=1
+rnr_mode=0x0c line_length=2240 for the SC231AI.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/artosyn/ar-isp-dpc.h    |  30 +++++++
+ drivers/media/artosyn/ar-isp-lnr.h    |  29 ++++++
+ drivers/media/artosyn/ar-isp-rnr.h    |  23 +++++
+ drivers/media/artosyn/ar-isp-tables.c | 121 +++++++++++++++++++++++++-
+ 4 files changed, 199 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/media/artosyn/ar-isp-dpc.h b/drivers/media/artosyn/ar-isp-dpc.h
+index 1ee0e72..25b246a 100644
+--- a/drivers/media/artosyn/ar-isp-dpc.h
++++ b/drivers/media/artosyn/ar-isp-dpc.h
+@@ -33,6 +33,8 @@
+ #ifndef AR_ISP_DPC_H
+ #define AR_ISP_DPC_H
+ 
++#include "ar-isp-ladder.h"
++
+ static const struct ar_isp_reg ar_isp_dpc_payload[] = {
+ 	{ 0x0c00, 0x00000000 },
+ 	{ 0x0c04, 0x00000780 },
+@@ -103,4 +105,32 @@ static const struct ar_isp_reg ar_isp_dpc_payload[] = {
+ 	{ 0x0d08, 0x000000ff },
+ };
+ 
++/*
++ * The payload is one band of a gain ladder. The SC231AI tuning file carries
++ * the DPC thresholds as five records of this image from 0x0c14 on, 34 words
++ * each (stride 0x88), behind the stage's gate and a generic ladder header
++ * (enable, interpolate 0, five bands) with the band edges at +0x54: 1-8,
++ * 10-16, 20-60, 700-1500 and one past the top. Record 1 is the payload
++ * above word for word, so the trace it came from ran in the 10-16 band; a
++ * stock SC231AI P1 in sunshine held record 0, whose thresholds are lower:
++ * fewer single-pixel highlights on foliage survive it as sparkle.
++ */
++#define AR_ISP_DPC_BLOB_HEADER		0x006ce8
++#define AR_ISP_DPC_BLOB_BANDS		0x006d3c
++#define AR_ISP_DPC_BLOB_PAYLOAD		0x006dbc
++#define AR_ISP_DPC_BLOB_STRIDE		0x88
++#define AR_ISP_DPC_BLOB_RECORDS		5
++#define AR_ISP_DPC_HDR_COUNT		0x8
++#define AR_ISP_DPC_LADDER_REG		0x0c14
++#define AR_ISP_DPC_LADDER_WORDS		(AR_ISP_DPC_BLOB_STRIDE / 4)
++
++static const struct ar_isp_ladder ar_isp_dpc_ladder = {
++	.hdr		= AR_ISP_DPC_BLOB_HEADER,
++	.bands		= AR_ISP_DPC_BLOB_BANDS,
++	.payload	= AR_ISP_DPC_BLOB_PAYLOAD,
++	.stride		= AR_ISP_DPC_BLOB_STRIDE,
++	.count_off	= AR_ISP_DPC_HDR_COUNT,
++	.max_bands	= AR_ISP_DPC_BLOB_RECORDS,
++};
++
+ #endif /* AR_ISP_DPC_H */
+diff --git a/drivers/media/artosyn/ar-isp-lnr.h b/drivers/media/artosyn/ar-isp-lnr.h
+index d110a1c..8326841 100644
+--- a/drivers/media/artosyn/ar-isp-lnr.h
++++ b/drivers/media/artosyn/ar-isp-lnr.h
+@@ -249,4 +249,33 @@ static inline u32 ar_isp_lnr_sharp_reg(u32 base, u32 pct)
+ 	       ar_isp_lnr_sharp_scale(b, pct) << AR_ISP_LNR_SHARP_SHIFT_B;
+ }
+ 
++/*
++ * Register 19 as the tuning file tunes it: lnr ladder payload words 0x88 and
++ * 0x8c at the gain, nine bits each, packed by the vendor at 0x1bbc38 before
++ * its strength scale trunc(v * s / 50) (neutral at s = 50). The SC231AI's
++ * file holds 60/60 at 1x, falling with gain to 15 in the top band, and a
++ * stock SC231AI P1 in sunshine reads 0x003c003c: neutral strength on the
++ * ladder. @reg supplies the bits outside the two fields.
++ */
++#define AR_ISP_LNR_SHARP_OFF_A		0x088
++#define AR_ISP_LNR_SHARP_OFF_B		0x08c
++
++static inline u32 ar_isp_lnr_sharp_from_blob(u32 reg, const u8 *blob,
++					     u32 gain_q16)
++{
++	const u8 *payload = blob + AR_ISP_LNR_BLOB_PAYLOAD;
++	struct ar_isp_ladder_frac frac;
++	u32 r[AR_ISP_LNR_SHARP_REG + 1];
++	unsigned int band;
++
++	ar_isp_ladder_select_f32(&ar_isp_lnr_ladder, blob, gain_q16, &band,
++				 &frac);
++	r[AR_ISP_LNR_SHARP_REG] = reg;
++	ar_isp_lnr_pack_field(r, payload, band, frac, AR_ISP_LNR_SHARP_REG,
++			      AR_ISP_LNR_SHARP_OFF_A, 0, 9);
++	ar_isp_lnr_pack_field(r, payload, band, frac, AR_ISP_LNR_SHARP_REG,
++			      AR_ISP_LNR_SHARP_OFF_B, AR_ISP_LNR_SHARP_SHIFT_B, 9);
++	return r[AR_ISP_LNR_SHARP_REG];
++}
++
+ #endif /* AR_ISP_LNR_H */
+diff --git a/drivers/media/artosyn/ar-isp-rnr.h b/drivers/media/artosyn/ar-isp-rnr.h
+index 3e673fc..c4306ff 100644
+--- a/drivers/media/artosyn/ar-isp-rnr.h
++++ b/drivers/media/artosyn/ar-isp-rnr.h
+@@ -82,6 +82,29 @@ static inline void ar_isp_rnr_from_blob(u32 *dst, const u8 *blob, u32 gain_q16)
+ 	}
+ }
+ 
++/*
++ * Payload word 1, a per-band 0/1 flag the register packer above does not
++ * read: in the SC231AI's file it is 1 in the 1x to 8x and the 32x bands and
++ * 0 at 16x and from 64x on. A stock SC231AI P1 holds bank +0x00 bit 4 set in
++ * sunshine at 1x (0xfc) and clear at night near 500x (0xec), and the
++ * NT99235's file holds 0 in every band, where its stock P1 runs the bit
++ * clear: the flag is that bit. Between bands it blends and truncates like
++ * the other words, so it is set only where both neighbours set it.
++ */
++#define AR_ISP_RNR_FLAG_WORD		1
++
++static inline bool ar_isp_rnr_flag_from_blob(const u8 *blob, u32 gain_q16)
++{
++	const u8 *payload = blob + AR_ISP_RNR_BLOB_PAYLOAD;
++	struct ar_isp_ladder_frac frac;
++	unsigned int band;
++
++	ar_isp_ladder_select_f32(&ar_isp_rnr_ladder, blob, gain_q16, &band,
++				 &frac);
++	return ar_isp_ladder_read_word_f32(&ar_isp_rnr_ladder, payload, band,
++					   AR_ISP_RNR_FLAG_WORD * 4, frac) != 0;
++}
++
+ /*
+  * The rest of the bank, 0x1838 to 0x188c, from the same payload record.
+  *
+diff --git a/drivers/media/artosyn/ar-isp-tables.c b/drivers/media/artosyn/ar-isp-tables.c
+index e966846..2f49857 100644
+--- a/drivers/media/artosyn/ar-isp-tables.c
++++ b/drivers/media/artosyn/ar-isp-tables.c
+@@ -215,6 +215,58 @@ module_param(sharpness, int, 0644);
+ MODULE_PARM_DESC(sharpness,
+ 		 "edge sharpening in percent of the replayed setting, 0 to 200 (above 100 towards the field maximum)");
+ 
++/*
++ * The replayed register 19 is the NT99235 vendor's: 0x000c000a, below that
++ * file's own ladder. A stock SC231AI P1 runs its file's ladder at neutral
++ * strength, five times that at 1x, easing off with gain. Set, the base comes
++ * from the tuning file's ladder at the current gain instead (ar-isp-lnr.h).
++ */
++static bool sharpness_tuned;
++module_param(sharpness_tuned, bool, 0644);
++MODULE_PARM_DESC(sharpness_tuned,
++		 "take the sharpness base from the tuning file's lnr ladder at the current gain instead of the replayed register (default off)");
++
++/*
++ * rnr's control word 0x1800 carries three sub-stage bits besides its gate:
++ * bit 3 is birnr's (ar-isp library 0x19b250), bit 2 is not recovered, bit 4
++ * is the rnr ladder's per-band flag (ar-isp-rnr.h). The NT99235 vendor runs
++ * them clear (0xe0); a stock SC231AI P1 runs 2 and 3 set and bit 4 by gain
++ * (0xfc in sunshine, 0xec at night). Measured on that P1: in sunshine bit 4
++ * is what brings back the fine texture of grass and foliage (with it the
++ * dark-area detail and edge energy reach stock's), at night clear it is
++ * half of what keeps stock's noise down; bit 3 smooths a little, bit 2
++ * shows no effect.
++ */
++#define AR_ISP_RNR_MODE_MASK		0x1c
++#define AR_ISP_RNR_MODE_FLAG_BIT	BIT(4)
++
++static int rnr_mode = -1;
++module_param(rnr_mode, int, 0644);
++MODULE_PARM_DESC(rnr_mode,
++		 "rnr control bits 2-3 (mask 0x0c) at every rnr apply, bit 4 then following the tuning file's per-band flag; -1 leaves all three replayed (default)");
++
++/*
++ * 0x1890 is (line length - width + 500) with bit 16 set (built at
++ * 0x19aab4). The replay has the NT99235's 2200-pixel line; the SC231AI's is
++ * 2240, and a stock SC231AI P1 reads 0x00010334.
++ */
++#define AR_ISP_RNR_LINE_REG		0x1890
++#define AR_ISP_RNR_LINE_BIT		BIT(16)
++#define AR_ISP_RNR_LINE_MASK		0xffff
++#define AR_ISP_RNR_LINE_WIDTH		1920
++#define AR_ISP_RNR_LINE_BIAS		500
++
++/* See ar-isp-dpc.h: the thresholds follow rnr_gain, the same linear gain. */
++static bool dpc_tuned;
++module_param(dpc_tuned, bool, 0644);
++MODULE_PARM_DESC(dpc_tuned,
++		 "take the defect pixel thresholds from the tuning file's gain ladder at rnr_gain instead of the carried payload (default off)");
++
++static int line_length;
++module_param(line_length, int, 0644);
++MODULE_PARM_DESC(line_length,
++		 "the sensor's line length in pixels for rnr's line register, 0 leaves the replayed NT99235 value (default)");
++
+ static u32 ar_isp_pct(int v)
+ {
+ 	return clamp(v, 0, 200);
+@@ -604,6 +656,34 @@ void ar_isp_ccm_apply(struct ar_isp *isp)
+ 	ar_isp_ccm1_matrix(isp, true);
+ }
+ 
++/*
++ * The thresholds at the current gain, from the tuning file's DPC ladder, over
++ * the carried payload. Runs with the other gain ladders, so it follows the AE.
++ */
++static void ar_isp_dpc_ladder_apply(struct ar_isp *isp, bool verbose)
++{
++	const u8 *blob = isp->tuning ? isp->tuning->data : NULL;
++	struct ar_isp_ladder_frac frac;
++	unsigned int band;
++
++	if (!dpc || !dpc_tuned || !blob || rnr_gain < 0 ||
++	    ar_isp_get_le32(blob + AR_ISP_DPC_BLOB_HEADER +
++			    AR_ISP_LADDER_HDR_ENABLE) != 1)
++		return;
++
++	ar_isp_ladder_select_f32(&ar_isp_dpc_ladder, blob, (u32)rnr_gain << 8,
++				 &band, &frac);
++	for (unsigned int i = 0; i < AR_ISP_DPC_LADDER_WORDS; i++)
++		writel(ar_isp_ladder_read_word_f32(&ar_isp_dpc_ladder,
++						   blob + AR_ISP_DPC_BLOB_PAYLOAD,
++						   band, i * 4, frac),
++		       isp->base + AR_ISP_DPC_LADDER_REG + i * 4);
++
++	if (verbose)
++		dev_info(isp->dev, "dpc: ladder band %u at gain %d.%03u\n", band,
++			 rnr_gain >> 8, (rnr_gain & 0xff) * 1000 / 256);
++}
++
+ /*
+  * Defect pixel correction. The payload is a register image the vendor copies
+  * wholesale out of init_config, so it is carried verbatim; see
+@@ -615,6 +695,7 @@ void ar_isp_dpc_apply(struct ar_isp *isp)
+ 		return;
+ 
+ 	ar_isp_apply(isp, ar_isp_dpc_payload, ARRAY_SIZE(ar_isp_dpc_payload));
++	ar_isp_dpc_ladder_apply(isp, true);
+ }
+ 
+ /*
+@@ -669,6 +750,22 @@ void ar_isp_rnr_apply(struct ar_isp *isp, bool verbose)
+ 		writel(tail[i], isp->base + AR_ISP_RNR_BANK +
+ 		       AR_ISP_RNR_TAIL + i * 4);
+ 
++	/* The sensor's own sub-stage bits and line length, when given. */
++	if (rnr_mode >= 0) {
++		u32 bits = (u32)rnr_mode & AR_ISP_RNR_MODE_MASK &
++			   ~AR_ISP_RNR_MODE_FLAG_BIT;
++
++		if (ar_isp_rnr_flag_from_blob(blob, (u32)rnr_gain << 8))
++			bits |= AR_ISP_RNR_MODE_FLAG_BIT;
++		ar_isp_rmw(isp, AR_ISP_RNR_BANK, AR_ISP_RNR_MODE_MASK, bits);
++	}
++	if (line_length > AR_ISP_RNR_LINE_WIDTH)
++		ar_isp_rmw(isp, AR_ISP_RNR_LINE_REG,
++			   AR_ISP_RNR_LINE_BIT | AR_ISP_RNR_LINE_MASK,
++			   AR_ISP_RNR_LINE_BIT |
++			   ((u32)(line_length - AR_ISP_RNR_LINE_WIDTH +
++				  AR_ISP_RNR_LINE_BIAS) & AR_ISP_RNR_LINE_MASK));
++
+ 	if (verbose)
+ 		dev_info(isp->dev, "rnr: ladder at gain %d.%03u, 0x%04x..0x%04x = 0x%08x\n",
+ 			 rnr_gain >> 8, (rnr_gain & 0xff) * 1000 / 256,
+@@ -694,6 +791,23 @@ void ar_isp_lnr_sharp_capture(struct ar_isp *isp)
+ 	isp->lnr_sharp_valid = true;
+ }
+ 
++/*
++ * Register 19 as the lnr apply writes it: the base, from the tuning file's
++ * ladder with sharpness_tuned or as replayed, scaled by sharpness. @reg holds
++ * the bank's value and is left alone when there is no base yet.
++ */
++static void ar_isp_lnr_sharp_want(struct ar_isp *isp, const u8 *blob, u32 *reg)
++{
++	u32 base = isp->lnr_sharp_valid ? isp->lnr_sharp_base : *reg;
++
++	if (sharpness_tuned)
++		base = ar_isp_lnr_sharp_from_blob(base, blob,
++						  (u32)lnr_gain << 8);
++	else if (!isp->lnr_sharp_valid)
++		return;
++	*reg = ar_isp_lnr_sharp_reg(base, ar_isp_pct(sharpness));
++}
++
+ void ar_isp_lnr_apply(struct ar_isp *isp, bool verbose)
+ {
+ 	u32 regs[AR_ISP_LNR_REGS];
+@@ -724,10 +838,7 @@ void ar_isp_lnr_apply(struct ar_isp *isp, bool verbose)
+ 		regs[i] = readl(isp->base + AR_ISP_LNR_BANK + i * 4);
+ 
+ 	ar_isp_lnr_from_blob(regs, blob, (u32)lnr_gain << 8);
+-	if (isp->lnr_sharp_valid)
+-		regs[AR_ISP_LNR_SHARP_REG] =
+-			ar_isp_lnr_sharp_reg(isp->lnr_sharp_base,
+-					     ar_isp_pct(sharpness));
++	ar_isp_lnr_sharp_want(isp, blob, &regs[AR_ISP_LNR_SHARP_REG]);
+ 
+ 	for (i = 0; i < AR_ISP_LNR_REGS; i++) {
+ 		if (i == AR_ISP_LNR_SKIP_NEVER_WRITTEN)
+@@ -1081,6 +1192,7 @@ void ar_isp_ladders_apply(struct ar_isp *isp, bool verbose)
+ 	ar_isp_cnf_apply(isp, verbose);
+ 	ar_isp_cm_apply(isp, verbose);
+ 	ar_isp_cm2_apply(isp, verbose);
++	ar_isp_dpc_ladder_apply(isp, verbose);
+ }
+ 
+ /*
+@@ -1191,6 +1303,7 @@ int ar_isp_ladders_show(struct seq_file *s, struct ar_isp *isp)
+ 		}
+ 
+ 		ar_isp_lnr_from_blob(regs, blob, (u32)lnr_gain << 8);
++		ar_isp_lnr_sharp_want(isp, blob, &regs[AR_ISP_LNR_SHARP_REG]);
+ 
+ 		for (unsigned int i = 0; i < AR_ISP_LNR_REGS; i++) {
+ 			if (i == AR_ISP_LNR_SKIP_NEVER_WRITTEN)
+-- 
+2.43.0
+
