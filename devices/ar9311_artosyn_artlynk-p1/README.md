@@ -175,6 +175,13 @@ Working (hardware-tested, RAM boot):
   pixels off by 8 levels or more ~28k -> 0.3-2.9k a frame, the worst frames
   29 -> 36-43 dB from what the encoders meant; costs the first part +1.4
   ms, the whole picture +1.8 ms
+- strip balance (waybeam 0.100.0 `video0.stripBalance`, 0..100, 0 by
+  default = the bitrate split by lines): the share of the quality gap
+  between the strips the bitrate closes, for a seam that does not show as
+  a step in sharpness. It moves bits into the strip sent last, so it costs
+  latency: bench at 22 Mbit/s, busy bottom, capture -> goggles 22.4 / 23.6
+  / 26.2 ms at 0 / 50 / 100. A developer row on the goggles' Drone ->
+  Camera -> Video page
 - bind button and status LED; msposd OSD forwarding with the SoC temperature
 
 - `S65ar8030-transport-tx stop`/`restart`: lifecycled and ar8030d are
