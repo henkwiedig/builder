@@ -188,9 +188,16 @@ Working (hardware-tested, RAM boot):
   waited for before `rmmod`, the module load waits for the old RTOS SDIO
   card to go after the gpiolib reset, and the link is back ~18 s later
   with the persisted peer
-- PI bitrate controller (`ar8030-transport-tx -C pi -n 1000`: 1000 kbps ->
-  ~22 Mbit/s at MCS 12, link-side delay 8-14 ms), stock link policy
+- PI bitrate controller (`ar8030-transport-tx -C pi -n 500 -D 4`: 500 kbps
+  -> ~22 Mbit/s at MCS 12, link-side delay 8-14 ms), stock link policy
   (`--link-policy 2`), RF path B off (`--rf-path-b-off`)
+- frame-rate stages (waybeam 0.101.0 `video0.fpsDivisor`, driven by the
+  tx's `-D 4`): where the link cannot carry the 500 kbps floor, waybeam
+  encodes every 2nd, then every 4th camera frame, each the size it has at
+  60 fps: 250 kbps at 30 fps, 125 at 15. Bench, 5 MHz and the lowest MCS
+  (471 kbps): settled at 15 fps, ~260 kbps, ~60 ms capture -> goggles, and
+  back to 60 fps once the link was restored. The floor was 1000 kbps
+  before, and what the link could not carry queued on the air
 - heat protection, see "Heat" below
 - `sysupgrade` both ways: OpenIPC into the other slot with the settings
   carried over, and BetaFPV's `P1_SKY_v2.0.5_20260330_a22d901.img` back

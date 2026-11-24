@@ -58,10 +58,10 @@ WAYBEAM_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
 
 ifeq ($(BR2_PACKAGE_WAYBEAM_BACKEND_AR9311),y)
 WAYBEAM_SOC_BUILD = ar9311
-# The ar9311 backend lives on the fork's `ar9311` branch (the CV610 pin above
+# The ar9311 backend lives on the fork's `artosyn` branch (the CV610 pin above
 # plus the backend) until it is merged, so it has its own pin; the CV610 one
 # stays where the Ascent needs it.
-WAYBEAM_VERSION = f6e816dd9bd682bca74986647e0c60782db7da4a
+WAYBEAM_VERSION = 60b0e12cbd2441c041e2b509801616ccfc5d8e3c
 else
 WAYBEAM_SOC_BUILD = cv610
 endif

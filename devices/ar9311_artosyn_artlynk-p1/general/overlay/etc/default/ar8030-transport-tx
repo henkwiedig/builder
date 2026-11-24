@@ -8,11 +8,17 @@
 # -C pi: bitrate controller = link capacity feedforward + PI on the
 # link-side queueing delay (ar8030-transport tx/bitrate_ctl.c), as on the
 # Ascent; waybeam's ar9311 backend takes live video0.bitrate.
-# -n 1000: lowest bitrate the controller asks for, = waybeam's floor on
-# AR9311 (VENC_BITRATE_MIN_KBPS; 300 is CV610 only).
-# Not the Ascent's -F/-D/-S: the ar9311 backend has no ROI (focus mode),
-# no video0.fpsDivisor and no timing sidecar.
-AR8030_TRANSPORT_TX_ARGS="-C pi -n 1000"
+# -n 500: lowest bitrate at the full frame rate, = waybeam's floor on AR9311
+# (VENC_BITRATE_MIN_KBPS, 500 from waybeam 0.101.0, 1000 before: a P1
+# held it at 1080p60 and bottoms out at ~330 kbps at QP 51).
+# -D 4: below it waybeam encodes every 2nd, then every 4th camera frame
+# (video0.fpsDivisor), each frame the size it has at 500 / 60 fps: 500 ->
+# 250 -> 125 kbps at 60 -> 30 -> 15 fps, where the link cannot carry the
+# floor (narrow bandwidth, the lowest MCS) -- instead of a queue that grows
+# by seconds. Stock SinYine cuts its frame rate the same way at low MCS.
+# Not the Ascent's -F/-S: the ar9311 backend has no ROI (focus mode) and no
+# timing sidecar.
+AR8030_TRANSPORT_TX_ARGS="-C pi -n 500 -D 4"
 
 # AR8030 reset: GPIO23 (bank1 line0), active low. Only drivable through the
 # artosyn_gpio driver (loaded from /etc/modules): its direction register is
