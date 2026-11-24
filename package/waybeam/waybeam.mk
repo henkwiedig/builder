@@ -4,10 +4,10 @@
 #
 ################################################################################
 
-# HEAD of the `ascent` branch (M0-M4 of the Hi3516CV610 backend).
+# The fork's `artosyn` branch, which carries both backends: cv610 (Caddx
+# Ascent) and ar9311 (BetaFPV P1, SinYine F1 TX). One pin for both, as in the
+# other repos, so a bump moves both images.
 #
-# NOTE: that branch is not pushed yet — the fork only carries `master` and
-# `flip-mirror` — so this download will 404 until you `git push origin ascent`.
 # To build against a working tree instead, point buildroot at it (no push
 # needed, picks up uncommitted edits):
 #
@@ -23,7 +23,7 @@
 # first sync are invisible to subsequent builds until you force a fresh
 # sync with `make waybeam-dirclean` (or `make waybeam-rsync`) first.
 #
-WAYBEAM_VERSION = 3308ffa5b7f0193086e32b433be48c0db86d4e48
+WAYBEAM_VERSION = 60b0e12cbd2441c041e2b509801616ccfc5d8e3c
 WAYBEAM_SITE = https://github.com/henkwiedig/waybeam_venc.git
 WAYBEAM_SITE_METHOD = git
 # libbin.so (fetched at build time on Hisilicon boards, see near the end
@@ -58,10 +58,6 @@ WAYBEAM_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
 
 ifeq ($(BR2_PACKAGE_WAYBEAM_BACKEND_AR9311),y)
 WAYBEAM_SOC_BUILD = ar9311
-# The ar9311 backend lives on the fork's `artosyn` branch (the CV610 pin above
-# plus the backend) until it is merged, so it has its own pin; the CV610 one
-# stays where the Ascent needs it.
-WAYBEAM_VERSION = 60b0e12cbd2441c041e2b509801616ccfc5d8e3c
 else
 WAYBEAM_SOC_BUILD = cv610
 endif
